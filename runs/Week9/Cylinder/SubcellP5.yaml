@@ -1,0 +1,167 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Executable: EvolveValenciaDivClean
+Testing:
+  Check: parse;execute
+  Priority: High
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+  
+ResourceInfo:
+  AvoidGlobalProc0: false
+
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: 0.01
+  MinimumTimeStep: 1.0e-7
+  TimeStepper:
+    Rk3HesthavenSsp:
+
+PhaseChangeAndTriggers:
+
+DomainCreator:
+  Brick:
+    LowerBound: [-6.0, -6.0, -6.0]
+    UpperBound: [6.0, 6.0, 6.0]
+    Distribution: [Linear, Linear, Linear]
+    InitialRefinement: [5, 5, 0]
+    InitialGridPoints: [6, 6, 6]
+    TimeDependence: None
+    BoundaryConditions: [Periodic, Periodic, Periodic]
+
+SpatialDiscretization:
+  BoundaryCorrection:
+    Rusanov:
+  DiscontinuousGalerkin:
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+    Subcell:
+      TroubledCellIndicator:
+        RdmpTci:
+          Delta0: 1.0e-4
+          Epsilon: 1.0e-3
+        PerssonTci:
+          Exponent: 4.0
+          NumHighestModes: 1
+        FdToDgTci:
+          NumberOfStepsBetweenTciCalls: 1
+          MinTciCallsAfterRollback: 1
+          MinimumClearTcis: 1
+        AlwaysUseSubcells: false
+        UseHalo: false
+        OnlyDgBlocksAndGroups: None
+      SubcellToDgReconstructionMethod: DimByDim
+      FiniteDifferenceDerivativeOrder: 2
+    TciOptions:
+      MinimumValueOfD: 1.0e-20
+      MinimumValueOfYe: 1.0e-20
+      MinimumValueOfTildeTau: 1.0e-40
+      AtmosphereDensity: 1.01e-15
+      SafetyFactorForB: 1.0e-12
+      MagneticFieldCutoff: DoNotCheckMagneticField
+  SubcellSolver:
+    Reconstructor:
+      MonotonisedCentralPrim:
+    
+InitialData:
+  BlastWave:
+    InnerRadius: 0.8
+    OuterRadius: 1.0
+    InnerDensity: 1.0e-2
+    OuterDensity: 1.0e-4
+    InnerPressure: 1.0
+    OuterPressure: 5.0e-4
+    MagneticField: [0.1, 0.0, 0.0]
+    AdiabaticIndex: 1.3333333333333333333
+    Geometry: Cylindrical
+
+EvolutionSystem:
+  ValenciaDivClean:
+    DampingParameter: 1.0
+
+EquationOfState:
+  FromInitialData
+
+Interpolator:
+  DumpVolumeDataOnFailure: false
+
+EventsRunAtCleanup:
+  Events: []
+  ObservationValue: -1.0
+
+VariableFixing:
+  FixConservatives:
+    CutoffD: &CutoffD 1.01e-12
+    MinimumValueOfD: &MinimumD 1.0e-12
+    SafetyFactorForB: 1.0e-12
+    SafetyFactorForS: 1.0e-12
+    MinimumValueOfYe: 0.0
+    CutoffYe: 0.0
+    SafetyFactorForSCutoffD: 1.0e-12
+    SafetyFactorForSSlope: 0.0
+    Enable: false
+    MagneticField: AssumeNonZero
+  FixToAtmosphere:
+    DensityOfAtmosphere: 1.0e-12
+    DensityCutoff: 1.01e-12
+    # TransitionDensityCutoff: 1.0e-11
+    # MaxVelocityMagnitude: 1.0e-4
+    VelocityLimiting:
+      AtmosphereMaxVelocity: 0
+      NearAtmosphereMaxVelocity: 1.0e-4
+      AtmosphereDensityCutoff: 3.0e-12
+      TransitionDensityBound: 1.0e-11
+    KappaLimiting:
+      DensityLowerBound: 2.0e-11
+      EplisonKappaMinus: 1.0e-3
+      DensityUpperBound: 2.0e-10
+      EpsilonKappaMax: 0.01
+      MinTemperature: FromEos
+      LimitAboveDensityUpperBound: false
+
+Observers:
+  VolumeFileName: "GrmhdBlastWaveSubcellP5"
+  ReductionFileName: "GrmhdBlastWaveSubcellP5"
+
+EventsAndTriggersAtSlabs:
+  - Trigger:
+      Slabs:
+       EvenlySpaced:
+         Interval: 20
+         Offset: 0
+    Events:
+      - ObserveFields:
+          VariablesToObserve: [RestMassDensity]
+          SubfileName: element_data
+          InterpolateToMesh: None
+          CoordinatesFloatingPointType: Float
+          FloatingPointTypes: [Float]
+          BlocksToObserve: All
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 10
+          Offset: 0
+    Events:
+      - ObserveTimeStep:
+          SubfileName: time_steps
+          PrintTimeToTerminal: true
+          ObservePerCore: false
+  - Trigger:
+      Slabs:
+        Specified:
+          Values: [400]
+    Events:
+      - Completion
+
+PrimitiveFromConservative:
+  CutoffDForInversion: *CutoffD
+  DensityWhenSkippingInversion: *MinimumD
+  KastaunMaxLorentzFactor: 10.0
+  
+EventsAndDenseTriggers:

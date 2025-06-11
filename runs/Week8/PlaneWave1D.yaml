@@ -1,0 +1,143 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+nExecutable: EvolveScalarWave1D
+Testing:
+  Check: parse
+  Priority: High
+ExpectedOutput:
+  - ScalarWavePlaneWave1DEventsAndTriggersModVolume.h5
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+
+ResourceInfo:
+  AvoidGlobalProc0: false
+  Singletons: Auto
+
+InitialData:
+  PlaneWave:
+    WaveVector: [1.0]
+    Center: [0.0]
+    Profile:
+      Sinusoid:
+        Amplitude: 1.0
+        Wavenumber: 1.0
+        Phase: 0.0
+
+Amr:
+  Criteria:
+    - TruncationError:
+        VariablesToMonitor: [Psi]
+        AbsoluteTarget: 1.e-6
+        RelativeTarget: 1.0
+  Policies:
+    EnforceTwoToOneBalanceInNormalDirection: true
+    Isotropy: Anisotropic
+    Limits:
+      RefinementLevel: Auto
+      NumGridPoints: Auto
+      ErrorBeyondLimits: False
+  Verbosity: Verbose
+
+PhaseChangeAndTriggers:
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 1
+          Offset: 0
+    PhaseChanges:
+#      - VisitAndReturn(EvaluateAmrCriteria)
+      - VisitAndReturn(AdjustDomain)
+      - VisitAndReturn(CheckDomain)
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: 0.0
+  MinimumTimeStep: 1e-7
+  TimeStepper:
+    DormandPrince5:
+#      Order: 4
+#    AdamsBashforths:
+
+DomainCreator:
+  Interval:
+    LowerBound: [0.0]
+    UpperBound: [6.283185307179586]
+    Distribution: [Linear]
+    InitialRefinement: [2]
+    InitialGridPoints: [8]
+    TimeDependence: None
+    BoundaryConditions: [Periodic]
+
+SpatialDiscretization:
+  BoundaryCorrection:
+    UpwindPenalty:
+  DiscontinuousGalerkin:
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+
+EventsAndDenseTriggers:
+
+# [multiple_events]
+EventsAndTriggersAtSlabs:
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 5
+          Offset: 2
+    Events:
+      - ChangeSlabSize:
+          StepChoosers:
+            -  ErrorControl:
+                 AbsoluteTolerance: 1.0e-7
+                 RelativeTolerance: 1
+                 MaxFactor: 10.0
+                 MinFactor: 0.1
+                 SafetyFactor: 0.2
+          DelayChange: 1
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 10
+          Offset: 0
+    Events:
+      - ObserveFields:
+          SubfileName: Fields
+          VariablesToObserve: [Psi, Phi, Pi]
+          InterpolateToMesh: None
+          CoordinatesFloatingPointType: Double
+          FloatingPointTypes: [Double, Double, Double]
+          BlocksToObserve: All
+      - ObserveNorms:
+          SubfileName: Errors
+          TensorsToObserve:
+            - Name: Error(Psi)
+              NormType: L2Norm
+              Components: Sum
+            - Name: Error(Phi)
+              NormType: L2Norm
+              Components: Sum
+            - Name: Error(Pi)
+              NormType: L2Norm
+              Components: Sum
+  - Trigger:
+      TimeCompares:
+        Comparison: GreaterThanOrEqualTo
+        Value: 12.57
+#        Value: 6.28
+    Events:
+      - Completion
+#  - Trigger:
+#      Times:
+#        At:
+#          Values: [6.28318530718]
+#    Events:
+#      - Completion
+# [multiple_events]
+
+Observers:
+  VolumeFileName: "ScalarWavePlaneWave1DEventsAndTriggersModVolume"
+  ReductionFileName: "ScalarWavePlaneWave1DEventsAndTriggersModReductions"

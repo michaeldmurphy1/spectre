@@ -1,0 +1,106 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Executable: EvolveScalarWave3D
+Testing:
+  Check: parse;execute
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+
+MassSq: 1.5
+  
+ResourceInfo:
+  AvoidGlobalProc0: false
+  Singletons: Auto
+
+InitialData:
+  PlaneWave:
+    WaveVector: [1.0, 1.0, 1.0]
+    Center: [0.0, 0.0, 0.0]
+    Profile:
+      Sinusoid:
+        Amplitude: 1.0
+        Wavenumber: 1.0
+        Phase: 0.0
+
+Amr:
+  Criteria:
+  Policies:
+    EnforceTwoToOneBalanceInNormalDirection: true
+    Isotropy: Anisotropic
+    Limits:
+      RefinementLevel: Auto
+      NumGridPoints: Auto
+      ErrorBeyondLimits: False
+    AllowCoarsening: True
+  Verbosity: Verbose
+
+PhaseChangeAndTriggers:
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: 0.001
+  MinimumTimeStep: 1e-7
+  TimeStepper:
+    AdamsBashforth:
+      Order: 3
+
+DomainCreator:
+  Brick:
+    LowerBound: [0.0, 0.0, 0.0]
+    UpperBound: [6.283185307179586, 6.283185307179586, 6.283185307179586]
+    Distribution: [Linear, Linear, Linear]
+    InitialRefinement: [1, 1, 1]
+    InitialGridPoints: [5, 5, 5]
+    TimeDependence: None
+    # must be periodic, did not update analytic boundary conditions
+    BoundaryConditions: [Periodic, Periodic, Periodic]
+
+SpatialDiscretization:
+  BoundaryCorrection:
+    UpwindPenalty:
+  DiscontinuousGalerkin:
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+
+
+EventsAndTriggersAtSlabs:
+  - Trigger:
+      Slabs:
+        Specified:
+          Values: [6280]
+    Events:
+      - Completion
+  # - Trigger: Always
+  #   Events:
+  #     - ChangeSlabSize:
+  #         DelayChange: 0
+  #         StepChoosers:
+  #           - StepToTimes:
+  #               Times:
+  #                 Specified:
+  #                   Values: [*final_time]
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 100
+          Offset: 0
+    Events:
+      - ObserveFields:
+          VariablesToObserve: [Phi, Pi, Psi, Potential]
+          SubfileName: element_data
+          InterpolateToMesh: None
+          CoordinatesFloatingPointType: Float
+          FloatingPointTypes: [Float]
+          BlocksToObserve: All
+          
+
+  
+EventsAndDenseTriggers:
+
+Observers:
+  VolumeFileName: "ScalarWavePlaneWave3DVolume"
+  ReductionFileName: "ScalarWavePlaneWave3DReductions"

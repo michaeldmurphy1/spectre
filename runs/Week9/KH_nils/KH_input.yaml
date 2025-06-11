@@ -1,0 +1,226 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Executable: EvolveValenciaDivClean
+# Executable: EvolveValenciaDivCleanKhInstability
+Testing:
+  Check: parse;execute
+  Priority: High
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+
+ResourceInfo:
+  AvoidGlobalProc0: false
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: 0.001
+  MinimumTimeStep: 1e-7
+  TimeStepper: Rk3HesthavenSsp
+
+PhaseChangeAndTriggers:
+
+DomainCreator:
+  Brick:
+    LowerBound: [-0.5, -0.5, -0.5]
+    UpperBound: [0.5, 0.5, 0.5]
+    Distribution: [Linear, Linear, Linear]
+    InitialRefinement: [5, 5, 0]
+    InitialGridPoints: [6, 6, 6]
+    TimeDependence: None
+    # BoundaryConditionInX: Periodic
+    # BoundaryConditionInY: Periodic
+    # BoundaryConditionInZ: Periodic
+    BoundaryConditions: [Periodic, Periodic, Periodic]
+
+InitialData:
+# AnalyticData:
+  KhInstability:
+    AdiabaticIndex: 1.333333333333333333333333
+    StripBimedianHeight: 0.0
+    StripThickness: 0.5
+    StripDensity: 1.0
+    StripVelocity: 0.5
+    BackgroundDensity: 1.0e-2
+    BackgroundVelocity: -0.5
+    Pressure: 1.0
+    PerturbAmplitude: 0.1
+    PerturbWidth: 0.0707 # 0.0707 ~ 0.1/sqrt(2)
+    MagneticField: [1.0e-3, 0.0, 0.0]
+
+EquationOfState:
+  FromInitialData
+
+SpatialDiscretization:
+  BoundaryCorrection:
+    Rusanov:
+    # Hll:
+    #   MagneticFieldMagnitudeForHydro: 1.0e-15
+    #   LightSpeedDensityCutoff: 1.0e-10
+  DiscontinuousGalerkin:
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+    Subcell:
+      # RdmpDelta0: 1.0e-4
+      # RdmpEpsilon: 1.0e-3
+      # PerssonExponent: 4.0
+      # InitialData:
+      #   RdmpDelta0: 1.0e-4
+      #   RdmpEpsilon: 1.0e-3
+      #   PerssonExponent: 4.0
+      # AlwaysUseSubcells: false
+      # SubcellToDgReconstructionMethod: DimByDim
+      # UseHalo: false
+      # OnlyDgBlocksAndGroups: None
+
+      TroubledCellIndicator:
+        PerssonTci:
+          Exponent: 4.0
+          NumHighestModes: 1
+        RdmpTci:
+          Delta0: 1.0e4
+          Epsilon: 1.0e-3
+        FdToDgTci:
+          NumberOfStepsBetweenTciCalls: 1
+          MinTciCallsAfterRollback: 1
+          MinimumClearTcis: 1
+        AlwaysUseSubcells: false
+        UseHalo: false
+        OnlyDgBlocksAndGroups: None
+      SubcellToDgReconstructionMethod: DimByDim
+      FiniteDifferenceDerivativeOrder: 2
+    TciOptions:
+      MinimumValueOfD: 1.0e-20
+      MinimumValueOfYe: 1.0e-20
+      MinimumValueOfTildeTau: 1.0e-40
+      MagneticFieldCutoff: DoNotCheckMagneticField
+      AtmosphereDensity: 1.01e-15
+      SafetyFactorForB: 1.0e-12
+  SubcellSolver:
+    Reconstructor:
+      MonotonisedCentralPrim
+      # PositivityPreservingAdaptiveOrderPrim:
+      #   Alpha5: 3.8
+      #   Alpha7: None
+      #   Alpha9: None
+      #   LowOrderReconstructor: MonotonisedCentral
+
+EventsAndTriggersAtSlabs:
+# EventsAndTriggers:
+  # Set time step at t=0
+  # - Trigger:
+  #     Slabs:
+  #       Specified:
+  #         Values: [0]
+  #   Events:
+  #     - ChangeSlabSize:
+  #         DelayChange: 0
+  #         StepChoosers:
+  #           - Cfl:
+  #               SafetyFactor: &CflSafetyFactor 0.4
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 10
+          Offset: 0
+    Events:
+      - ObserveTimeStep:
+            SubfileName: TimeSteps
+            PrintTimeToTerminal: True
+            ObservePerCore: False
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 100
+          Offset: 0
+    Events:
+      - ObserveFields:
+          SubfileName: element_data
+          VariablesToObserve:
+            - RestMassDensity
+            - Pressure
+            - Temperature
+            - MagneticField
+            - TildeD
+            - TildeTau
+            - LorentzFactor
+            - SpatialVelocity
+            - TciStatus
+          InterpolateToMesh: None
+          CoordinatesFloatingPointType: Double
+          FloatingPointTypes: [Double]
+          BlocksToObserve: All
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 50
+          Offset: 0
+    Events:
+      - ObserveTimeStep:
+          SubfileName: time_steps
+          PrintTimeToTerminal: true
+          ObservePerCore: false
+  - Trigger:
+      Slabs:
+        Specified:
+          Values: [1600] # [1600]
+    Events:
+      - Completion
+
+Observers:
+  VolumeFileName: "./KHP5Volume"
+  ReductionFileName: "./KHP5Reduction"
+
+EvolutionSystem:
+  ValenciaDivClean:
+    DampingParameter: 1.0
+
+VariableFixing:
+  FixConservatives:
+    Enable: true # Only needed when not using Kastaun for recovery
+    CutoffD: &CutoffD 1.01e-15
+    MinimumValueOfD: &MinimumD 1.0e-15
+    CutoffYe: 0.0
+    MinimumValueOfYe: 0.0
+    SafetyFactorForB: 1.0e-12
+    SafetyFactorForS: 1.0e-12
+    SafetyFactorForSCutoffD: 1.0e-12
+    SafetyFactorForSSlope: 0.0
+    MagneticField: AssumeNonZero
+  FixToAtmosphere:
+    DensityOfAtmosphere: 1.0e-15
+    DensityCutoff: 1.01e-15
+    # TransitionDensityCutoff: 1.0e-14
+    # MaxVelocityMagnitude: 1.0e-4
+    VelocityLimiting:
+      AtmosphereMaxVelocity: 0
+      NearAtmosphereMaxVelocity: 1.0e-4
+      AtmosphereDensityCutoff: 3.0e-14
+      TransitionDensityBound: 1.0e-13
+    KappaLimiting: Disabled
+      # DensityLowerBound: 2.0e-14
+      # EplisonKappaMinus: 1.0e-3
+      # DensityUpperBound: 2.0e-10
+      # EpsilonKappaMax: 0.01
+      # LimitAboveDensityUpperBound: False
+      # MinTemperature: FromEos
+
+PrimitiveFromConservative:
+  CutoffDForInversion: 1.0e-15
+  DensityWhenSkippingInversion: 1.0e-15
+  KastaunMaxLorentzFactor: 10000.0 # change to bigger for RP
+
+# Interpolator:
+#   DumpVolumeDataOnFailure: false
+
+EventsRunAtCleanup:
+  ObservationValue: -1000.0
+  Events:
+
+Interpolator:
+  DumpVolumeDataOnFailure: false
+  
+EventsAndDenseTriggers:

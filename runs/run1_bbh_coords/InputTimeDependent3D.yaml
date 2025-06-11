@@ -1,0 +1,125 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Executable: ExportCoordinates3D
+Testing:
+  Check: parse;execute
+  Timeout: 10
+  Priority: High
+ExpectedOutput:
+  - ExportCoordinates3DVolume0.h5
+  - ExportCoordinates3DReductions.h5
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+
+Amr:
+  Criteria:
+  Policies:
+    EnforceTwoToOneBalanceInNormalDirection: true
+    Isotropy: Anisotropic
+    Limits:
+      RefinementLevel: Auto
+      NumGridPoints: Auto
+      ErrorBeyondLimits: False
+  Verbosity: Quiet
+
+ResourceInfo:
+  AvoidGlobalProc0: false
+  Singletons: Auto
+
+DomainCreator:
+  # Parameters are chosen for an equal-mass, non-spinning binary black hole
+  # using superposed-Kerr-Schild initial data created with the
+  # Spectral Einstein Code (SpEC). The time-dependent maps are given
+  # arbitrary time-dependence.
+  BinaryCompactObject:
+    ObjectA:
+      InnerRadius: 0.45825
+      OuterRadius: 6.0
+      XCoord: 7.683
+      ExciseInterior: true
+      UseLogarithmicMap: true
+    ObjectB:
+      InnerRadius: 0.45825
+      OuterRadius: 6.0
+      XCoord: -7.683
+      ExciseInterior: true
+      UseLogarithmicMap: true
+    CenterOfMassOffset: [0., 0.]
+    Envelope:
+      Radius: 100.0
+      RadialDistribution: Linear
+    OuterShell:
+      Radius: 300.0
+      RadialDistribution: Linear
+      OpeningAngle: 90.0
+    UseEquiangularMap: True
+    CubeScale: 1.0
+    InitialRefinement:
+      ObjectAShell:   [1, 1, 1]
+      ObjectBShell:   [1, 1, 1]
+      ObjectACube:    [1, 1, 0]
+      ObjectBCube:    [1, 1, 0]
+      Envelope: [1, 1, 1]
+      OuterShell:     [1, 1, 1]
+    InitialGridPoints: 3
+    TimeDependentMaps:
+      InitialTime: 0.0
+      ExpansionMap:
+        InitialValues: [1.0, -4.6148457646200002e-05, 0.0]
+        AsymptoticVelocityOuterBoundary: -1.0e-6
+        DecayTimescaleOuterBoundary: 50.0
+      RotationMap:
+        InitialAngularVelocity: [0.0, 0.0, 1.5264577062000000e-02]
+      TranslationMap:
+        InitialValues: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+      ShapeMapA:
+        LMax: 8
+        InitialValues: Spherical
+        SizeInitialValues: [0.0, 0.0, 0.0]
+        TransitionEndsAtCube: true
+      ShapeMapB:
+        LMax: 8
+        InitialValues: Spherical
+        SizeInitialValues: [0.0, 0.0, 0.0]
+        TransitionEndsAtCube: true
+
+SpatialDiscretization:
+  ActiveGrid: Dg
+  DiscontinuousGalerkin:
+    Quadrature: GaussLobatto
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: 0.5
+  TimeStepper:
+    AdamsBashforth:
+      Order: 1
+
+EventsAndTriggersAtSlabs:
+  - Trigger:
+      TimeCompares:
+        Comparison: GreaterThanOrEqualTo
+        Value: 20
+    Events:
+      - Completion
+  - Trigger: Always
+    Events:
+      - MonitorMemory:
+          ComponentsToMonitor: All
+
+Observers:
+  VolumeFileName: "ExportCoordinates3DVolume"
+  ReductionFileName: "ExportCoordinates3DReductions"
+
+# Intentionally after the completion time to avoid writing checkpoints on CI
+PhaseChangeAndTriggers:
+  - Trigger:
+      SlabCompares:
+        Comparison: EqualTo
+        Value: 2
+    PhaseChanges:
+      - VisitAndReturn(WriteCheckpoint)

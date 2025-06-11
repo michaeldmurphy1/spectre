@@ -1,0 +1,202 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Executable: EvolveValenciaDivClean
+# Executable: EvolveValenciaDivCleanTovStar
+# Version: 2021.09.11
+Testing:
+  Check: parse;execute
+  Priority: High
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+
+ResourceInfo:
+  AvoidGlobalProc0: false
+  
+DomainCreator:
+  AlignedLattice:
+    BlockBounds: [[-20.0, -6.666666666666666, 6.666666666666666, 20.0],
+                  [-20.0, -6.666666666666666, 6.666666666666666, 20.0],
+                  [-20.0, -6.666666666666666, 6.666666666666666, 20.0]]
+    InitialGridPoints: [6, 6, 6]
+    InitialLevels: [2, 2, 2]
+    RefinedLevels: []
+    RefinedGridPoints: []
+    BlocksToExclude: []
+    BoundaryConditions: [Periodic, Periodic, Periodic]
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: 0.1
+  MinimumTimeStep: 1.0e-7
+  TimeStepper:
+    Rk3HesthavenSsp:
+
+InitialData:
+  TovStar:
+    CentralDensity: 1.28e-3
+    EquationOfState:
+      PolytropicFluid:n
+        PolytropicConstant: 100.0
+        PolytropicExponent: 2.0
+    Coordinates: Isotropic
+
+VariableFixing:
+  FixConservatives:
+    CutoffD: &CutoffD 1.01e-15
+    MinimumValueOfD: &MinimumD 1.0e-15
+    SafetyFactorForB: &BSafetyFactor 1.0e-12
+    SafetyFactorForS: 1.0e-12
+    MinimumValueOfYe: 0.0
+    CutoffYe: 0.0
+    SafetyFactorForSCutoffD: 1.0e-12
+    SafetyFactorForSSlope: 0.0
+    Enable: false
+    MagneticField: AssumeNonZero
+  FixToAtmosphere:
+    DensityOfAtmosphere: 1.0e-15
+    DensityCutoff: &AtmosphereDensityCutoff 1.1e-15
+    #TransitionDensityCutoff: 1.0e-14                                                                                         
+    #MaxVelocityMagnitude: 1.0e-4                                                                                             
+    VelocityLimiting:
+      AtmosphereMaxVelocity: 0
+      NearAtmosphereMaxVelocity: 1.0e-4
+      AtmosphereDensityCutoff: 3.0e-12
+      TransitionDensityBound: 1.0e-11
+    KappaLimiting:
+      DensityLowerBound: 2.0e-11
+      EplisonKappaMinus: 1.0e-3
+      DensityUpperBound: 2.0e-10
+      EpsilonKappaMax: 0.01
+      MinTemperature: FromEos
+      LimitAboveDensityUpperBound: false
+
+SpatialDiscretization:
+  BoundaryCorrection:
+    Hll:
+      MagneticFieldMagnitudeForHydro: 1.0e-16
+      LightSpeedDensityCutoff: 1.0e-8
+  DiscontinuousGalerkin:
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+    Subcell:
+      TroubledCellIndicator:
+        RdmpTci:
+          Delta0: 1.0e-7
+          Epsilon: 1.0e-3
+        PerssonTci:
+          Exponent: 4.0
+          NumHighestModes: 1
+        FdToDgTci:
+          NumberOfStepsBetweenTciCalls: 2
+          MinTciCallsAfterRollback: 2
+          MinimumClearTcis: 1
+        AlwaysUseSubcells: false
+        UseHalo: false
+        OnlyDgBlocksAndGroups: None
+      SubcellToDgReconstructionMethod: DimByDim
+      FiniteDifferenceDerivativeOrder: 2
+    TciOptions:
+      MinimumValueOfD: 1.0e-20
+      MinimumValueOfYe: 1.0e-20
+      MinimumValueOfTildeTau: 1.0e-40
+      AtmosphereDensity: *AtmosphereDensityCutoff
+      SafetyFactorForB: *BSafetyFactor
+      MagneticFieldCutoff: DoNotCheckMagneticField
+  SubcellSolver:
+    Reconstructor:
+      MonotonisedCentralPrim:
+
+PhaseChangeAndTriggers:
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 10000
+          Offset: 0
+    PhaseChanges:
+      - VisitAndReturn(WriteCheckpoint)
+
+EventsAndTriggersAtSlabs:
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 10000
+          Offset: 0
+    Events:
+      - ObserveFields:
+          VariablesToObserve: [RestMassDensity, SpecificInternalEnergy, Pressure,
+                               # SpecificEnthalpy <- no longer supported, SpatialVelocity, LorentzFactor,
+                               SpatialVelocity, LorentzFactor,
+                               # MagneticField, DivergenceCleaningField,
+                               TildeD, TildeTau
+                               # , Lapse
+                               # , dt(TildeD), dt(TildeTau), dt(TildeS)
+                               ]
+          SubfileName: element_data
+          InterpolateToMesh: None
+          CoordinatesFloatingPointType: Float
+          FloatingPointTypes: [Float]
+          BlocksToObserve: All
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 100
+          Offset: 0
+    Events:
+      - ObserveTimeStep:
+          SubfileName: time_steps
+          PrintTimeToTerminal: true
+          ObservePerCore: false
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 10
+          Offset: 0
+    Events:
+      - ObserveNorms:
+          SubfileName: max_data
+          TensorsToObserve:
+            - Name: RestMassDensity
+              NormType: Max
+              Components: Individual
+  - Trigger:
+      Slabs:
+        Specified:
+          # 40,000 slabs with a dt of 0.1 means final time of 4000M, which with
+          # M=M_sun means we have a final time of 20ms
+          Values: [40000]
+    Events:
+      - Completion
+
+Observers:
+  VolumeFileName: "./GrmhdTovStarLev2"
+  ReductionFileName: "./GrmhdTovStarLev2Reduction"
+
+EvolutionSystem:
+  ValenciaDivClean:
+    DampingParameter: 1.0
+    
+EventsAndDenseTriggers:
+
+# InterpolationTargets:
+#   CenterOfStar:
+#     Points: [[0,0,0]]
+
+Interpolator:
+  DumpVolumeDataOnFailure: false
+
+PrimitiveFromConservative:
+  CutoffDForInversion: *CutoffD
+  DensityWhenSkippingInversion: *MinimumD
+  KastaunMaxLorentzFactor: 10.0
+
+EquationOfState:
+  FromInitialData
+
+
+EventsRunAtCleanup:
+  Events: []
+  ObservationValue: -1.0

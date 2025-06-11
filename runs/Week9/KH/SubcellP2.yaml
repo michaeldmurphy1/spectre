@@ -1,0 +1,201 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Executable: EvolveValenciaDivClean
+Testing:
+  Check: parse;execute
+  Priority: High
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+
+ResourceInfo:
+  AvoidGlobalProc0: false
+  
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: 0.001
+  MinimumTimeStep: 1.0e-7
+  TimeStepper: Rk3HesthavenSsp
+
+PhaseChangeAndTriggers:
+
+InitialData:
+  KhInstability:
+    AdiabaticIndex: 1.33333333333333
+    StripBimedianHeight: 0.0
+    StripThickness: 0.5
+    StripDensity: 1.0
+    BackgroundDensity: 0.01
+    StripVelocity: 0.5
+    BackgroundVelocity: -0.5
+    Pressure: 1.0
+    PerturbAmplitude: 0.1
+    PerturbWidth: 0.05
+    MagneticField: [0.001, 0.0, 0.0]
+  
+DomainCreator:
+  Brick:
+    LowerBound: [-0.5, -0.5, -0.5]
+    UpperBound: [0.5, 0.5, 0.5]
+    Distribution: [Linear, Linear, Linear]
+    InitialRefinement: [5, 5, 0] # using nils
+    InitialGridPoints: [6, 6, 6]
+    # InitialRefinement: [7, 7, 0] # close to the paper's resolution? FAILS WITH THIS CHOICE
+    # InitialGridPoints: [3, 3, 3]
+    TimeDependence: None
+    BoundaryConditions: [Periodic, Periodic, Periodic]
+    
+VariableFixing:
+  FixConservatives:
+    CutoffD: &CutoffD 1.01e-15
+    MinimumValueOfD: &MinimumD 1.0e-15
+    SafetyFactorForB: &BSafetyFactor 1.0e-12
+    SafetyFactorForS: 1.0e-12
+    MinimumValueOfYe: 0.0
+    CutoffYe: 0.0
+    SafetyFactorForSCutoffD: 1.0e-12
+    SafetyFactorForSSlope: 0.0
+    Enable: false
+    MagneticField: AssumeNonZero
+  FixToAtmosphere:
+    DensityOfAtmosphere: 1.0e-15
+    DensityCutoff: &AtmosphereDensityCutoff 1.1e-15
+    VelocityLimiting:
+      AtmosphereMaxVelocity: 0
+      NearAtmosphereMaxVelocity: 1.0e-4
+      AtmosphereDensityCutoff: 3.0e-12
+      TransitionDensityBound: 1.0e-11
+    KappaLimiting: Disabled # turned off
+      # DensityLowerBound: 2.0e-11
+      # EplisonKappaMinus: 1.0e-3
+      # DensityUpperBound: 2.0e-10
+      # EpsilonKappaMax: 0.01
+      # MinTemperature: FromEos
+      # LimitAboveDensityUpperBound: false
+    
+SpatialDiscretization:
+  BoundaryCorrection:
+    Rusanov:
+    # Hll: # paper explicitly chooses HLL
+    #   MagneticFieldMagnitudeForHydro: 1.0e-16
+    #   LightSpeedDensityCutoff: 1.0e-8
+  DiscontinuousGalerkin:
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+    Subcell:
+      TroubledCellIndicator:
+        RdmpTci:
+          Delta0: 1.0e4 # changed from 1.0e-4
+          Epsilon: 1.0e-3
+        PerssonTci:
+          Exponent: 4.0
+          NumHighestModes: 1
+        FdToDgTci:
+          NumberOfStepsBetweenTciCalls: 1
+          MinTciCallsAfterRollback: 1
+          MinimumClearTcis: 1
+        AlwaysUseSubcells: false
+        UseHalo: false
+        OnlyDgBlocksAndGroups: None
+      SubcellToDgReconstructionMethod: DimByDim
+      FiniteDifferenceDerivativeOrder: 2
+    TciOptions:
+      MinimumValueOfD: 1.0e-20
+      MinimumValueOfYe: 1.0e-20
+      MinimumValueOfTildeTau: 1.0e-40
+      AtmosphereDensity: *AtmosphereDensityCutoff
+      SafetyFactorForB: *BSafetyFactor
+      MagneticFieldCutoff: DoNotCheckMagneticField
+  SubcellSolver:
+    Reconstructor:
+      MonotonisedCentralPrim
+      # PositivityPreservingAdaptiveOrderPrim:
+      #   Alpha5: 4.0 # using a PPAO9-5-2-1 scheme
+      #   Alpha7: None
+      #   Alpha9: 4.0
+      #   LowOrderReconstructor: MonotonisedCentral
+
+EquationOfState:
+  FromInitialData
+
+Interpolator:
+  DumpVolumeDataOnFailure: false
+
+EventsRunAtCleanup:
+  Events:
+  ObservationValue: -1000.0
+
+EvolutionSystem:
+  ValenciaDivClean:
+    DampingParameter: 1.0
+
+EventsAndTriggersAtSlabs:
+  # below is taken from BNS code, seems appropriate
+  # Set time step at t=0
+  - Trigger:
+      Slabs:
+        Specified:
+          Values: [0]
+    Events:
+      - ChangeSlabSize:
+          DelayChange: 0
+          StepChoosers:
+            - Cfl:
+                SafetyFactor: &CflSafetyFactor 0.7 # given in paper
+  # Update time step size regularly.
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 100
+          Offset: 100
+    Events:
+      - ChangeSlabSize:
+          DelayChange: 20
+          StepChoosers:
+            - Cfl:
+                SafetyFactor: *CflSafetyFactor
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 5
+          Offset: 0
+    Events:
+      - ObserveFields:
+          VariablesToObserve: [RestMassDensity, Pressure, MagneticField, TciStatus,
+                               Temperature]
+          SubfileName: element_data
+          InterpolateToMesh: None
+          CoordinatesFloatingPointType: Double
+          FloatingPointTypes: [Double]
+          BlocksToObserve: All
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 50
+          Offset: 0
+    Events:
+      - ObserveTimeStep:
+          SubfileName: time_steps
+          PrintTimeToTerminal: true
+          ObservePerCore: false
+  - Trigger:
+      TimeCompares:
+        Comparison: GreaterThanOrEqualTo
+        Value: 1.6
+    Events:
+      - Completion
+
+PrimitiveFromConservative:
+  CutoffDForInversion: *CutoffD
+  DensityWhenSkippingInversion: *MinimumD
+  KastaunMaxLorentzFactor: 10.0
+
+EventsAndDenseTriggers:
+
+Observers:
+  VolumeFileName: "GrmhdKHProblemSubcell"
+  ReductionFileName: "GrmhdKHProblemSubcellRed"
+

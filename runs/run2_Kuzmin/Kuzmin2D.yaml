@@ -1,0 +1,95 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Executable: EvolveScalarAdvection2D
+Testing:
+  Check: parse;execute
+  Priority: High
+ExpectedOutput:
+  - ScalarAdvectionKuzmin2DVolume0.h5
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+
+ResourceInfo:
+  AvoidGlobalProc0: false
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: 0.001
+  MinimumTimeStep: 1e-7
+  TimeStepper: Rk3HesthavenSsp
+
+PhaseChangeAndTriggers:
+
+DomainCreator:
+  Rectangle:
+    LowerBound: [0.0, 0.0]
+    UpperBound: [1.0, 1.0]
+    Distribution: [Linear, Linear]
+    InitialRefinement: [7, 7]
+    InitialGridPoints: [5, 5]
+    TimeDependence: None
+    BoundaryConditions: [Periodic, Periodic]
+
+SpatialDiscretization:
+  BoundaryCorrection:
+    Rusanov:
+  DiscontinuousGalerkin:
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+    Subcell:
+      TroubledCellIndicator:
+        PerssonTci:
+          Exponent: 4.0
+          NumHighestModes: 1
+        RdmpTci:
+          Delta0: 1.0e-7
+          Epsilon: 1.0e-3
+        FdToDgTci:
+          NumberOfStepsBetweenTciCalls: 1
+          MinTciCallsAfterRollback: 1
+          MinimumClearTcis: 1
+        AlwaysUseSubcells: false
+        UseHalo: false
+        OnlyDgBlocksAndGroups: None
+      SubcellToDgReconstructionMethod: DimByDim
+      FiniteDifferenceDerivativeOrder: 2
+    TciOptions:
+      UCutoff: 1.0e-10
+  SubcellSolver:
+    Reconstructor:
+      MonotonisedCentral
+
+InitialData:
+  Kuzmin:
+
+
+EventsAndTriggersAtSlabs:
+  - Trigger:
+      TimeCompares:
+        Comparison: GreaterThanOrEqualTo
+        Value: 6.28
+    Events:
+      - Completion
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 10
+          Offset: 0
+    Events:
+      - ObserveFields:
+          SubfileName: VolumeData
+          VariablesToObserve: [U, TciStatus]
+          InterpolateToMesh: None
+          CoordinatesFloatingPointType: Double
+          FloatingPointTypes: [Float, Float]
+          BlocksToObserve: All
+
+EventsAndDenseTriggers:
+
+Observers:
+  VolumeFileName: "ScalarAdvectionKuzmin2DVolume"
+  ReductionFileName: "ScalarAdvectionKuzmin2DReductions"

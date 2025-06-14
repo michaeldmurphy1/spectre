@@ -48,6 +48,7 @@ tuples::TaggedTuple<ScalarAdvection::Tags::U> Kuzmin::variables(
   double r_cylinder = std::numeric_limits<double>::signaling_NaN();
   double r_cone = std::numeric_limits<double>::signaling_NaN();
   double r_hump = std::numeric_limits<double>::signaling_NaN();
+  double r_square = std::numeric_limits<double>::signaling_NaN();
 
   // evaluate u(x,y,t) = u(x0,y0,0)
   auto u_variable = make_with_value<Scalar<DataType>>(coords_init, 0.0);
@@ -62,6 +63,9 @@ tuples::TaggedTuple<ScalarAdvection::Tags::U> Kuzmin::variables(
     r_cone = r_xy(xi, 0.5, yi, 0.25);
     // hump centered at (0.25, 0.5)
     r_hump = r_xy(xi, 0.25, yi, 0.5);
+    // square centered at (0.75, 0.5)
+    //   left half ~ 1.0, right half ~ 0.5
+    r_square = r_xy(xi, 0.75, yi, 0.5);
 
     if (r_cylinder <= 1.0) {
       if ((abs(xi - 0.5) >= 0.025) or (yi >= 0.85)) {
@@ -73,6 +77,14 @@ tuples::TaggedTuple<ScalarAdvection::Tags::U> Kuzmin::variables(
       ui = 1.0 - r_cone;
     } else if (r_hump <= 1.0) {
       ui = 0.25 * (1.0 + cos(M_PI * r_hump));
+    } else if (r_square <= 1.0) {
+      if (yi > 0.45 and yi < .55) {
+        if (xi < 0.75 and xi > 0.70) {
+          ui = 1.0;
+        } else if (xi >= 0.75 and xi < 0.80) {
+          ui = 0.5;
+        }
+      }
     } else {
       ui = 0.0;
     }

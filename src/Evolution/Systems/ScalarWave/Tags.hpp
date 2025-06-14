@@ -14,9 +14,22 @@
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Evolution/Systems/ScalarWave/TagsDeclarations.hpp"
 
+#include "Evolution/Systems/ScalarWave/OptionTags.hpp"
+
 class DataVector;
 
 namespace ScalarWave::Tags {
+
+// My added mass term
+struct MassSq : db::SimpleTag {
+  using type = double;
+  using option_tags = tmpl::list<ScalarWave::OptionTags::MassSq>;
+
+  static constexpr bool pass_metavariables = false;
+  static double create_from_options(const double mass_sq) { return mass_sq; }
+
+  static std::string name() { return "Squared mass of field"; }
+};
 /*!
  * \brief The scalar field.
  */
@@ -24,6 +37,21 @@ struct Psi : db::SimpleTag {
   using type = Scalar<DataVector>;
 };
 
+// My Potential term
+struct Potential : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+struct PotentialCompute : Potential, db::ComputeTag {
+  using base = Potential;
+  using return_type = Scalar<DataVector>;
+  static void function(const gsl::not_null<Scalar<DataVector>*> result,
+                       const Scalar<DataVector>& psi,
+                       const double mass_squared) {
+    // 1/2 * m^2 * \phi^2
+    get(*result) = 0.5 * mass_squared * square(get(psi));
+  }
+  using argument_tags = tmpl::list<Psi, MassSq>;
+};
 /*!
  * \brief Auxiliary variable which is analytically the negative time derivative
  * of the scalar field.

@@ -5,8 +5,14 @@
 
 #include <cstddef>
 
+// namespace ScalarWave::OptionTags {
+// struct Mass;
+// } // namespace ScalarWave::Options
+
 /// \brief Tags for the ScalarWave evolution system
 namespace ScalarWave::Tags {
+// struct Mass;
+
 struct Psi;
 struct Pi;
 template <size_t Dim>

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <optional>
+#include <utility>
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/Tensor/EagerMath/Norms.hpp"
@@ -16,6 +17,8 @@
 #include "Parallel/GlobalCache.hpp"
 #include "ParallelAlgorithms/Initialization/MutateAssign.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
+
+#include "DataStructures/DataBox/Protocols/Mutator.hpp"
 
 namespace ScalarWave {
 namespace Actions {
@@ -32,7 +35,7 @@ namespace Actions {
 /// - Modifies: nothing
 template <size_t Dim>
 struct InitializeConstraints {
-  using simple_tags = tmpl::list<ScalarWave::Tags::ConstraintGamma2>;
+  using simple_tags = tmpl::list<Tags::ConstraintGamma2>;
 
   using compute_tags = tmpl::list<>;
 
@@ -54,5 +57,16 @@ struct InitializeConstraints {
     return {Parallel::AlgorithmExecution::Continue, std::nullopt};
   }
 };
+
+struct EvaluatePotential : tt::ConformsTo<db::protocols::Mutator> {
+  using return_tags = tmpl::list<Tags::Potential>;
+  using argument_tags = tmpl::list<>;
+
+  static void apply(const gsl::not_null<Scalar<DataVector>*> potential) {
+    // need to just have Tags::Potential be evaluated
+    (void)get(*potential);
+  }
+};
+
 }  // namespace Actions
 }  // namespace ScalarWave

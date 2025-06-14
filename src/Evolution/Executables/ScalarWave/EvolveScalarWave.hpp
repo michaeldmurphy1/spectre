@@ -158,6 +158,7 @@ struct EvolutionMetavars {
   using observe_fields = tmpl::push_back<
       tmpl::append<typename system::variables_tag::tags_list,
                    typename deriv_compute::type::tags_list, error_tags>,
+      ScalarWave::Tags::PotentialCompute,
       ScalarWave::Tags::EnergyDensityCompute<volume_dim>,
       ScalarWave::Tags::MomentumDensityCompute<volume_dim>,
       ScalarWave::Tags::OneIndexConstraintCompute<volume_dim>,
@@ -229,6 +230,7 @@ struct EvolutionMetavars {
   static constexpr bool use_filtering = (2 == volume_dim);
 
   using step_actions = tmpl::flatten<tmpl::list<
+      //    Actions::MutateApply< ScalarWave::Actions::EvaluatePotential>,
       evolution::dg::Actions::ComputeTimeDerivative<
           volume_dim, system, AllStepChoosers, local_time_stepping,
           use_dg_element_collection>,
@@ -255,7 +257,8 @@ struct EvolutionMetavars {
           tmpl::list<>>>>;
 
   using const_global_cache_tags =
-      tmpl::list<evolution::initial_data::Tags::InitialData>;
+      tmpl::list<evolution::initial_data::Tags::InitialData,
+                 ScalarWave::Tags::MassSq>;
 
   using dg_registration_list =
       tmpl::list<observers::Actions::RegisterEventsWithObservers>;
@@ -271,8 +274,9 @@ struct EvolutionMetavars {
           domain::Tags::Coordinates<Dim, Frame::ElementLogical>>,
       ScalarWave::Actions::InitializeConstraints<volume_dim>,
       Initialization::Actions::AddComputeTags<
-          StepChoosers::step_chooser_compute_tags<EvolutionMetavars,
-                                                  local_time_stepping>>,
+          tmpl::list<StepChoosers::step_chooser_compute_tags<
+                         EvolutionMetavars, local_time_stepping>,
+                     ScalarWave::Tags::PotentialCompute>>,  // added this
       ::evolution::dg::Initialization::Mortars<volume_dim, system>,
       evolution::Actions::InitializeRunEventsAndDenseTriggers,
       Parallel::Actions::TerminatePhase>;
@@ -302,6 +306,7 @@ struct EvolutionMetavars {
           Parallel::PhaseActions<
               Parallel::Phase::Evolve,
               tmpl::list<
+                  //ScalarWave::Actions::EvaluatePotential,
                   evolution::Actions::RunEventsAndTriggers<local_time_stepping>,
                   Actions::ChangeSlabSize, step_actions, Actions::AdvanceTime,
                   PhaseControl::Actions::ExecutePhaseChange>>>>;

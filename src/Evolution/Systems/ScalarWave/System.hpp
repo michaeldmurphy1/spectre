@@ -41,6 +41,8 @@ struct System {
   using boundary_conditions_base = BoundaryConditions::BoundaryCondition<Dim>;
   using boundary_correction_base = BoundaryCorrections::BoundaryCorrection<Dim>;
 
+  using compute_tags = tmpl::list<Tags::PotentialCompute>;
+
   static constexpr bool is_in_flux_conservative_form = false;
   static constexpr bool has_primitive_and_conservative_vars = false;
   static constexpr size_t volume_dim = Dim;

@@ -69,15 +69,20 @@ void check_du_dt(const size_t npts, const double time) {
 
   auto local_check_du_dt = [&npts, &time, &solution, &x](
                                const double gamma2, const double constraint) {
-    auto box = db::create<db::AddSimpleTags<
-        ScalarWave::Tags::ConstraintGamma2, ConstraintGamma2Copy,
-        Tags::dt<ScalarWave::Tags::Psi>, Tags::dt<ScalarWave::Tags::Pi>,
-        Tags::dt<ScalarWave::Tags::Phi<Dim>>, ScalarWave::Tags::Pi,
-        ScalarWave::Tags::Phi<Dim>,
-        Tags::deriv<ScalarWave::Tags::Psi, tmpl::size_t<Dim>, Frame::Inertial>,
-        Tags::deriv<ScalarWave::Tags::Pi, tmpl::size_t<Dim>, Frame::Inertial>,
-        Tags::deriv<ScalarWave::Tags::Phi<Dim>, tmpl::size_t<Dim>,
-                    Frame::Inertial>>>(
+    auto box = db::create<
+        db::AddSimpleTags<ScalarWave::Tags::ConstraintGamma2,
+                          ConstraintGamma2Copy, Tags::dt<ScalarWave::Tags::Psi>,
+                          Tags::dt<ScalarWave::Tags::Pi>,
+                          Tags::dt<ScalarWave::Tags::Phi<Dim>>,
+                          ScalarWave::Tags::Pi, ScalarWave::Tags::Phi<Dim>,
+                          Tags::deriv<ScalarWave::Tags::Psi, tmpl::size_t<Dim>,
+                                      Frame::Inertial>,
+                          Tags::deriv<ScalarWave::Tags::Pi, tmpl::size_t<Dim>,
+                                      Frame::Inertial>,
+                          Tags::deriv<ScalarWave::Tags::Phi<Dim>,
+                                      tmpl::size_t<Dim>, Frame::Inertial>,
+                          ScalarWave::Tags::Psi, ScalarWave::Tags::MassSq>,
+        db::AddComputeTags<ScalarWave::Tags::PotentialCompute>>(  // added this
         Scalar<DataVector>(pow<Dim>(npts), gamma2),
         Scalar<DataVector>(pow<Dim>(npts), 0.0),
         Scalar<DataVector>(pow<Dim>(npts), 0.0),
@@ -104,7 +109,8 @@ void check_du_dt(const size_t npts, const double time) {
             }
           }
           return d2psi_dxdx;
-        }());
+        }(),
+        Scalar<DataVector>(pow<Dim>(npts), 0.0), 0.0);
 
     db::mutate_apply<
         tmpl::list<Tags::dt<ScalarWave::Tags::Psi>,

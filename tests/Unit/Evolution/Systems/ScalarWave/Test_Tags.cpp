@@ -6,8 +6,13 @@
 #include "Evolution/Systems/ScalarWave/Tags.hpp"
 #include "Helpers/DataStructures/DataBox/TestHelpers.hpp"
 
+#include "DataStructures/DataBox/DataBox.hpp"
+
 SPECTRE_TEST_CASE("Unit.Evolution.Systems.ScalarWave.Tags",
                   "[Unit][Evolution]") {
+  TestHelpers::db::test_simple_tag<ScalarWave::Tags::MassSq>(
+      "Squared mass of field");
+  TestHelpers::db::test_simple_tag<ScalarWave::Tags::Potential>("Potential");
   TestHelpers::db::test_simple_tag<ScalarWave::Tags::Psi>("Psi");
   TestHelpers::db::test_simple_tag<ScalarWave::Tags::Pi>("Pi");
   TestHelpers::db::test_simple_tag<ScalarWave::Tags::Phi<3>>("Phi");
@@ -32,4 +37,14 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.ScalarWave.Tags",
       "EnergyDensity");
   TestHelpers::db::test_simple_tag<ScalarWave::Tags::MomentumDensity<3>>(
       "MomentumDensity");
+
+  TestHelpers::db::test_compute_tag<ScalarWave::Tags::PotentialCompute>(
+      "Potential");
+
+  const auto box = db::create<
+      db::AddSimpleTags<ScalarWave::Tags::MassSq, ScalarWave::Tags::Psi>,
+      db::AddComputeTags<ScalarWave::Tags::PotentialCompute>>(
+      1.5, Scalar<DataVector>{DataVector(74, 5.0)});
+  CHECK(db::get<ScalarWave::Tags::Potential>(box) ==
+        Scalar<DataVector>{DataVector(74, 18.75)});
 }

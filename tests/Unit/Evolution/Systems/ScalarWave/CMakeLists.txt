@@ -15,6 +15,7 @@ set(LIBRARY_SOURCES
   Test_Equations.cpp
   Test_MomentumDensity.cpp
   Test_Tags.cpp
+  Test_OptionTags.cpp
   Test_TimeDerivative.cpp
   )
 

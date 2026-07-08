@@ -8,6 +8,7 @@ set(LIBRARY_SOURCES
   Test_AngularCylinder.cpp
   Test_AngularDisk.cpp
   Test_BinaryCompactObject.cpp
+  Test_BinaryNeutronStars.cpp
   Test_Brick.cpp
   Test_CartoonCylinder.cpp
   Test_CartoonSphere1D.cpp

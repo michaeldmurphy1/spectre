@@ -617,11 +617,11 @@ void test_physical_separation(
         CAPTURE(i);
         CAPTURE(j);
         if ((blocks[i].topologies() ==
-                domain::topologies::hypercube<VolumeDim> and
-            blocks[j].topologies() ==
-             domain::topologies::hypercube<VolumeDim>) or
+                 domain::topologies::hypercube<VolumeDim> and
+             blocks[j].topologies() ==
+                 domain::topologies::hypercube<VolumeDim>) or
             blocks[i].topologies()[VolumeDim - 1] ==
-            domain::Topology::CartoonCylinder) {
+                domain::Topology::CartoonCylinder) {
           CHECK(domain::physical_separation(blocks[i], blocks[j], time,
                                             functions_of_time) < tolerance);
           if constexpr (VolumeDim > 1) {
@@ -669,7 +669,7 @@ void test_det_jac_positive(
     gsl::at(corner_points, index) =
         tnsr::I<double, VolumeDim, Frame::BlockLogical>(vci.coords_of_corner());
   }
-  for(const auto& block: blocks) {
+  for (const auto& block : blocks) {
     if (block.topologies() != domain::topologies::hypercube<VolumeDim>) {
       continue;
     }
@@ -690,10 +690,157 @@ void test_det_jac_positive(
       const auto& map = block.stationary_map();
       for (size_t i = 0; i < two_to_the(VolumeDim); i++) {
         CAPTURE(i);
-        CHECK(get(determinant(map.jacobian(gsl::at(corner_points, i)))) >
-              0.0);
+        CHECK(get(determinant(map.jacobian(gsl::at(corner_points, i)))) > 0.0);
       }
     }
+  }
+}
+
+template <size_t VolumeDim>
+void test_non_conforming_interface_logical_coords(
+    const std::vector<Block<VolumeDim>>& blocks) {
+  if constexpr (VolumeDim != 3) {
+    ERROR("test_non_conforming_interface_logical_coords is for 3D domain");
+  } else {
+    INFO("Test non-conforming interface logical coords");
+    // Use a 5-point Gauss mesh on the 2D face; works for any block topology
+    // because: (a) we sample from the "many"-side neighbors, whose physical
+    // face points are topology-independent, and (b) the inverse-map check on
+    // the "one" side doesn't require matching the "one" block's quadrature.
+    const Mesh<2> face_mesh{5, Spectral::Basis::Legendre,
+                            Spectral::Quadrature::Gauss};
+    const size_t n_face_pts = face_mesh.number_of_grid_points();
+
+    // Determine the logical coordinate value of the "one" block face in the
+    // given direction via a forward-inverse roundtrip at a face corner.
+    // Using a corner (tangential dims at +1) rather than the face centre avoids
+    // potential near-singularities at the center for maps like
+    // CylindricalFlatEndcap. The roundtrip reads the actual face value
+    // topology-agnostically (±1 for hypercubes, 0 or 1 for B2/B3 radial faces).
+    const auto face_logical_value = [](const Block<3>& block,
+                                       const Direction<3>& dir) {
+      // Corner: normal dim seeded with dir.sign(), tangential dims at +1.
+      tnsr::I<DataVector, 3, Frame::BlockLogical> xi_corner{};
+      for (size_t d = 0; d < 3; ++d) {
+        xi_corner[d] = DataVector(
+            1, d == dir.dimension() ? static_cast<double>(dir.sign()) : 1.0);
+      }
+      const auto x_ref = block.stationary_map()(xi_corner);
+      tnsr::I<double, 3, Frame::Inertial> x_ref_pt{};
+      for (size_t d = 0; d < 3; ++d) {
+        x_ref_pt[d] = x_ref[d][0];
+      }
+      const auto xi_back = block.stationary_map().inverse(x_ref_pt);
+      REQUIRE(xi_back.has_value());
+      return (*xi_back)[dir.dimension()];
+    };
+
+    // Count non-conforming interfaces actually tested to guard against a
+    // vacuous pass when called on a domain that has none.
+    size_t n_tested = 0;
+
+    for (const auto& block : blocks) {
+      if (block.is_time_dependent()) {
+        continue;
+      }
+      for (const auto& [dir, nbrs] : block.neighbors()) {
+        // Only process non-conforming interfaces.  This includes both the
+        // classic many-to-one case (nbrs.ids().size() > 1) and the one-to-one
+        // non-conforming case where a single neighbor abuts the face but with
+        // a different quadrature or basis
+        if (nbrs.are_conforming()) {
+          continue;
+        }
+        ++n_tested;
+        CAPTURE(block.id());
+        CAPTURE(dir);
+
+        const double face_val = face_logical_value(block, dir);
+
+        // Neighbors -> Block check
+        // Only run when this block is the "one" (large-face) side, i.e. it has
+        // multiple neighbors.  When nbrs.ids().size() == 1 the current block
+        // may itself be the "many" (small-face) side: sampling from the single
+        // (larger) neighbor's face would find points outside this block's face
+        // and falsely fail.  The reverse direction is covered by "Block ->
+        // Neighbors" run from each side of the interface.
+        if (nbrs.ids().size() > 1) {
+          for (const size_t neighbor_id : nbrs.ids()) {
+            CAPTURE(neighbor_id);
+            const auto& nbr_block = blocks[neighbor_id];
+
+            // Find the direction in the neighbor that points back to block.
+            // REQUIRE it is found: if not, the domain's neighbor lists are
+            // inconsistent, which is itself a bug worth catching explicitly.
+            Direction<3> nbr_dir;
+            bool nbr_dir_found = false;
+            for (const auto& [neighbor_direction, neighbor] :
+                 nbr_block.neighbors()) {
+              if (neighbor.ids().contains(block.id())) {
+                nbr_dir = neighbor_direction;
+                nbr_dir_found = true;
+                break;
+              }
+            }
+            REQUIRE(nbr_dir_found);
+
+            // Sample physical points on the neighbor's face.
+            const auto xi_nbr =
+                interface_logical_coordinates(face_mesh, nbr_dir);
+            tnsr::I<DataVector, 3, Frame::BlockLogical> xi_nbr_blk{};
+            for (size_t d = 0; d < 3; ++d) {
+              xi_nbr_blk[d] = xi_nbr[d];
+            }
+            const auto x_phys = nbr_block.stationary_map()(xi_nbr_blk);
+
+            // For each sample point, check that the "one" block's inverse map
+            // succeeds and places it on the correct face.
+            for (size_t pt = 0; pt < n_face_pts; ++pt) {
+              tnsr::I<double, 3, Frame::Inertial> x_pt{};
+              for (size_t d = 0; d < 3; ++d) {
+                x_pt[d] = x_phys[d][pt];
+              }
+              const auto xi_inv = block.stationary_map().inverse(x_pt);
+              REQUIRE(xi_inv.has_value());
+              CHECK((*xi_inv)[dir.dimension()] == approx(face_val));
+            }
+          }
+        }
+
+        // Block -> Neighbors check
+        // Sample physical points on this block's face and verify each is
+        // covered by at least one neighbor's inverse map.  This checks that
+        // the union of neighbor faces covers the entire block face.
+        // For 1:1 non-conforming interfaces this runs from both sides,
+        // together verifying face equality without requiring either side to
+        // play the role of "one".
+        // Gauss points are strictly interior to [-1,1] so they are unlikely
+        // to land exactly on a boundary between two neighbor regions; in
+        // practice each point should be accepted by exactly one neighbor.
+        const auto xi_one = interface_logical_coordinates(face_mesh, dir);
+        tnsr::I<DataVector, 3, Frame::BlockLogical> xi_one_blk{};
+        for (size_t d = 0; d < 3; ++d) {
+          xi_one_blk[d] = xi_one[d];
+        }
+        const auto x_one_phys = block.stationary_map()(xi_one_blk);
+
+        for (size_t pt = 0; pt < n_face_pts; ++pt) {
+          tnsr::I<double, 3, Frame::Inertial> x_pt{};
+          for (size_t d = 0; d < 3; ++d) {
+            x_pt[d] = x_one_phys[d][pt];
+          }
+          const bool covered =
+              alg::any_of(nbrs.ids(), [&](const size_t neighbor_id) {
+                return blocks[neighbor_id]
+                    .stationary_map()
+                    .inverse(x_pt)
+                    .has_value();
+              });
+          CHECK(covered);
+        }
+      }
+    }
+    REQUIRE(n_tested > 0);
   }
 }
 
@@ -760,6 +907,8 @@ tnsr::i<DataType, SpatialDim> unit_basis_form(
       const Domain<DIM(data)>& domain,                                \
       const std::vector<std::array<size_t, DIM(data)>>&               \
           initial_refinement_levels);                                 \
+  template void test_non_conforming_interface_logical_coords(         \
+      const std::vector<Block<DIM(data)>>& blocks);                   \
   template void test_physical_separation(                             \
       const std::vector<Block<DIM(data)>>& blocks, const double time, \
       const std::unordered_map<                                       \

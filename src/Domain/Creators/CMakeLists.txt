@@ -22,6 +22,7 @@ spectre_target_sources(
   FrustalCloak.cpp
   Hypertorus.cpp
   NonconformingSphericalShells.cpp
+  Pill.cpp
   Rectilinear.cpp
   RegisterDerivedWithCharm.cpp
   RotatedBricks.cpp
@@ -57,6 +58,7 @@ spectre_target_headers(
   Hypertorus.hpp
   NonconformingSphericalShells.hpp
   OptionTags.hpp
+  Pill.hpp
   Rectilinear.hpp
   RegisterDerivedWithCharm.hpp
   RotatedBricks.hpp

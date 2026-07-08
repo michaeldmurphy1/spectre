@@ -62,6 +62,21 @@ void test_domain_construction(
         domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, VolumeDim>>>&
         expected_grid_to_inertial_maps = {});
 
+/// For each non-conforming interface (whether one-to-many or one-to-one with
+/// mismatched quadrature/basis), verifies physical connectivity in both
+/// directions:
+/// (1) Neighbors to Block: physical points sampled on each neighbor face must
+///     lie on this block's face under this block's inverse map.
+/// (2) Block to Neighbors: physical points sampled on this block's face must
+///     each be accepted by at least one neighbor's inverse map, verifying
+///     that the union of neighbor faces covers the entire block face.
+/// Also asserts that at least one non-conforming interface was found, so the
+/// test cannot pass vacuously on a domain that has none.
+/// Only runs for 3D blocks with stationary (non-time-dependent) maps.
+template <size_t VolumeDim>
+void test_non_conforming_interface_logical_coords(
+    const std::vector<Block<VolumeDim>>& blocks);
+
 // Test that two neighboring Blocks abut each other.
 template <size_t VolumeDim>
 void test_physical_separation(

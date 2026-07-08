@@ -20,6 +20,7 @@ set(LIBRARY_SOURCES
   Test_Hypertorus.cpp
   Test_Interval.cpp
   Test_NonconformingSphericalShells.cpp
+  Test_Pill.cpp
   Test_Rectangle.cpp
   Test_RotatedBricks.cpp
   Test_RotatedIntervals.cpp

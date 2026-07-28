@@ -46,7 +46,7 @@ struct InitializeConstraints {
       const ArrayIndex& /*array_index*/, const ActionList /*meta*/,
       const ParallelComponent* const /*meta*/) {
     const auto& mesh = db::get<domain::Tags::Mesh<Dim>>(box);
-    Scalar<DataVector> gamma_2{mesh.number_of_grid_points(), 0.};
+    Scalar<DataVector> gamma_2{mesh.number_of_grid_points(), 1.};
 
     Initialization::mutate_assign<simple_tags>(make_not_null(&box),
                                                std::move(gamma_2));

@@ -170,8 +170,8 @@ class TestPlotPowerMonitors(unittest.TestCase):
                 "-1",
                 "-b",
                 self.shell_block_name,
-                "--gh-sh",
-                "--gh-sh-variable",
+                "--sh",
+                "--sh-variable",
                 "Pi",
                 "-o",
                 self.plot_filename,
@@ -190,12 +190,12 @@ class TestPlotPowerMonitors(unittest.TestCase):
                 "GhVolumeData",
                 "-b",
                 self.shell_block_name,
-                "--gh-sh",
+                "--sh",
                 "--over-time",
             ],
         )
         self.assertEqual(result.exit_code, 2, result.output)
-        self.assertIn("--gh-sh-frame-prefix", result.output)
+        self.assertIn("--sh-frame-prefix", result.output)
 
         frame_prefix = os.path.join(self.test_dir, "gh_sh")
         result = runner.invoke(
@@ -206,9 +206,9 @@ class TestPlotPowerMonitors(unittest.TestCase):
                 "GhVolumeData",
                 "-b",
                 self.shell_block_name,
-                "--gh-sh",
+                "--sh",
                 "--over-time",
-                "--gh-sh-frame-prefix",
+                "--sh-frame-prefix",
                 frame_prefix,
             ],
             catch_exceptions=False,

@@ -30,6 +30,7 @@
 #include "Domain/CoordinateMaps/UniformCylindricalSide.hpp"
 #include "Domain/CoordinateMaps/Wedge.hpp"
 #include "Domain/Creators/BinaryCompactObject.hpp"
+#include "Domain/Creators/ShellDistribution.hpp"
 #include "Domain/Creators/TimeDependentOptions/BinaryCompactObject.hpp"
 #include "Domain/DomainHelpers.hpp"
 #include "Domain/ExcisionSphere.hpp"
@@ -41,6 +42,7 @@
 #include "Domain/Structure/Topology.hpp"
 #include "Options/ParseError.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
+#include "Utilities/Gsl.hpp"
 
 namespace domain::creators {
 Pill::Pill(
@@ -56,7 +58,9 @@ Pill::Pill(
     std::array<size_t, 2> hollow_cylinder_angular_grid_points,
     size_t spherical_shells_radial_refinement,
     size_t spherical_shells_radial_grid_points, size_t spherical_harmonic_l,
-    domain::CoordinateMaps::Distribution SphericalShellsRadialDistribution,
+    std::vector<double> spherical_shells_radial_partitioning,
+    const Pill::SphericalShellsRadialDistribution::type&
+        spherical_shells_radial_distribution,
     bool bulge,
     std::optional<bco::TimeDependentMapOptions<true>> time_dependent_options,
     std::unique_ptr<domain::BoundaryConditions::BoundaryCondition>
@@ -82,7 +86,8 @@ Pill::Pill(
       spherical_shells_radial_refinement_(spherical_shells_radial_refinement),
       spherical_shells_radial_grid_points_(spherical_shells_radial_grid_points),
       spherical_harmonic_l_(spherical_harmonic_l),
-      SphericalShellsRadialDistribution_(SphericalShellsRadialDistribution),
+      spherical_shells_radial_partitioning_(
+          std::move(spherical_shells_radial_partitioning)),
       bulge_(bulge),
       outer_boundary_condition_(std::move(outer_boundary_condition)),
       time_dependent_options_(std::move(time_dependent_options)) {
@@ -261,11 +266,10 @@ Pill::Pill(
               << ". Increase RightmostX (move it farther from CenterA), "
                  "or decrease WedgeOuterRadius.");
     }
-    const auto far_corner_of_bulge = [r_inner](
-                                         const double distance_to_center,
-                                         const double wedge_outer_radius) {
-      return sqrt(square(distance_to_center + r_inner) +
-                  square(wedge_outer_radius) - square(r_inner));
+    const auto far_corner_of_bulge = [r_inner](const double distance_to_center,
+                                               const double r_outer) {
+      return sqrt(square(distance_to_center + r_inner) + square(r_outer) -
+                  square(r_inner));
     };
     const double fc_aright = far_corner_of_bulge(center_A_, R_A);
     const double fc_bleft_far = far_corner_of_bulge(std::abs(center_B_), R_B);
@@ -303,7 +307,14 @@ Pill::Pill(
     }
   }
 
-  number_of_blocks_ = 27;
+  set_shell_distribution(make_not_null(&number_of_spherical_shells_),
+                         make_not_null(&spherical_shells_radial_distribution_),
+                         spherical_shells_radial_partitioning_,
+                         spherical_shells_radial_distribution,
+                         cylinder_outer_radius_, outer_radius_,
+                         "CylinderOuterRadius", "OuterRadius", context);
+
+  number_of_blocks_ = 26 + number_of_spherical_shells_;
 
   // Create block names and groups
   block_names_.reserve(number_of_blocks_);
@@ -314,6 +325,11 @@ Pill::Pill(
           std::string(prefix).append("CubedCylinder").append(where);
       block_names_.emplace_back(name);
       block_groups_["CubedCylinders"].insert(name);
+      // The four non-central blocks of each cubed cylinder are the deformed
+      // cube wedges surrounding the central cube.
+      if (where != "Center"s) {
+        block_groups_["Wedges"].insert(name);
+      }
     }
   };
 
@@ -337,9 +353,12 @@ Pill::Pill(
   block_names_.emplace_back("AFilledCylinder");
   block_groups_["Cylinders"].insert("AFilledCylinder");
 
-  // 1 spherical shell
-  block_names_.emplace_back("SphericalShell");
-  block_groups_["SphericalShells"].insert("SphericalShell");
+  // N spherical shells, one per radial partition
+  for (size_t s = 0; s < number_of_spherical_shells_; ++s) {
+    const std::string name = "SphericalShell" + std::to_string(s);
+    block_names_.emplace_back(name);
+    block_groups_["SphericalShells"].insert(name);
+  }
 
   // initial grid points and refinement
   initial_grid_points_.resize(number_of_blocks_);
@@ -408,14 +427,16 @@ Pill::Pill(
                                hollow_zeta};
     initial_refinement_[i] = {cylinder_radial_refinement_, 0, 0};
   }
-  // Block 26: spherical shell (spherical_shell topology).
+  // Blocks 26 and up: spherical shells (spherical_shell topology).
   // xi (I1, radial)
   // eta (S2Colatitude) and zeta (S2Longitude) cannot be h-refined.
   // Spherepack requires zeta_pts = 2 * eta_pts - 1.
   const size_t colatitude_pts = spherical_harmonic_l_ + 1;
-  initial_grid_points_[26] = {spherical_shells_radial_grid_points_,
-                              colatitude_pts, 2 * colatitude_pts - 1};
-  initial_refinement_[26] = {spherical_shells_radial_refinement_, 0, 0};
+  for (size_t s = 0; s < number_of_spherical_shells_; ++s) {
+    initial_grid_points_[26 + s] = {spherical_shells_radial_grid_points_,
+                                    colatitude_pts, 2 * colatitude_pts - 1};
+    initial_refinement_[26 + s] = {spherical_shells_radial_refinement_, 0, 0};
+  }
 
   grid_anchors_ =
       bco::create_grid_anchors({center_A_, 0., 0.}, {center_B_, 0., 0.});
@@ -733,20 +754,24 @@ Domain<3> Pill::create_domain() const {
     block_tags.push_back(tag);
   };
 
-  // S2 spherical-harmonic shell
-  const auto add_sphere_shell = [this, &coordinate_maps, &block_tags](
-                                    const double inner_radius,
-                                    const double outer_radius,
-                                    const std::string& tag) {
-    coordinate_maps.push_back(
-        domain::make_coordinate_map_base<Frame::BlockLogical, Frame::Inertial>(
-            CoordinateMaps::ProductOf2Maps<Interval,
-                                           CoordinateMaps::Identity<2>>{
-                Interval{-1.0, 1.0, inner_radius, outer_radius,
-                         SphericalShellsRadialDistribution_, 0.0},
-                CoordinateMaps::Identity<2>{}},
-            CoordinateMaps::SphericalToCartesianPfaffian{}));
-    block_tags.push_back(tag);
+  // S2 spherical-harmonic shells, one per radial partition between
+  // cylinder_outer_radius_ and outer_radius_.
+  const auto add_sphere_shells = [this, &coordinate_maps, &block_tags]() {
+    double inner_radius = cylinder_outer_radius_;
+    for (size_t s = 0; s < number_of_spherical_shells_; ++s) {
+      const double outer_radius = (s + 1 < number_of_spherical_shells_)
+                                      ? spherical_shells_radial_partitioning_[s]
+                                      : outer_radius_;
+      coordinate_maps.push_back(domain::make_coordinate_map_base<
+                                Frame::BlockLogical, Frame::Inertial>(
+          CoordinateMaps::ProductOf2Maps<Interval, CoordinateMaps::Identity<2>>{
+              Interval{-1.0, 1.0, inner_radius, outer_radius,
+                       spherical_shells_radial_distribution_[s], 0.0},
+              CoordinateMaps::Identity<2>{}},
+          CoordinateMaps::SphericalToCartesianPfaffian{}));
+      block_tags.push_back("SphericalShell" + std::to_string(s));
+      inner_radius = outer_radius;
+    }
   };
 
   // Blocks 20-26: filled cylinders, hollow cylinders, shell
@@ -859,8 +884,8 @@ Domain<3> Pill::create_domain() const {
                           -z_sphere_extent_a, cylinder_outer_radius_),
                       Rotation{rotate_to_minus_x_axis}, "AFilledCylinder");
 
-  // Block 26: SphericalShell
-  add_sphere_shell(cylinder_outer_radius_, outer_radius_, "SphericalShell");
+  // Blocks 26 and up: SphericalShell0, SphericalShell1, ...
+  add_sphere_shells();
 
   // Neighbor graph
   using Dir = Direction<3>;
@@ -1038,6 +1063,14 @@ Domain<3> Pill::create_domain() const {
   edges.push_back({"ARightHollowCylinder", Dir::lower_zeta(),
                    "ALeftHollowCylinder", aligned});
 
+  // Conforming radial seams between adjacent spherical shells.
+  for (size_t s = 0; s + 1 < number_of_spherical_shells_; ++s) {
+    const std::string inner = "SphericalShell" + std::to_string(s);
+    const std::string outer = "SphericalShell" + std::to_string(s + 1);
+    edges.push_back({inner, Dir::upper_xi(), outer, aligned});
+    edges.push_back({outer, Dir::lower_xi(), inner, aligned});
+  }
+
   std::vector<DirectionMap<3, BlockNeighbors<3>>> neighbors(
       coordinate_maps.size());
   for (const auto& edge : edges) {
@@ -1053,7 +1086,8 @@ Domain<3> Pill::create_domain() const {
                           edge.are_conforming));
   }
 
-  // Non-conforming interface between SphericalShell and the outer cylinders.
+  // Non-conforming interface between the innermost spherical shell and the
+  // outer cylinders.
   {
     const OrientationMap<3> sphere_to_b_filled{
         std::array<Dir, 3>{Dir::lower_zeta(), Dir::self(), Dir::self()}};
@@ -1061,7 +1095,7 @@ Domain<3> Pill::create_domain() const {
         std::array<Dir, 3>{Dir::upper_zeta(), Dir::self(), Dir::self()}};
     const OrientationMap<3> sphere_to_side{
         std::array<Dir, 3>{Dir::upper_xi(), Dir::self(), Dir::self()}};
-    const size_t c = tag_to_index.at("SphericalShell");
+    const size_t c = tag_to_index.at("SphericalShell0");
     const size_t bf = tag_to_index.at("BFilledCylinder");
     const size_t blh = tag_to_index.at("BLeftHollowCylinder");
     const size_t brh = tag_to_index.at("BRightHollowCylinder");
@@ -1257,7 +1291,7 @@ Domain<3> Pill::create_domain() const {
   blocks.reserve(number_of_blocks_);
   for (size_t i = 0; i < coordinate_maps.size(); ++i) {
     const std::array<domain::Topology, 3> topology =
-        i == 26                 ? domain::topologies::spherical_shell
+        i >= 26                 ? domain::topologies::spherical_shell
         : (i == 20 or i == 25)  ? domain::topologies::full_cylinder
         : (i >= 21 and i <= 24) ? domain::topologies::cylindrical_shell
                                 : domain::topologies::hypercube<3>;
@@ -1272,7 +1306,7 @@ Domain<3> Pill::create_domain() const {
     // All blocks get only a Grid->Inertial map (no distorted frame since there
     // are no excision surfaces / shape maps in the Pill domain).
     // Blocks 0-25 (inner region): rigid RotScaleTrans.
-    // Block 26 (SphericalShell): transitioning RotScaleTrans.
+    // Blocks 26 and up (spherical shells): transitioning RotScaleTrans.
     std::vector<std::unique_ptr<
         domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>>>
         grid_to_inertial_block_maps{number_of_blocks_};
@@ -1281,9 +1315,11 @@ Domain<3> Pill::create_domain() const {
           time_dependent_options_
               ->grid_to_inertial_map<domain::ObjectLabel::None>(false, true);
     }
-    grid_to_inertial_block_maps[26] =
-        time_dependent_options_
-            ->grid_to_inertial_map<domain::ObjectLabel::None>(false, false);
+    for (size_t block_id = 26; block_id < number_of_blocks_; ++block_id) {
+      grid_to_inertial_block_maps[block_id] =
+          time_dependent_options_
+              ->grid_to_inertial_map<domain::ObjectLabel::None>(false, false);
+    }
     for (size_t block_id = 0; block_id < number_of_blocks_; ++block_id) {
       if (grid_to_inertial_block_maps[block_id] == nullptr) {
         continue;
@@ -1305,8 +1341,8 @@ Pill::external_boundary_conditions() const {
   std::vector<DirectionMap<
       3, std::unique_ptr<domain::BoundaryConditions::BoundaryCondition>>>
       boundary_conditions{number_of_blocks_};
-  // Outer boundary: upper_xi face of SphericalShell (block 26).
-  boundary_conditions[26][Direction<3>::upper_xi()] =
+  // Outer boundary: upper_xi face of the outermost spherical shell.
+  boundary_conditions[number_of_blocks_ - 1][Direction<3>::upper_xi()] =
       outer_boundary_condition_->get_clone();
   return boundary_conditions;
 }

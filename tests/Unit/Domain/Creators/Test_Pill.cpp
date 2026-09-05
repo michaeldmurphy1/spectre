@@ -83,6 +83,7 @@ domain::creators::Pill make_creator(
                                 spherical_shells_radial_refinement,
                                 spherical_shells_radial_grid_points,
                                 spherical_harmonic_l,
+                                std::vector<double>{},
                                 domain::CoordinateMaps::Distribution::Linear,
                                 bulge,
                                 std::nullopt,
@@ -110,7 +111,7 @@ std::vector<std::string> expected_block_names() {
           "BFilledCylinder", "BLeftHollowCylinder", "BRightHollowCylinder",
           "ALeftHollowCylinder", "ARightHollowCylinder", "AFilledCylinder",
           // Spherical shell (block 26)
-          "SphericalShell"};
+          "SphericalShell0"};
 }
 
 void test_block_names_and_groups() {
@@ -127,6 +128,14 @@ void test_block_names_and_groups() {
   CHECK(groups.at("CubedCylinders").size() == 20);
   CHECK(groups.at("CubedCylinders").count("BLeftCubedCylinderCenter") == 1);
   CHECK(groups.at("CubedCylinders").count("ARightCubedCylinderBottom") == 1);
+  // Wedges: the 16 non-central cubed-cylinder blocks
+  REQUIRE(groups.count("Wedges") == 1);
+  CHECK(groups.at("Wedges").size() == 16);
+  CHECK(not groups.at("Wedges").contains("BLeftCubedCylinderCenter"));
+  CHECK(groups.at("Wedges").count("ARightCubedCylinderBottom") == 1);
+  for (const auto& wedge_name : groups.at("Wedges")) {
+    CHECK(groups.at("CubedCylinders").count(wedge_name) == 1);
+  }
   // Cylinders: 6 blocks (2 filled + 4 hollow)
   REQUIRE(groups.count("Cylinders") == 1);
   CHECK(groups.at("Cylinders") ==
@@ -136,7 +145,7 @@ void test_block_names_and_groups() {
   // SphericalShells: 1 block
   REQUIRE(groups.count("SphericalShells") == 1);
   CHECK(groups.at("SphericalShells") ==
-        std::unordered_set<std::string>{"SphericalShell"});
+        std::unordered_set<std::string>{"SphericalShell0"});
 }
 
 void test_domain_structure(const bool bulge = false) {
@@ -233,6 +242,7 @@ void test_option_parsing() {
       "\n  SphericalShellsInitialRadialGridPoints: " +
       get_output(spherical_shells_radial_grid_points) +
       "\n  InitialSphericalHarmonicL: " + get_output(spherical_harmonic_l) +
+      "\n  SphericalShellsRadialPartitioning: []"
       "\n  SphericalShellsRadialDistribution: Linear"
       "\n  Bulge: false"
       "\n  TimeDependentMaps: None\n";
@@ -253,8 +263,8 @@ void test_parse_errors() {
           b2_angular_grid_points, std::array<size_t, 2>{7_st, 3_st},
           spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring("CenterA must be positive"));
 
   CHECK_THROWS_WITH(
@@ -267,8 +277,8 @@ void test_parse_errors() {
           b2_angular_grid_points, std::array<size_t, 2>{7_st, 3_st},
           spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring("CenterB must be negative"));
 
   CHECK_THROWS_WITH(
@@ -281,8 +291,8 @@ void test_parse_errors() {
           b2_angular_grid_points, std::array<size_t, 2>{7_st, 3_st},
           spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring("|CenterA| must be <= |CenterB|"));
 
   // LeftmostX must be < CenterB
@@ -296,8 +306,8 @@ void test_parse_errors() {
           b2_angular_grid_points, std::array<size_t, 2>{7_st, 3_st},
           spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
           "LeftmostX must be less than CenterB"));
 
@@ -312,8 +322,8 @@ void test_parse_errors() {
           b2_angular_grid_points, std::array<size_t, 2>{7_st, 3_st},
           spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
           "RightmostX must be greater than CenterA"));
 
@@ -326,8 +336,8 @@ void test_parse_errors() {
           cylinder_radial_refinement, b2_angular_grid_points,
           std::array<size_t, 2>{7_st, 3_st}, spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring("WedgeInnerRadius must be positive"));
 
   CHECK_THROWS_WITH(
@@ -339,8 +349,8 @@ void test_parse_errors() {
           cylinder_radial_refinement, b2_angular_grid_points,
           std::array<size_t, 2>{7_st, 3_st}, spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring("WedgeOuterRadius must be positive"));
 
   CHECK_THROWS_WITH(
@@ -352,8 +362,8 @@ void test_parse_errors() {
           cylinder_radial_refinement, b2_angular_grid_points,
           std::array<size_t, 2>{7_st, 3_st}, spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
           "OuterRadius must be greater than CylinderOuterRadius"));
 
@@ -366,8 +376,8 @@ void test_parse_errors() {
           cylinder_radial_refinement, b2_angular_grid_points,
           std::array<size_t, 2>{7_st, 3_st}, spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
           "CylinderOuterRadius must be greater than WedgeOuterRadius"));
 
@@ -380,8 +390,8 @@ void test_parse_errors() {
           cylinder_radial_refinement, b2_angular_grid_points,
           std::array<size_t, 2>{7_st, 3_st}, spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
           "WedgeOuterRadius must be greater than WedgeInnerRadius"));
 
@@ -395,8 +405,8 @@ void test_parse_errors() {
           cylinder_radial_refinement, b2_angular_grid_points,
           std::array<size_t, 2>{7_st, 3_st}, spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
           "CylindricalFlatEndcapInterior radius ratio condition violated"));
 
@@ -412,8 +422,8 @@ void test_parse_errors() {
           cylinder_radial_refinement, b2_angular_grid_points,
           std::array<size_t, 2>{7_st, 3_st}, spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
           "CylindricalFlatEndcapInterior (the B2s' map) requires"));
 
@@ -427,7 +437,8 @@ void test_parse_errors() {
           b2_angular_grid_points, std::array<size_t, 2>{7_st, 3_st},
           spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt,
           std::make_unique<TestHelpers::domain::BoundaryConditions::
                                TestPeriodicBoundaryCondition<3>>(),
           Options::Context{false, {}, 1, 1}),
@@ -447,7 +458,8 @@ void test_parse_errors() {
           b2_angular_grid_points, std::array<size_t, 2>{7_st, 3_st},
           spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false,
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false,
           domain::creators::bco::TimeDependentMapOptions<true>{
               0.0, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
               ShapeMapA{8_st, std::nullopt}, std::nullopt, std::nullopt},
@@ -464,8 +476,8 @@ void test_parse_errors() {
           cylinder_radial_grid_points, cylinder_radial_refinement, 8_st,
           std::array<size_t, 2>{7_st, 3_st}, spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
           "B2InitialAngularGridPoints must be odd"));
 
@@ -480,8 +492,8 @@ void test_parse_errors() {
           b2_angular_grid_points, std::array<size_t, 2>{6_st, 3_st},
           spherical_shells_radial_refinement,
           spherical_shells_radial_grid_points, spherical_harmonic_l,
-          domain::CoordinateMaps::Distribution::Linear, false, std::nullopt,
-          nullptr, Options::Context{false, {}, 1, 1}),
+          std::vector<double>{}, domain::CoordinateMaps::Distribution::Linear,
+          false, std::nullopt, nullptr, Options::Context{false, {}, 1, 1}),
       Catch::Matchers::ContainsSubstring(
           "HollowCylinderInitialAngularGridPoints[0] must be odd"));
 }
@@ -525,6 +537,7 @@ void test_time_dependent_maps() {
                              spherical_shells_radial_refinement,
                              spherical_shells_radial_grid_points,
                              spherical_harmonic_l,
+                             std::vector<double>{},
                              domain::CoordinateMaps::Distribution::Linear,
                              false,
                              make_time_dep_options(),

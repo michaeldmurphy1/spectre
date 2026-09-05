@@ -20,6 +20,7 @@
 #include "Domain/Structure/OrientationMapHelpers.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/Tags/NeighborMesh.hpp"
+#include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/Projection.hpp"
 #include "Evolution/DgSubcell/RdmpTci.hpp"
 #include "Evolution/DgSubcell/RdmpTciData.hpp"
@@ -51,7 +52,14 @@ namespace evolution::dg::subcell {
  *
  * \note If all neighbors are using DG then we send our DG volume data _without_
  * orienting it. This elides the expense of projection and slicing. If any
- * neighbors are doing FD, we project and slice to all neighbors. A future
+ * neighbors are doing FD, we project and slice to all neighbors. If our own
+ * DG mesh's basis doesn't support subcell (e.g. a non-hypercube topology like
+ * a filled cylinder or ball), we always send unprojected DG volume data
+ * instead, since projecting to a nonexistent subcell mesh is not possible.
+ * Neighbors are prevented from switching to FD whenever they themselves or
+ * one of their neighboring blocks doesn't support subcell (see
+ * `SubcellOptions::only_dg_block_ids()`), but the check here is a defensive
+ * fallback for that invariant. A future
  * optimization would be to measure the cost of slicing data, and figure out how
  * many neighbors need to be doing FD before it's worth projecting and slicing
  * vs. just projecting to the ghost cells. Another optimization is to always
@@ -108,14 +116,15 @@ void prepare_neighbor_data(
               return ghost_vars;
             }
           }();
-      alg::all_of(neighbor_meshes,
-                  [](const auto& directional_element_id_and_mesh) {
-                    ASSERT(directional_element_id_and_mesh.second.basis(0) !=
-                               Spectral::Basis::Chebyshev,
-                           "Don't yet support Chebyshev basis with DG-FD");
-                    return directional_element_id_and_mesh.second.basis(0) ==
-                           Spectral::Basis::Legendre;
-                  })) {
+      (not fd::dg_mesh_supports_subcell(dg_mesh) or
+       alg::all_of(neighbor_meshes,
+                   [](const auto& directional_element_id_and_mesh) {
+                     ASSERT(directional_element_id_and_mesh.second.basis(0) !=
+                                Spectral::Basis::Chebyshev,
+                            "Don't yet support Chebyshev basis with DG-FD");
+                     return directional_element_id_and_mesh.second.basis(0) ==
+                            Spectral::Basis::Legendre;
+                   }))) {
     *ghost_data_mesh = dg_mesh;
     const size_t total_to_slice = directions_to_slice.size();
     size_t slice_count = 0;

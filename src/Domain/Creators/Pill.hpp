@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 #include "Domain/BoundaryConditions/BoundaryCondition.hpp"
@@ -312,12 +313,32 @@ class Pill : public DomainCreator<3> {
         "spherical harmonic represented on the grid.  Minimum value is 6."};
   };
   /*!
+   * \brief Radial partitioning of the spherical shell region
+   */
+  struct SphericalShellsRadialPartitioning {
+    using type = std::vector<double>;
+    static constexpr Options::String help = {
+        "Radial coordinates of the boundaries splitting the spherical-shell "
+        "region between CylinderOuterRadius and OuterRadius into multiple "
+        "shells. Must be given in ascending order, strictly between "
+        "CylinderOuterRadius and OuterRadius. This should be used if "
+        "boundaries need to be set at specific radii. If the number but not "
+        "the specific locations of the boundaries are important, use "
+        "SphericalShellsInitialRadialRefinement instead."};
+  };
+  /*!
    * \brief Radial distribution for spherical shells
    */
   struct SphericalShellsRadialDistribution {
-    using type = domain::CoordinateMaps::Distribution;
+    using type =
+        std::variant<domain::CoordinateMaps::Distribution,
+                     std::vector<domain::CoordinateMaps::Distribution>>;
     static constexpr Options::String help = {
-        "Radial distribution for grid points in each spherical shell."};
+        "Select the radial distribution of grid points in each spherical "
+        "shell. There must be N+1 radial distributions specified for N "
+        "radial partitions. You can also specify just a single radial "
+        "distribution (not in a vector) which will use the same "
+        "distribution for all shells."};
   };
 
   /*!
@@ -358,17 +379,18 @@ class Pill : public DomainCreator<3> {
 
   template <typename Metavariables>
   using options = tmpl::append<
-      tmpl::list<
-          CenterA, CenterB, LeftmostX, RightmostX, WedgeInnerRadius,
-          WedgeOuterRadius, CylinderOuterRadius, OuterRadius,
-          CubeInitialGridPoints, CubeInitialXRefinement,
-          CubeInitialYZRefinement, WedgePrismInitialRadialGridPoints,
-          WedgePrismInitialRadialRefinement, CylinderInitialRadialGridPoints,
-          CylinderInitialRadialRefinement, B2InitialAngularGridPoints,
-          HollowCylinderInitialAngularGridPoints,
-          SphericalShellsInitialRadialRefinement,
-          SphericalShellsInitialRadialGridPoints, InitialSphericalHarmonicL,
-          SphericalShellsRadialDistribution, Bulge, TimeDependentMaps>,
+      tmpl::list<CenterA, CenterB, LeftmostX, RightmostX, WedgeInnerRadius,
+                 WedgeOuterRadius, CylinderOuterRadius, OuterRadius,
+                 CubeInitialGridPoints, CubeInitialXRefinement,
+                 CubeInitialYZRefinement, WedgePrismInitialRadialGridPoints,
+                 WedgePrismInitialRadialRefinement,
+                 CylinderInitialRadialGridPoints,
+                 CylinderInitialRadialRefinement, B2InitialAngularGridPoints,
+                 HollowCylinderInitialAngularGridPoints,
+                 SphericalShellsInitialRadialRefinement,
+                 SphericalShellsInitialRadialGridPoints,
+                 InitialSphericalHarmonicL, SphericalShellsRadialPartitioning,
+                 SphericalShellsRadialDistribution, Bulge, TimeDependentMaps>,
       tmpl::conditional_t<
           domain::BoundaryConditions::has_boundary_conditions_base_v<
               typename Metavariables::system>,
@@ -396,7 +418,9 @@ class Pill : public DomainCreator<3> {
        std::array<size_t, 2> hollow_cylinder_angular_grid_points,
        size_t spherical_shells_radial_refinement,
        size_t spherical_shells_radial_grid_points, size_t spherical_harmonic_l,
-       domain::CoordinateMaps::Distribution SphericalShellsRadialDistribution,
+       std::vector<double> spherical_shells_radial_partitioning,
+       const SphericalShellsRadialDistribution::type&
+           spherical_shells_radial_distribution,
        bool bulge = false,
        std::optional<bco::TimeDependentMapOptions<true>>
            time_dependent_options = std::nullopt,
@@ -451,11 +475,15 @@ class Pill : public DomainCreator<3> {
   ///  - `ARightHollowCylinder`
   ///  - `AFilledCylinder`
   ///
-  /// Finally, there is `SphericalShell`.
+  /// Finally, there are the spherical shells: `SphericalShell0`,
+  /// `SphericalShell1`, etc., one for each radial partition of the region
+  /// between `CylinderOuterRadius` and `OuterRadius`.
   std::vector<std::string> block_names() const override { return block_names_; }
 
-  /// \brief The block groups, which are `CubedCylinders`, `Cylinders`, and
-  /// `SphericalShells`.
+  /// \brief The block groups, which are `CubedCylinders`, `Wedges`,
+  /// `Cylinders`, and `SphericalShells`. The `Wedges` group is the subset of
+  /// `CubedCylinders` consisting of the deformed cube wedges surrounding the
+  /// central cubes.
   std::unordered_map<std::string, std::unordered_set<std::string>>
   block_groups() const override {
     return block_groups_;
@@ -482,7 +510,10 @@ class Pill : public DomainCreator<3> {
   size_t spherical_shells_radial_refinement_{};
   size_t spherical_shells_radial_grid_points_{};
   size_t spherical_harmonic_l_{};
-  domain::CoordinateMaps::Distribution SphericalShellsRadialDistribution_{};
+  std::vector<double> spherical_shells_radial_partitioning_{};
+  std::vector<domain::CoordinateMaps::Distribution>
+      spherical_shells_radial_distribution_{};
+  size_t number_of_spherical_shells_{1};
   bool bulge_{};
   size_t number_of_blocks_{};
   std::unique_ptr<domain::BoundaryConditions::BoundaryCondition>

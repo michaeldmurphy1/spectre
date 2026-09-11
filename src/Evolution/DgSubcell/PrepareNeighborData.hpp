@@ -58,7 +58,7 @@ namespace evolution::dg::subcell {
  * instead, since projecting to a nonexistent subcell mesh is not possible.
  * Neighbors are prevented from switching to FD whenever they themselves or
  * one of their neighboring blocks doesn't support subcell (see
- * `SubcellOptions::only_dg_block_ids()`), but the check here is a defensive
+ * `evolution::dg::Tags::OnlyDgBlockIds`), but the check here is a defensive
  * fallback for that invariant. A future
  * optimization would be to measure the cost of slicing data, and figure out how
  * many neighbors need to be doing FD before it's worth projecting and slicing

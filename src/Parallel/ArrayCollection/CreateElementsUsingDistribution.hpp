@@ -69,14 +69,19 @@ void create_elements_using_distribution(
         weighting_extents_buffer{};
     if (weighting_extents_override.has_value()) {
       weighting_extents_buffer = initial_extents;
-      for (const auto& [block_id, extents] :
+      const size_t num_blocks = weighting_extents_buffer->size();
+      // Note: the pair members are read explicitly rather than through a
+      // structured binding because `ERROR` expands to a lambda, and capturing
+      // a structured binding there is rejected by clang.
+      for (const auto& block_id_and_extents :
            weighting_extents_override.value()) {
-        if (block_id >= weighting_extents_buffer->size()) {
+        if (block_id_and_extents.first >= num_blocks) {
           ERROR("The weighting extents override contains block ID "
-                << block_id << " but there are only "
-                << weighting_extents_buffer->size() << " blocks.");
+                << block_id_and_extents.first << " but there are only "
+                << num_blocks << " blocks.");
         }
-        (*weighting_extents_buffer)[block_id] = extents;
+        (*weighting_extents_buffer)[block_id_and_extents.first] =
+            block_id_and_extents.second;
       }
     }
     const std::vector<std::array<size_t, Dim>>& weighting_extents =

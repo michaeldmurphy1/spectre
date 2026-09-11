@@ -49,8 +49,9 @@ namespace evolution::dg::subcell {
  * having the mutator `GhostVariables` is to allow sending primitive or
  * characteristic variables for reconstruction.
  *
- * \note If all neighbors are using DG then we send our DG volume data _without_
- * orienting it. This elides the expense of projection and slicing. If any
+ * \note If all neighbors are using DG (i.e. none of their meshes is an FD mesh)
+ * then we send our DG volume data _without_ orienting it. This elides the
+ * expense of projection and slicing. If any
  * neighbors are doing FD, we project and slice to all neighbors. A future
  * optimization would be to measure the cost of slicing data, and figure out how
  * many neighbors need to be doing FD before it's worth projecting and slicing

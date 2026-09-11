@@ -3,11 +3,9 @@
 
 #pragma once
 
-#include <memory>
+#include <string>
 
 #include "DataStructures/DataBox/Tag.hpp"
-#include "Domain/Creators/OptionTags.hpp"
-#include "Domain/Tags.hpp"
 #include "Evolution/DgSubcell/SubcellOptions.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Tags/OptionsGroup.hpp"
 #include "Options/String.hpp"
@@ -15,7 +13,10 @@
 
 namespace evolution::dg::subcell {
 namespace OptionTags {
-/// System-agnostic options for DG-subcell
+/// \brief System-agnostic options for DG-subcell
+///
+/// \note The blocks on which subcell is forbidden are not part of these
+/// options; see `evolution::dg::Tags::OnlyDgBlockIds`.
 struct SubcellOptions {
   static std::string name() { return "Subcell"; }
   using type = evolution::dg::subcell::SubcellOptions;
@@ -31,13 +32,10 @@ template <size_t Dim>
 struct SubcellOptions : db::SimpleTag {
   using type = evolution::dg::subcell::SubcellOptions;
 
-  using option_tags = tmpl::list<OptionTags::SubcellOptions,
-                                 ::domain::OptionTags::DomainCreator<Dim>>;
+  using option_tags = tmpl::list<OptionTags::SubcellOptions>;
   static constexpr bool pass_metavariables = false;
-  static type create_from_options(
-      const type& subcell_options,
-      const std::unique_ptr<DomainCreator<Dim>>& domain_creator) {
-    return {subcell_options, *domain_creator};
+  static type create_from_options(const type& subcell_options) {
+    return subcell_options;
   }
 };
 }  // namespace Tags

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <functional>
 #include <unordered_map>
@@ -21,6 +22,9 @@
 #include "Domain/Structure/InitialElementIds.hpp"
 #include "Domain/Tags/ElementDistribution.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/QuadratureTag.hpp"
+#include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
+#include "Evolution/DiscontinuousGalerkin/SubcellElementDistribution.hpp"
+#include "Evolution/DiscontinuousGalerkin/UsingSubcell.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "Parallel/Algorithms/AlgorithmArray.hpp"
@@ -57,8 +61,14 @@ struct DgElementArray {
   using phase_dependent_action_list = PhaseDepActionList;
   using array_index = ElementId<volume_dim>;
 
-  using const_global_cache_tags = tmpl::list<domain::Tags::Domain<volume_dim>,
-                                             domain::Tags::ElementDistribution>;
+  using const_global_cache_tags = tmpl::conditional_t<
+      evolution::dg::using_subcell_v<Metavariables>,
+      tmpl::list<domain::Tags::Domain<volume_dim>,
+                 domain::Tags::ElementDistribution,
+                 evolution::dg::Tags::UseSubcellGridPointsForDistribution,
+                 evolution::dg::Tags::OnlyDgBlockIds<volume_dim>>,
+      tmpl::list<domain::Tags::Domain<volume_dim>,
+                 domain::Tags::ElementDistribution>>;
 
   using simple_tags_from_options = Parallel::get_simple_tags_from_options<
       Parallel::get_initialization_actions_list<phase_dependent_action_list>>;
@@ -114,6 +124,22 @@ void DgElementArray<Metavariables, PhaseDepActionList>::allocate_array(
 
   const auto& blocks = domain.blocks();
 
+  std::optional<std::unordered_map<size_t, std::array<size_t, volume_dim>>>
+      weighting_extents_override{};
+  if constexpr (evolution::dg::using_subcell_v<Metavariables>) {
+    const bool use_subcell_grid_points_for_distribution =
+        Parallel::get<evolution::dg::Tags::UseSubcellGridPointsForDistribution>(
+            local_cache);
+    if (use_subcell_grid_points_for_distribution) {
+      const std::vector<size_t>& only_dg_block_ids =
+          Parallel::get<evolution::dg::Tags::OnlyDgBlockIds<volume_dim>>(
+              local_cache);
+      weighting_extents_override =
+          evolution::dg::compute_weighting_extents_override(only_dg_block_ids,
+                                                            initial_extents);
+    }
+  }
+
   Parallel::create_elements_using_distribution(
       [&dg_element_array, &global_cache, &initialization_items](
           const ElementId<volume_dim>& element_id, const size_t target_proc,
@@ -125,6 +151,6 @@ void DgElementArray<Metavariables, PhaseDepActionList>::allocate_array(
       i1_basis, i1_quadrature,
 
       procs_to_ignore, number_of_procs, number_of_nodes, num_of_procs_to_use,
-      local_cache, true);
+      local_cache, true, weighting_extents_override);
   dg_element_array.doneInserting();
 }

@@ -1,0 +1,84 @@
+// Distributed under the MIT License.
+// See LICENSE.txt for details.
+
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <optional>
+#include <unordered_map>
+#include <vector>
+
+#include "DataStructures/DataBox/Tag.hpp"
+#include "Domain/ElementDistribution.hpp"
+#include "Domain/Tags/ElementDistribution.hpp"
+#include "Evolution/DiscontinuousGalerkin/OptionTags.hpp"
+#include "Evolution/DiscontinuousGalerkin/SubcellExtent.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
+#include "Utilities/TMPL.hpp"
+
+namespace evolution::dg {
+/*!
+ * \brief Returns the per-block extents to use in place of `initial_extents`
+ * when weighting subcell-capable elements by their finite-difference grid
+ * instead of their DG grid (see
+ * `evolution::dg::Tags::UseSubcellGridPointsForDistribution`).
+ *
+ * For each block not in `only_dg_block_ids`, the returned extents are
+ * `subcell_extent_from_dg_extent` of the DG grid points in `initial_extents`.
+ * Blocks in `only_dg_block_ids` are omitted from the returned map, since they
+ * always run on the DG grid.
+ *
+ * Returns `std::nullopt` if every block is in `only_dg_block_ids`, since then
+ * there is nothing to override.
+ */
+template <size_t Dim>
+std::optional<std::unordered_map<size_t, std::array<size_t, Dim>>>
+compute_weighting_extents_override(
+    const std::vector<size_t>& only_dg_block_ids,
+    const std::vector<std::array<size_t, Dim>>& initial_extents);
+
+namespace Tags {
+/// \ingroup DataBoxTagsGroup
+/// Tag that holds whether to use the number of finite-difference subcell
+/// grid points (instead of the number of DG grid points) when weighting
+/// subcell-capable elements for the `domain::Tags::ElementDistribution`.
+///
+/// Errors unless the `ElementDistribution` is
+/// `domain::ElementWeight::NumGridPoints`, since that is the only weight
+/// whose cost depends on the extents in a way that makes substituting the
+/// subcell extents meaningful.
+struct UseSubcellGridPointsForDistribution : db::SimpleTag {
+  using type = bool;
+  using option_tags =
+      tmpl::list<OptionTags::UseSubcellGridPointsForDistribution,
+                 domain::OptionTags::ElementDistribution>;
+
+  static constexpr bool pass_metavariables = false;
+  static type create_from_options(
+      const bool use_subcell_grid_points,
+      const std::optional<domain::ElementWeight>& element_weight) {
+    // `ElementWeight::NumGridPoints` is the only weight for which
+    // substituting the subcell extents produces the intended cost ratio.
+    // `ElementWeight::Uniform` ignores the extents entirely, so the option
+    // would silently do nothing. `ElementWeight::NumGridPointsAndGridSpacing`
+    // derives a minimum grid spacing from the extents by building a DG mesh,
+    // which for the subcell extents describes neither the DG grid nor the
+    // (uniform) finite-difference grid, and so mis-weights the cost.
+    //
+    // This could be improved in the future by telling
+    // `domain::get_element_costs()` about the finite-difference grid, so that
+    // `ElementWeight::NumGridPointsAndGridSpacing` can be supported too.
+    if (use_subcell_grid_points and
+        element_weight != std::optional{domain::ElementWeight::NumGridPoints}) {
+      ERROR(
+          "UseSubcellGridPointsForDistribution is only supported with "
+          "ElementDistribution: NumGridPoints. Either set "
+          "UseSubcellGridPointsForDistribution to false or set "
+          "ElementDistribution to NumGridPoints.");
+    }
+    return use_subcell_grid_points;
+  }
+};
+}  // namespace Tags
+}  // namespace evolution::dg

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <string>
 
+#include "Evolution/DiscontinuousGalerkin/SubcellExtent.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
@@ -102,7 +103,8 @@ Mesh<Dim> mesh(const Mesh<Dim>& dg_mesh) {
   }
   std::array<size_t, Dim> extents{};
   for (size_t d = 0; d < Dim; ++d) {
-    gsl::at(extents, d) = 2 * dg_mesh.extents(d) - 1;
+    gsl::at(extents, d) =
+        evolution::dg::subcell_extent_from_dg_extent(dg_mesh.extents(d));
   }
   if constexpr (Dim == 3) {
     if (dg_mesh.basis(1) == Spectral::Basis::Cartoon and

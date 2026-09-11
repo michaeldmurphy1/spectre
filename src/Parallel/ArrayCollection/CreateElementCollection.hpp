@@ -3,9 +3,11 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -20,6 +22,9 @@
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Tags/ElementDistribution.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/QuadratureTag.hpp"
+#include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
+#include "Evolution/DiscontinuousGalerkin/SubcellElementDistribution.hpp"
+#include "Evolution/DiscontinuousGalerkin/UsingSubcell.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
@@ -76,9 +81,14 @@ struct CreateElementCollection {
                                         SimpleTagsFromOptions>,
       Parallel::Tags::ElementLocations<Dim>, Tags::NumberOfElementsTerminated>;
   using compute_tags = tmpl::list<>;
-  using const_global_cache_tags =
+  using const_global_cache_tags = tmpl::conditional_t<
+      evolution::dg::using_subcell_v<Metavariables>,
       tmpl::list<::domain::Tags::Domain<Dim>,
-                 ::domain::Tags::ElementDistribution>;
+                 ::domain::Tags::ElementDistribution,
+                 ::evolution::dg::Tags::UseSubcellGridPointsForDistribution,
+                 evolution::dg::Tags::OnlyDgBlockIds<Dim>>,
+      tmpl::list<::domain::Tags::Domain<Dim>,
+                 ::domain::Tags::ElementDistribution>>;
 
   using return_tag_list = tmpl::append<simple_tags, compute_tags>;
 
@@ -109,6 +119,22 @@ struct CreateElementCollection {
 
     const auto& blocks = domain.blocks();
 
+    std::optional<std::unordered_map<size_t, std::array<size_t, Dim>>>
+        weighting_extents_override{};
+    if constexpr (evolution::dg::using_subcell_v<Metavariables>) {
+      const bool use_subcell_grid_points_for_distribution = Parallel::get<
+          evolution::dg::Tags::UseSubcellGridPointsForDistribution>(
+          local_cache);
+      if (use_subcell_grid_points_for_distribution) {
+        const std::vector<size_t>& only_dg_block_ids =
+            Parallel::get<evolution::dg::Tags::OnlyDgBlockIds<Dim>>(
+                local_cache);
+        weighting_extents_override =
+            evolution::dg::compute_weighting_extents_override(only_dg_block_ids,
+                                                              initial_extents);
+      }
+    }
+
     const size_t total_num_elements = [&blocks, &initial_refinement_levels]() {
       size_t result = 0;
       for (const auto& block : blocks) {
@@ -138,7 +164,7 @@ struct CreateElementCollection {
         // The below arguments control how the elements are mapped to the
         // hardware.
         procs_to_ignore, number_of_procs, number_of_nodes, num_of_procs_to_use,
-        local_cache, my_node == 0);
+        local_cache, my_node == 0, weighting_extents_override);
 
     tuples::tagged_tuple_from_typelist<SimpleTagsFromOptions>
         initialization_items = db::copy_items<SimpleTagsFromOptions>(box);

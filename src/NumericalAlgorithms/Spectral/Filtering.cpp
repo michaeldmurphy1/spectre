@@ -46,6 +46,43 @@ Matrix exponential_filter(const Mesh<1>& mesh, const double alpha,
     }
     return modal_to_nodal * filter_matrix * nodal_to_modal;
   }
+  if (mesh.basis(0) == Spectral::Basis::HalfFourier) {
+    ASSERT(parity != Parity::Uninitialized,
+           "Need parity to be set to filter HalfFourier");
+    const size_t n = mesh.number_of_grid_points();
+    const Matrix& nodal_to_modal =
+        Spectral::nodal_to_modal_matrix<Spectral::Basis::HalfFourier,
+                                        Spectral::Quadrature::Equiangular>(
+            n, parity);
+    const Matrix& modal_to_nodal =
+        Spectral::modal_to_nodal_matrix<Spectral::Basis::HalfFourier,
+                                        Spectral::Quadrature::Equiangular>(
+            n, parity);
+    Matrix filter_matrix(n, n, 0.0);
+    // The odd modal space reaches one wavenumber higher than the even space
+    // (there is a const cos mode). Both parities use the same `order` so
+    // even/odd modes of the same wavenumber get the same damping (the highest
+    // sin mode is zeroed)
+    const auto order = static_cast<double>(n - 1);
+    for (size_t i = 0; i < n; ++i) {
+      const size_t mode_number = parity == Parity::Even ? i : i + 1;
+      if (mode_number == 0) {
+        // The constant even mode is always retained
+        filter_matrix(i, i) = 1.0;
+      } else if (mode_number >= n) {
+        // The Nyquist sin is nonzero on the grid, but its exact derivative
+        // n*cos(n*phi) vanishes at every collocation point. Nothing built
+        // from phi-derivatives can see or damp it, and it carries no resolved
+        // information, so drop it rather than damp it.
+        filter_matrix(i, i) = 0.0;
+      } else {
+        filter_matrix(i, i) =
+            exp(-alpha *
+                pow(static_cast<double>(mode_number) / order, 2 * half_power));
+      }
+    }
+    return modal_to_nodal * filter_matrix * nodal_to_modal;
+  }
   const Matrix& nodal_to_modal = Spectral::nodal_to_modal_matrix(mesh);
   const Matrix& modal_to_nodal = Spectral::modal_to_nodal_matrix(mesh);
   Matrix filter_matrix(mesh.number_of_grid_points(),

@@ -211,13 +211,23 @@ class Hypercube : public Filter<Dim, TagList> {
       const Mesh<1>& mesh,
       Spectral::Parity parity = Spectral::Parity::Uninitialized) const;
 
-  // Apply the parity-aware ZernikeB1 filter to a LocalDim-dimensional mesh
-  // where direction 0 uses ZernikeB1. Each tensor component is filtered with
-  // the Even or Odd direction-0 matrix according to its radial parity;
-  // directions 1..LocalDim-1 use the ordinary parity-independent filter matrix.
-  template <size_t LocalDim>
-  void apply_zernikeb1_filter(gsl::not_null<Variables<TagList>*> vars,
-                              const Mesh<LocalDim>& mesh) const;
+  // Apply a parity-aware filter to a LocalDim-dimensional mesh in which
+  // `parity_dimension` uses a basis whose spectral space depends on the parity
+  // of the tensor component (ZernikeB1 or HalfFourier)
+  //
+  // All directions other than parity_dimension use the ordinary
+  // parity-independent filter matrix and are applied once to the whole
+  // Variables. Only `parity_dimension` is then applied component by component,
+  // selecting the Even or Odd matrix according to the component's parity
+  //
+  // IncludeZ selects the symmetry used to determine component parity: false
+  // counts only x-indices (appropriate for ZernikeB1),
+  // true counts x- and z-indices (appropriate for HalfFourier). See
+  // Spectral::make_component_parity_array
+  template <size_t LocalDim, bool IncludeZ>
+  void apply_parity_filter(gsl::not_null<Variables<TagList>*> vars,
+                           const Mesh<LocalDim>& mesh,
+                           size_t parity_dimension) const;
 
   template <size_t LocalDim, typename LocalTagList>
   // NOLINTNEXTLINE(readability-redundant-declaration)

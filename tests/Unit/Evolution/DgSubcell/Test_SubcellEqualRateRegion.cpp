@@ -72,8 +72,8 @@ void test() {
         }
       };
 
-  const evolution::dg::subcell::SubcellEqualRateRegion<Dim> subcell_regions(
-      std::optional{only_dg_blocks}, domain_creator);
+  const evolution::dg::subcell::SubcellEqualRateRegion<Dim> subcell_regions{
+      std::optional<std::vector<std::string>>{only_dg_blocks}, domain_creator};
   check_regions(subcell_regions);
   check_regions(serialize_and_deserialize(subcell_regions));
 }

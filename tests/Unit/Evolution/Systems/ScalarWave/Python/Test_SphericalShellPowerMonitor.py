@@ -133,6 +133,7 @@ class TestSwSphericalShellPowerMonitor(unittest.TestCase):
         monitors = self._call(psi, pi, phi)
 
         self.assertGreater(max(monitors["Phi"]["radial"]), 0.0)
+        self.assertGreater(max(monitors["Phi"]["angular"]), 0.0)
         npt.assert_array_equal(np.asarray(monitors["Psi"]["radial"]), 0.0)
         npt.assert_array_equal(np.asarray(monitors["Psi"]["angular"]), 0.0)
         npt.assert_array_equal(np.asarray(monitors["Pi"]["radial"]), 0.0)

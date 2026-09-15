@@ -8,7 +8,7 @@
 #include <cstddef>
 
 #include "DataStructures/DataVector.hpp"
-#include "DataStructures/Index.hpp"
+#include "DataStructures/IndexIterator.hpp"
 #include "DataStructures/ModalVector.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "DataStructures/Variables.hpp"
@@ -43,17 +43,8 @@ InverseJacobian<DataVector, 3, Frame::Inertial, Frame::Grid> identity_jacobian(
 void set_constant_angular_radial_profile(
     const gsl::not_null<DataVector*> component, const Mesh<3>& mesh,
     const DataVector& radial_profile) {
-  const auto extents = mesh.extents();
-  for (size_t r = 0; r < extents[0]; ++r) {
-    for (size_t theta = 0; theta < extents[1]; ++theta) {
-      for (size_t phi = 0; phi < extents[2]; ++phi) {
-        Index<3> index{};
-        index[0] = r;
-        index[1] = theta;
-        index[2] = phi;
-        (*component)[collapsed_index(index, extents)] = radial_profile[r];
-      }
-    }
+  for (IndexIterator<3> index(mesh.extents()); index; ++index) {
+    (*component)[index.collapsed_index()] = radial_profile[index()[0]];
   }
 }
 

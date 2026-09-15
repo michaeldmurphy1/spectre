@@ -285,12 +285,12 @@ void test_pythagorean() {
   const auto pm_r01 = run(mode_l0 + mode_r1);
 
   // Angular bins l=0 and l=1 are orthogonal.
-  CHECK(square(pm_l01.psi[1][0]) == approx(square(pm_l0.psi[1][0])));
-  CHECK(square(pm_l01.psi[1][1]) == approx(square(pm_l1.psi[1][1])));
+  CHECK(pm_l01.psi[1][0] == approx(pm_l0.psi[1][0]));
+  CHECK(pm_l01.psi[1][1] == approx(pm_l1.psi[1][1]));
 
   // Radial bins r=0 and r=1 are orthogonal.
-  CHECK(square(pm_r01.psi[0][0]) == approx(square(pm_l0.psi[0][0])));
-  CHECK(square(pm_r01.psi[0][1]) == approx(square(pm_r1.psi[0][1])));
+  CHECK(pm_r01.psi[0][0] == approx(pm_l0.psi[0][0]));
+  CHECK(pm_r01.psi[0][1] == approx(pm_r1.psi[0][1]));
 }
 
 }  // namespace

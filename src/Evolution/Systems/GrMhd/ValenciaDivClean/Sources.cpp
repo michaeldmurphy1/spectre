@@ -301,8 +301,7 @@ void ComputeSources::apply(
                  hydro::Tags::MagneticFieldSquared<DataVector>,
                  OneOverLorentzFactorSquared, PressureStar,
                  EnthalpyTimesDensityWSquaredPlusBSquared,
-                 gr::Tags::SpatialChristoffelFirstKind<DataVector, 3>,
-                 gr::Tags::SpatialChristoffelSecondKind<DataVector, 3>,
+                 gr::Tags::TraceSpatialChristoffelFirstKind<DataVector, 3>,
                  gr::Tags::TraceSpatialChristoffelSecondKind<DataVector, 3>>>
       temp_tensors(get<0>(tilde_s).size());
 
@@ -329,20 +328,17 @@ void ComputeSources::apply(
       get(pressure) + 0.5 * square(get(magnetic_field_dot_spatial_velocity)) +
       0.5 * get(magnetic_field_squared) * get(one_over_w_squared);
 
-  auto& spatial_christoffel_first_kind =
-      get<gr::Tags::SpatialChristoffelFirstKind<DataVector, 3>>(temp_tensors);
-  gr::christoffel_first_kind(make_not_null(&spatial_christoffel_first_kind),
-                             d_spatial_metric);
-  auto& spatial_christoffel_second_kind =
-      get<gr::Tags::SpatialChristoffelSecondKind<DataVector, 3>>(temp_tensors);
-  raise_or_lower_first_index(make_not_null(&spatial_christoffel_second_kind),
-                             spatial_christoffel_first_kind,
-                             inv_spatial_metric);
+  auto& trace_spatial_christoffel_first =
+      get<gr::Tags::TraceSpatialChristoffelFirstKind<DataVector, 3>>(
+          temp_tensors);
+  gr::trace_spatial_christoffel_first_kind(
+      make_not_null(&trace_spatial_christoffel_first), d_spatial_metric,
+      inv_spatial_metric);
   auto& trace_spatial_christoffel_second =
       get<gr::Tags::TraceSpatialChristoffelSecondKind<DataVector, 3>>(
           temp_tensors);
-  trace_last_indices(make_not_null(&trace_spatial_christoffel_second),
-                     spatial_christoffel_second_kind, inv_spatial_metric);
+  raise_or_lower_index(make_not_null(&trace_spatial_christoffel_second),
+                       trace_spatial_christoffel_first, inv_spatial_metric);
 
   detail::sources_impl(
       source_tilde_tau, source_tilde_s, source_tilde_b, source_tilde_phi,

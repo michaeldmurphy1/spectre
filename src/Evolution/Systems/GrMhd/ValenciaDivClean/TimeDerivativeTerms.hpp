@@ -67,8 +67,7 @@ struct TimeDerivativeTerms {
 
       // Source terms
       TildeSUp, DensitizedStress,
-      gr::Tags::SpatialChristoffelFirstKind<DataVector, 3>,
-      gr::Tags::SpatialChristoffelSecondKind<DataVector, 3>,
+      gr::Tags::TraceSpatialChristoffelFirstKind<DataVector, 3>,
       gr::Tags::TraceSpatialChristoffelSecondKind<DataVector, 3>,
       EnthalpyTimesDensityWSquaredPlusBSquared,
 
@@ -137,10 +136,8 @@ struct TimeDerivativeTerms {
       gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_s_up,
       gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
           densitized_stress,
-      gsl::not_null<tnsr::ijj<DataVector, 3, Frame::Inertial>*>
-          spatial_christoffel_first_kind,
-      gsl::not_null<tnsr::Ijj<DataVector, 3, Frame::Inertial>*>
-          spatial_christoffel_second_kind,
+      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
+          trace_spatial_christoffel_first,
       gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
           trace_spatial_christoffel_second,
       gsl::not_null<Scalar<DataVector>*> h_rho_w_squared_plus_b_squared,

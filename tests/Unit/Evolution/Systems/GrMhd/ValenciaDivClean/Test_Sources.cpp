@@ -14,6 +14,7 @@
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Domain/Block.hpp"
@@ -65,6 +66,7 @@
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
 #include "Framework/CheckWithRandomValues.hpp"
 #include "Framework/SetupLocalPythonEnvironment.hpp"
+#include "Helpers/DataStructures/CheckPointwiseOnDevice.hpp"
 #include "Helpers/PointwiseFunctions/GeneralRelativity/TestHelpers.hpp"
 #include "NumericalAlgorithms/LinearOperators/Divergence.hpp"
 #include "NumericalAlgorithms/LinearOperators/Divergence.tpp"
@@ -1096,6 +1098,33 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.Sources", "[Unit][GrMhd]") {
                                     {"source_tilde_tau", "source_tilde_s",
                                      "source_tilde_b", "source_tilde_phi"},
                                     {{{0.0, 1.0}}}, DataVector{5});
+#ifdef SPECTRE_KOKKOS
+  // Check the device version with and without the Cartoon terms. The random
+  // coordinates are positive, so x != 0.
+  for (const auto& dg_mesh :
+       {Mesh<3>{3_st, Spectral::Basis::Legendre,
+                Spectral::Quadrature::GaussLobatto},
+        Mesh<3>{{3_st, 3_st, 1_st},
+                {{Spectral::Basis::Legendre, Spectral::Basis::Legendre,
+                  Spectral::Basis::Cartoon}},
+                {{Spectral::Quadrature::GaussLobatto,
+                  Spectral::Quadrature::GaussLobatto,
+                  Spectral::Quadrature::AxialSymmetry}}},
+        Mesh<3>{{3_st, 1_st, 1_st},
+                {{Spectral::Basis::Legendre, Spectral::Basis::Cartoon,
+                  Spectral::Basis::Cartoon}},
+                {{Spectral::Quadrature::GaussLobatto,
+                  Spectral::Quadrature::SphericalSymmetry,
+                  Spectral::Quadrature::SphericalSymmetry}}}}) {
+    CAPTURE(dg_mesh);
+    TestHelpers::check_pointwise_on_device<
+        grmhd::ValenciaDivClean::ComputeSources>(
+        &grmhd::ValenciaDivClean::ComputeSources::apply<DataVector>,
+        grmhd::ValenciaDivClean::ComputeSources::return_tags{},
+        grmhd::ValenciaDivClean::ComputeSources::argument_tags{}, 5, 0.1, 1.0,
+        tuples::TaggedTuple<domain::Tags::Mesh<3>>{dg_mesh});
+  }
+#endif  // SPECTRE_KOKKOS
 
   // Test DG time derivative
   test_cartoon_dg_time_derivative<true>();

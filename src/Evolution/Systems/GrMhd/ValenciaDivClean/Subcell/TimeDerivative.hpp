@@ -56,8 +56,13 @@
 #include "Utilities/CallWithDynamicType.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
+
+#ifdef SPECTRE_KOKKOS
+#include "DataStructures/ApplyPointwiseOnDevice.hpp"
+#endif  // SPECTRE_KOKKOS
 
 namespace grmhd::ValenciaDivClean::subcell {
 /*!
@@ -219,7 +224,7 @@ struct TimeDerivative {
                        typename System::flux_spacetime_variables_tag, 3>>(*box),
                comp_dim](auto tag_v) {
                 using tag = tmpl::type_from<decltype(tag_v)>;
-                for (size_t d = 0; d < comp_dim; ++d) { // comp_dim
+                for (size_t d = 0; d < comp_dim; ++d) {  // comp_dim
                   get<tag>(gsl::at(package_data_argvars_lower_face, d)) =
                       get<tag>(gsl::at(spacetime_vars_on_face, d));
                   get<tag>(gsl::at(package_data_argvars_upper_face, d)) =
@@ -296,34 +301,34 @@ struct TimeDerivative {
                         j == 0 ? Spectral::Parity::Odd
                                : Spectral::Parity::Even);
               }
-              tmpl::for_each<evolved_vars_tags>([&vars_upper_face,
-                                                 &vars_lower_face,
-                                                 &mesh_velocity_on_face](
-                                                    auto tag_v) {
-                using tag = tmpl::type_from<decltype(tag_v)>;
-                using flux_tag =
-                    ::Tags::Flux<tag, tmpl::size_t<3>, Frame::Inertial>;
-                using FluxTensor = typename flux_tag::type;
-                const auto& var_upper = get<tag>(vars_upper_face);
-                const auto& var_lower = get<tag>(vars_lower_face);
-                auto& flux_upper = get<flux_tag>(vars_upper_face);
-                auto& flux_lower = get<flux_tag>(vars_lower_face);
-                for (size_t storage_index = 0; storage_index < var_upper.size();
-                     ++storage_index) {
-                  const auto tensor_index =
-                      var_upper.get_tensor_index(storage_index);
-                  for (size_t j = 0; j < 3; j++) {
-                    const auto flux_storage_index =
-                        FluxTensor::get_storage_index(prepend(tensor_index, j));
-                    flux_upper[flux_storage_index] -=
-                        mesh_velocity_on_face.value().get(j) *
-                        var_upper[storage_index];
-                    flux_lower[flux_storage_index] -=
-                        mesh_velocity_on_face.value().get(j) *
-                        var_lower[storage_index];
-                  }
-                }
-              });
+              tmpl::for_each<evolved_vars_tags>(
+                  [&vars_upper_face, &vars_lower_face,
+                   &mesh_velocity_on_face](auto tag_v) {
+                    using tag = tmpl::type_from<decltype(tag_v)>;
+                    using flux_tag =
+                        ::Tags::Flux<tag, tmpl::size_t<3>, Frame::Inertial>;
+                    using FluxTensor = typename flux_tag::type;
+                    const auto& var_upper = get<tag>(vars_upper_face);
+                    const auto& var_lower = get<tag>(vars_lower_face);
+                    auto& flux_upper = get<flux_tag>(vars_upper_face);
+                    auto& flux_lower = get<flux_tag>(vars_lower_face);
+                    for (size_t storage_index = 0;
+                         storage_index < var_upper.size(); ++storage_index) {
+                      const auto tensor_index =
+                          var_upper.get_tensor_index(storage_index);
+                      for (size_t j = 0; j < 3; j++) {
+                        const auto flux_storage_index =
+                            FluxTensor::get_storage_index(
+                                prepend(tensor_index, j));
+                        flux_upper[flux_storage_index] -=
+                            mesh_velocity_on_face.value().get(j) *
+                            var_upper[storage_index];
+                        flux_lower[flux_storage_index] -=
+                            mesh_velocity_on_face.value().get(j) *
+                            var_lower[storage_index];
+                      }
+                    }
+                  });
             }
 
             // Normal vectors in curved spacetime normalized by inverse
@@ -589,8 +594,14 @@ struct TimeDerivative {
       const gsl::not_null<Variables<DtVarsList>*> dt_vars_ptr,
       const db::DataBox<DbTagsList>& box, tmpl::list<SourcedTags...> /*meta*/,
       tmpl::list<ArgsTags...> /*meta*/) {
+#ifdef SPECTRE_KOKKOS
+    copy_and_apply_pointwise_on_device<ValenciaDivClean::ComputeSources>(
+        dt_vars_ptr, tmpl::list<::Tags::dt<SourcedTags>...>{},
+        tmpl::list<ArgsTags...>{}, get<ArgsTags>(box)...);
+#else
     grmhd::ValenciaDivClean::ComputeSources::apply(
         get<::Tags::dt<SourcedTags>>(dt_vars_ptr)..., get<ArgsTags>(box)...);
+#endif  // SPECTRE_KOKKOS
   }
 };
 }  // namespace grmhd::ValenciaDivClean::subcell

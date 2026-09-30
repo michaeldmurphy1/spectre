@@ -56,8 +56,13 @@
 #include "Utilities/CallWithDynamicType.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
+
+#ifdef SPECTRE_KOKKOS
+#include "DataStructures/ApplyPointwiseOnDeviceKokkos.hpp"
+#endif  // SPECTRE_KOKKOS
 
 namespace grmhd::ValenciaDivClean::subcell {
 /*!
@@ -589,8 +594,14 @@ struct TimeDerivative {
       const gsl::not_null<Variables<DtVarsList>*> dt_vars_ptr,
       const db::DataBox<DbTagsList>& box, tmpl::list<SourcedTags...> /*meta*/,
       tmpl::list<ArgsTags...> /*meta*/) {
+#ifdef SPECTRE_KOKKOS
+    copy_and_apply_pointwise_on_device<ValenciaDivClean::ComputeSources>(
+        dt_vars_ptr, tmpl::list<::Tags::dt<SourcedTags>...>{},
+        tmpl::list<ArgsTags...>{}, get<ArgsTags>(box)...);
+#else
     grmhd::ValenciaDivClean::ComputeSources::apply(
         get<::Tags::dt<SourcedTags>>(dt_vars_ptr)..., get<ArgsTags>(box)...);
+#endif  // SPECTRE_KOKKOS
   }
 };
 }  // namespace grmhd::ValenciaDivClean::subcell

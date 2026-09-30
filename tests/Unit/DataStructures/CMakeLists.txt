@@ -57,6 +57,7 @@ endif()
 
 if (TARGET Kokkos::kokkos)
   list(APPEND LIBRARY_SOURCES
+    Test_ApplyPointwiseOnDevice.cpp
     Test_DeviceArguments.cpp
     Test_VariablesKokkos.cpp
     )

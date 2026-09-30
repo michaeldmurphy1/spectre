@@ -20,6 +20,7 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GetOutput.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/MakeArray.hpp"
 #include "Utilities/StdHelpers.hpp"
 
@@ -480,6 +481,92 @@ void test_is_isotropic() {
       {{Spectral::Basis::Legendre, Spectral::Basis::Legendre}},
       {{Spectral::Quadrature::Gauss, Spectral::Quadrature::GaussLobatto}}}));
 }
+
+#ifdef SPECTRE_KOKKOS
+// Evaluates the `Mesh` functions that can be called in Kokkos kernels
+constexpr size_t number_of_device_values = 24;
+KOKKOS_FUNCTION Kokkos::Array<size_t, number_of_device_values>
+evaluate_mesh_functions(const Mesh<3>& mesh, const Mesh<3>& b3_mesh,
+                        const Mesh<2>& b2_mesh) {
+  const Mesh<3> other_mesh{std::array<size_t, 3>{{3, 4, 6}}, mesh.basis(),
+                           mesh.quadrature()};
+  const Mesh<3> copied_mesh = mesh;
+  const Mesh<2> isotropic_mesh{4, Spectral::Basis::Legendre,
+                               Spectral::Quadrature::Gauss};
+  return {mesh.number_of_grid_points(),
+          mesh.extents(0),
+          mesh.extents(1),
+          mesh.extents()[2],
+          static_cast<size_t>(mesh.basis(0)),
+          static_cast<size_t>(mesh.basis()[1]),
+          static_cast<size_t>(mesh.quadrature(0)),
+          static_cast<size_t>(mesh.quadrature()[1]),
+          mesh.storage_index(Index<3>{1, 2, 3}),
+          mesh.slice_away(1).number_of_grid_points(),
+          mesh.slice_through(2, 0).extents(0),
+          mesh.on_interface(0).number_of_grid_points(),
+          mesh.slices()[2].extents(0),
+          static_cast<size_t>(is_isotropic(mesh)),
+          static_cast<size_t>(is_isotropic(isotropic_mesh)),
+          static_cast<size_t>(mesh == copied_mesh),
+          static_cast<size_t>(mesh != other_mesh),
+          other_mesh.number_of_grid_points(),
+          static_cast<size_t>(b3_mesh.on_interface(0).basis(0)),
+          static_cast<size_t>(b3_mesh.on_interface(0).quadrature(1)),
+          static_cast<size_t>(b2_mesh.on_interface(0).basis(0)),
+          static_cast<size_t>(mesh == other_mesh),
+          collapsed_index(Index<2>{1, 2}, Index<2>{3, 4}),
+          expanded_index(7, Index<2>{3, 4})[1]};
+}
+
+// The `Mesh` functions give the same results in a Kokkos kernel as on the host
+void test_on_device() {
+  const Mesh<3> mesh{
+      std::array<size_t, 3>{{3, 4, 5}},
+      std::array<Spectral::Basis, 3>{{Spectral::Basis::Legendre,
+                                      Spectral::Basis::Chebyshev,
+                                      Spectral::Basis::Legendre}},
+      std::array<Spectral::Quadrature, 3>{
+          {Spectral::Quadrature::GaussLobatto, Spectral::Quadrature::Gauss,
+           Spectral::Quadrature::GaussLobatto}}};
+  const Mesh<3> b3_mesh{
+      std::array<size_t, 3>{{4, 5, 9}},
+      make_array<3>(Spectral::Basis::ZernikeB3),
+      std::array<Spectral::Quadrature, 3>{
+          {Spectral::Quadrature::GaussRadauUpper, Spectral::Quadrature::Gauss,
+           Spectral::Quadrature::Equiangular}}};
+  const Mesh<2> b2_mesh{std::array<size_t, 2>{{4, 7}},
+                        make_array<2>(Spectral::Basis::ZernikeB2),
+                        std::array<Spectral::Quadrature, 2>{
+                            {Spectral::Quadrature::GaussRadauUpper,
+                             Spectral::Quadrature::Equiangular}}};
+  const Kokkos::View<size_t*> device_values("device_values",
+                                            number_of_device_values);
+  Kokkos::parallel_for(
+      "test_mesh_on_device", Kokkos::RangePolicy<>(0, 1),
+      KOKKOS_LAMBDA(const int /*unused*/) {
+        const auto values = evaluate_mesh_functions(mesh, b3_mesh, b2_mesh);
+        for (size_t i = 0; i < number_of_device_values; ++i) {
+          device_values(i) = values[i];
+        }
+      });
+  const auto host_values =
+      Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, device_values);
+  const auto expected_values = evaluate_mesh_functions(mesh, b3_mesh, b2_mesh);
+  for (size_t i = 0; i < number_of_device_values; ++i) {
+    CAPTURE(i);
+    CHECK(host_values(i) == expected_values[i]);
+  }
+  // Spot-check some of the values
+  CHECK(expected_values[0] == 60);
+  CHECK(expected_values[8] == 1 + 3 * (2 + 4 * 3));
+  CHECK(expected_values[16] == 1);
+  CHECK(expected_values[18] ==
+        static_cast<size_t>(Spectral::Basis::SphericalHarmonic));
+  CHECK(expected_values[20] == static_cast<size_t>(Spectral::Basis::Fourier));
+  CHECK(expected_values[21] == 0);
+}
+#endif  // SPECTRE_KOKKOS
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.NumericalAlgorithms.Spectral.Mesh",
@@ -493,6 +580,9 @@ SPECTRE_TEST_CASE("Unit.NumericalAlgorithms.Spectral.Mesh",
   test_option_parsing<2>();
   test_option_parsing<3>();
   test_is_isotropic();
+#ifdef SPECTRE_KOKKOS
+  test_on_device();
+#endif  // SPECTRE_KOKKOS
 
 #ifdef SPECTRE_DEBUG
   CHECK_THROWS_WITH(

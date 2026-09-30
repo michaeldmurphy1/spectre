@@ -8,6 +8,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/TagsDeclarations.hpp"
 #include "PointwiseFunctions/GeneralRelativity/TagsDeclarations.hpp"
 #include "PointwiseFunctions/Hydro/TagsDeclarations.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
@@ -22,29 +23,38 @@ class DataVector;
 namespace grmhd {
 namespace ValenciaDivClean {
 namespace detail {
-void fluxes_impl(
-    gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_d_flux,
-    gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_ye_flux,
-    gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_tau_flux,
-    gsl::not_null<tnsr::Ij<DataVector, 3, Frame::Inertial>*> tilde_s_flux,
-    gsl::not_null<tnsr::IJ<DataVector, 3, Frame::Inertial>*> tilde_b_flux,
-    gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_phi_flux,
+/*!
+ * \brief Computes the fluxes, given the temporaries computed in
+ * `ComputeFluxes::apply`.
+ *
+ * Templated on `DataType` so that the same code is used for `DataVector` on
+ * the host and for `double` at a single grid point inside a Kokkos kernel.
+ * Instantiated for `DataVector` and `double`.
+ */
+template <typename DataType>
+KOKKOS_FUNCTION void fluxes_impl(
+    gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_d_flux,
+    gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_ye_flux,
+    gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_tau_flux,
+    gsl::not_null<tnsr::Ij<DataType, 3, Frame::Inertial>*> tilde_s_flux,
+    gsl::not_null<tnsr::IJ<DataType, 3, Frame::Inertial>*> tilde_b_flux,
+    gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_phi_flux,
 
     // Temporaries
-    gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> transport_velocity,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& lapse_b_over_w,
-    const Scalar<DataVector>& magnetic_field_dot_spatial_velocity,
-    const Scalar<DataVector>& pressure_star_lapse_sqrt_det_spatial_metric,
+    gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> transport_velocity,
+    const tnsr::i<DataType, 3, Frame::Inertial>& lapse_b_over_w,
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& pressure_star_lapse_sqrt_det_spatial_metric,
 
     // Extra args
-    const Scalar<DataVector>& tilde_d, const Scalar<DataVector>& tilde_ye,
-    const Scalar<DataVector>& tilde_tau,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b,
-    const Scalar<DataVector>& tilde_phi, const Scalar<DataVector>& lapse,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
-    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity);
+    const Scalar<DataType>& tilde_d, const Scalar<DataType>& tilde_ye,
+    const Scalar<DataType>& tilde_tau,
+    const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s,
+    const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b,
+    const Scalar<DataType>& tilde_phi, const Scalar<DataType>& lapse,
+    const tnsr::I<DataType, 3, Frame::Inertial>& shift,
+    const tnsr::II<DataType, 3, Frame::Inertial>& inv_spatial_metric,
+    const tnsr::I<DataType, 3, Frame::Inertial>& spatial_velocity);
 }  // namespace detail
 
 /*!
@@ -106,26 +116,35 @@ struct ComputeFluxes {
                  hydro::Tags::LorentzFactor<DataVector>,
                  hydro::Tags::MagneticField<DataVector, 3>>;
 
-  static void apply(
-      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_d_flux,
-      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_ye_flux,
-      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_tau_flux,
-      gsl::not_null<tnsr::Ij<DataVector, 3, Frame::Inertial>*> tilde_s_flux,
-      gsl::not_null<tnsr::IJ<DataVector, 3, Frame::Inertial>*> tilde_b_flux,
-      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_phi_flux,
-      const Scalar<DataVector>& tilde_d, const Scalar<DataVector>& tilde_ye,
-      const Scalar<DataVector>& tilde_tau,
-      const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b,
-      const Scalar<DataVector>& tilde_phi, const Scalar<DataVector>& lapse,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
-      const Scalar<DataVector>& sqrt_det_spatial_metric,
-      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
-      const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
-      const Scalar<DataVector>& pressure,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
-      const Scalar<DataVector>& lorentz_factor,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field);
+  /*!
+   * \brief Compute the fluxes.
+   *
+   * Instantiated for `DataVector` and for `double`. The `double` version
+   * computes the fluxes at a single grid point with all temporaries on the
+   * stack, so it can be called inside a Kokkos kernel with the tensors at a
+   * grid point (see `make_at_index`).
+   */
+  template <typename DataType>
+  KOKKOS_FUNCTION static void apply(
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_d_flux,
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_ye_flux,
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_tau_flux,
+      gsl::not_null<tnsr::Ij<DataType, 3, Frame::Inertial>*> tilde_s_flux,
+      gsl::not_null<tnsr::IJ<DataType, 3, Frame::Inertial>*> tilde_b_flux,
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_phi_flux,
+      const Scalar<DataType>& tilde_d, const Scalar<DataType>& tilde_ye,
+      const Scalar<DataType>& tilde_tau,
+      const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s,
+      const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b,
+      const Scalar<DataType>& tilde_phi, const Scalar<DataType>& lapse,
+      const tnsr::I<DataType, 3, Frame::Inertial>& shift,
+      const Scalar<DataType>& sqrt_det_spatial_metric,
+      const tnsr::ii<DataType, 3, Frame::Inertial>& spatial_metric,
+      const tnsr::II<DataType, 3, Frame::Inertial>& inv_spatial_metric,
+      const Scalar<DataType>& pressure,
+      const tnsr::I<DataType, 3, Frame::Inertial>& spatial_velocity,
+      const Scalar<DataType>& lorentz_factor,
+      const tnsr::I<DataType, 3, Frame::Inertial>& magnetic_field);
 };
 }  // namespace ValenciaDivClean
 }  // namespace grmhd

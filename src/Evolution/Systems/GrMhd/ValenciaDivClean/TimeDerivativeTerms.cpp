@@ -58,10 +58,8 @@ evolution::dg::TimeDerivativeDecisions<3> TimeDerivativeTerms::apply(
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_s_up,
     const gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
         densitized_stress,
-    const gsl::not_null<tnsr::ijj<DataVector, 3, Frame::Inertial>*>
-        spatial_christoffel_first_kind,
-    const gsl::not_null<tnsr::Ijj<DataVector, 3, Frame::Inertial>*>
-        spatial_christoffel_second_kind,
+    const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
+        trace_spatial_christoffel_first,
     const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
         trace_spatial_christoffel_second,
     const gsl::not_null<Scalar<DataVector>*> h_rho_w_squared_plus_b_squared,
@@ -132,12 +130,10 @@ evolution::dg::TimeDerivativeDecisions<3> TimeDerivativeTerms::apply(
                       lapse, shift, inv_spatial_metric, spatial_velocity);
 
   // Compute source terms
-  gr::christoffel_first_kind(spatial_christoffel_first_kind, d_spatial_metric);
-  raise_or_lower_first_index(spatial_christoffel_second_kind,
-                             *spatial_christoffel_first_kind,
-                             inv_spatial_metric);
-  trace_last_indices(trace_spatial_christoffel_second,
-                     *spatial_christoffel_second_kind, inv_spatial_metric);
+  gr::trace_spatial_christoffel_first_kind(
+      trace_spatial_christoffel_first, d_spatial_metric, inv_spatial_metric);
+  raise_or_lower_index(trace_spatial_christoffel_second,
+                       *trace_spatial_christoffel_first, inv_spatial_metric);
 
   detail::sources_impl(
       non_flux_terms_dt_tilde_tau, non_flux_terms_dt_tilde_s,

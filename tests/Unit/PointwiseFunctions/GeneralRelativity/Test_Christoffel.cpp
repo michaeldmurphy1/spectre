@@ -47,6 +47,31 @@ void test_christoffel(const DataType& used_for_size) {
   pypp::check_with_random_values<1>(f, "Christoffel", "christoffel_first_kind",
                                     {{{-10., 10.}}}, used_for_size);
 }
+
+// The trace computed directly must match the trace of the rank-3 Christoffel
+// symbols. This holds for any symmetric `inverse_spatial_metric`.
+template <size_t Dim, typename DataType>
+void test_trace_spatial_christoffel_first_kind(const DataType& used_for_size) {
+  MAKE_GENERATOR(generator);
+  std::uniform_real_distribution<> distribution(-1., 1.);
+  const auto d_spatial_metric =
+      make_with_random_values<tnsr::ijj<DataType, Dim, Frame::Inertial>>(
+          make_not_null(&generator), make_not_null(&distribution),
+          used_for_size);
+  const auto inverse_spatial_metric =
+      make_with_random_values<tnsr::II<DataType, Dim, Frame::Inertial>>(
+          make_not_null(&generator), make_not_null(&distribution),
+          used_for_size);
+
+  tnsr::i<DataType, Dim, Frame::Inertial> trace_spatial_christoffel{};
+  gr::trace_spatial_christoffel_first_kind(
+      make_not_null(&trace_spatial_christoffel), d_spatial_metric,
+      inverse_spatial_metric);
+  CHECK_ITERABLE_APPROX(
+      trace_spatial_christoffel,
+      trace_last_indices(gr::christoffel_first_kind(d_spatial_metric),
+                         inverse_spatial_metric));
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.PointwiseFunctions.GeneralRelativity.Christoffel",
@@ -66,6 +91,12 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.GeneralRelativity.Christoffel",
   test_christoffel<1, IndexType::Spacetime>(0.);
   test_christoffel<2, IndexType::Spacetime>(0.);
   test_christoffel<3, IndexType::Spacetime>(0.);
+  test_trace_spatial_christoffel_first_kind<1>(dv);
+  test_trace_spatial_christoffel_first_kind<2>(dv);
+  test_trace_spatial_christoffel_first_kind<3>(dv);
+  test_trace_spatial_christoffel_first_kind<1>(0.);
+  test_trace_spatial_christoffel_first_kind<2>(0.);
+  test_trace_spatial_christoffel_first_kind<3>(0.);
 
   // Check that compute items work correctly in the DataBox
   // First, check that the names are correct

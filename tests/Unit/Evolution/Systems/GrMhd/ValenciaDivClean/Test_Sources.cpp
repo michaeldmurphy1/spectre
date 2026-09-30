@@ -897,10 +897,7 @@ void test_cartoon_dg_time_derivative() {
                 grmhd::ValenciaDivClean::TimeDerivativeTerms::DensitizedStress>(
                 temp_vars)),
         make_not_null(
-            &get<gr::Tags::SpatialChristoffelFirstKind<DataVector, 3>>(
-                temp_vars)),
-        make_not_null(
-            &get<gr::Tags::SpatialChristoffelSecondKind<DataVector, 3>>(
+            &get<gr::Tags::TraceSpatialChristoffelFirstKind<DataVector, 3>>(
                 temp_vars)),
         make_not_null(
             &get<gr::Tags::TraceSpatialChristoffelSecondKind<DataVector, 3>>(

@@ -28,22 +28,26 @@ namespace TestHelpers {
  *
  * Tensor arguments are filled with random values in `[lower, upper]` on
  * `num_points` grid points, and non-tensor arguments (e.g. `double`s) with a
- * single random value. `host_function` is called as
+ * single random value. Arguments that can't be random (e.g. a `Mesh`) are
+ * taken from `fixed_args` instead. `host_function` is called as
  * `host_function(gsl::not_null<ResultTags::type*>..., ArgsTags::type...)`.
  */
 template <typename Function, typename... ResultTags, typename... ArgsTags,
-          typename HostFunction>
-void check_pointwise_on_device(const HostFunction& host_function,
-                               tmpl::list<ResultTags...> result_tags,
-                               tmpl::list<ArgsTags...> args_tags,
-                               const size_t num_points, const double lower,
-                               const double upper) {
+          typename HostFunction, typename... FixedTags>
+void check_pointwise_on_device(
+    const HostFunction& host_function, tmpl::list<ResultTags...> result_tags,
+    tmpl::list<ArgsTags...> args_tags, const size_t num_points,
+    const double lower, const double upper,
+    const tuples::TaggedTuple<FixedTags...>& fixed_args = {}) {
   MAKE_GENERATOR(generator);
   std::uniform_real_distribution<> distribution(lower, upper);
-  const auto make_random_arg = [&generator, &distribution,
-                                &num_points](auto tag_v) {
-    using type = typename tmpl::type_from<decltype(tag_v)>::type;
-    if constexpr (tt::is_a_v<Tensor, type>) {
+  const auto make_random_arg = [&generator, &distribution, &num_points,
+                                &fixed_args]<typename Tag>(
+                                   tmpl::type_<Tag> /*meta*/) {
+    using type = typename Tag::type;
+    if constexpr (tmpl::list_contains_v<tmpl::list<FixedTags...>, Tag>) {
+      return get<Tag>(fixed_args);
+    } else if constexpr (tt::is_a_v<Tensor, type>) {
       return make_with_random_values<type>(make_not_null(&generator),
                                            make_not_null(&distribution),
                                            DataVector{num_points});

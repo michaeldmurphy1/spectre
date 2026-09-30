@@ -4,12 +4,16 @@
 #include "PointwiseFunctions/GeneralRelativity/Christoffel.hpp"
 
 #include <cstddef>
+#include <type_traits>
 
+#include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Utilities/ContainerHelpers.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/MakeWithValue.hpp"
+#include "Utilities/SetNumberOfGridPoints.hpp"
 
 namespace gr {
 template <size_t SpatialDim, typename Frame, IndexType Index, typename DataType>
@@ -76,6 +80,39 @@ auto christoffel_second_kind(
                           inverse_metric);
   return christoffel;
 }
+
+template <typename DataType, size_t SpatialDim, typename Frame>
+KOKKOS_FUNCTION void trace_spatial_christoffel_first_kind(
+    const gsl::not_null<tnsr::i<DataType, SpatialDim, Frame>*> result,
+    const tnsr::ijj<DataType, SpatialDim, Frame>& d_spatial_metric,
+    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric) {
+  // Resizing is a host-only operation and not needed for `double`
+  if constexpr (not std::is_same_v<DataType, double>) {
+    set_number_of_grid_points(result, inverse_spatial_metric);
+  }
+  // Use the symmetry of the inverse spatial metric to sum over each of its
+  // independent components once:
+  // Gamma_i = sum_j gamma^{jj} (d_j gamma_{ij} - d_i gamma_{jj} / 2)
+  //   + sum_{j<k} gamma^{jk} (d_j gamma_{ik} + d_k gamma_{ij} - d_i gamma_{jk})
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    result->get(i) =
+        get<0, 0>(inverse_spatial_metric) *
+        (d_spatial_metric.get(0, i, 0) - 0.5 * d_spatial_metric.get(i, 0, 0));
+    for (size_t j = 0; j < SpatialDim; ++j) {
+      if (j != 0) {
+        result->get(i) += inverse_spatial_metric.get(j, j) *
+                          (d_spatial_metric.get(j, i, j) -
+                           0.5 * d_spatial_metric.get(i, j, j));
+      }
+      for (size_t k = j + 1; k < SpatialDim; ++k) {
+        result->get(i) +=
+            inverse_spatial_metric.get(j, k) *
+            (d_spatial_metric.get(j, i, k) + d_spatial_metric.get(k, i, j) -
+             d_spatial_metric.get(i, j, k));
+      }
+    }
+  }
+}
 }  // namespace gr
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
@@ -116,8 +153,26 @@ GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3), (double, DataVector),
                          Frame::Spherical<Frame::Grid>),
                         (IndexType::Spatial, IndexType::Spacetime))
 
+#undef INSTANTIATE
+
+#define INSTANTIATE_TRACE(_, data)                                            \
+  template void gr::trace_spatial_christoffel_first_kind(                     \
+      const gsl::not_null<tnsr::i<DTYPE(data), DIM(data), FRAME(data)>*>      \
+          result,                                                             \
+      const tnsr::ijj<DTYPE(data), DIM(data), FRAME(data)>& d_spatial_metric, \
+      const tnsr::II<DTYPE(data), DIM(data), FRAME(data)>&                    \
+          inverse_spatial_metric);
+
+GENERATE_INSTANTIATIONS(INSTANTIATE_TRACE, (1, 2, 3), (double),
+                        (Frame::Grid, Frame::Distorted, Frame::Inertial))
+// The `DataVector` versions are never called on the device
+#ifndef SPECTRE_KOKKOS_DEVICE_PASS
+GENERATE_INSTANTIATIONS(INSTANTIATE_TRACE, (1, 2, 3), (DataVector),
+                        (Frame::Grid, Frame::Distorted, Frame::Inertial))
+#endif  // SPECTRE_KOKKOS_DEVICE_PASS
+
 #undef DIM
 #undef DTYPE
 #undef FRAME
 #undef INDEXTYPE
-#undef INSTANTIATE
+#undef INSTANTIATE_TRACE

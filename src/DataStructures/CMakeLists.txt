@@ -30,6 +30,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   ApplyMatrices.hpp
+  ApplyPointwiseOnDevice.hpp
   BatchedVariables.hpp
   BoostMultiArray.hpp
   CachedTempBuffer.hpp

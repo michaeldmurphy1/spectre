@@ -90,31 +90,33 @@ class Variables<tmpl::list<Tags...>> {
   }
   ~Variables() = default;
 
-  /// Initialize the memory for the Variables. You can specify a `memory_space`
-  /// to allocate the memory on a specific GPU. Does nothing if the number of
-  /// grid points is unchanged. Fills the memory with NaN only if
-  /// SPECTRE_NAN_INIT is defined.
+  /// @{
+  /*!
+   * \brief Initialize the memory for the Variables. Does nothing if the number
+   * of grid points is unchanged. Fills the memory with NaN only if
+   * SPECTRE_NAN_INIT is defined.
+   *
+   * The allocation and the NaN fill are enqueued on the execution space
+   * instance `exec`, so work that uses the data must run on the same instance
+   * (or fence it first). Without `exec` the default instance of the memory
+   * space's execution space is used and this function blocks until it is
+   * done. You can specify a `memory_space` to allocate the memory on a specific
+   * GPU.
+   */
+  template <typename ExecSpace>
+    requires Kokkos::is_execution_space_v<ExecSpace>
+  void initialize(const ExecSpace& exec, const size_t number_of_grid_points) {
+    initialize_impl(exec, number_of_grid_points, memory_space{});
+  }
+
   void initialize(const size_t number_of_grid_points,
                   const memory_space& space = {}) {
-    if (number_of_grid_points == this->number_of_grid_points()) {
-      return;
+    const typename memory_space::execution_space exec{};
+    if (initialize_impl(exec, number_of_grid_points, space)) {
+      exec.fence("Variables::initialize");
     }
-    storage_ = storage_type(
-        Kokkos::view_alloc(Kokkos::WithoutInitializing, "Variables", space),
-        number_of_grid_points);
-#if defined(SPECTRE_NAN_INIT)
-    using ExecSpace = typename memory_space::execution_space;
-    const ExecSpace exec{};
-    Kokkos::parallel_for(
-        "Variables::nan_init",
-        Kokkos::RangePolicy<ExecSpace, Kokkos::IndexType<size_t>>(
-            exec, 0, storage_.size()),
-        VariablesKokkos_detail::FillWithSignalingNaN<value_type>{
-            storage_.data()});
-    exec.fence("Variables::nan_init");
-#endif  // SPECTRE_NAN_INIT
-    set_reference_variable_data();
   }
+  /// @}
 
   constexpr SPECTRE_ALWAYS_INLINE size_t size() const {
     return storage_.size();
@@ -146,6 +148,34 @@ class Variables<tmpl::list<Tags...>> {
   }
 
  private:
+  // Returns whether the memory was reallocated
+  template <typename ExecSpace>
+  bool initialize_impl(const ExecSpace& exec,
+                       const size_t number_of_grid_points,
+                       const memory_space& space) {
+    static_assert(
+        Kokkos::SpaceAccessibility<ExecSpace, memory_space>::accessible,
+        "The execution space must be able to access the memory space of the "
+        "Variables.");
+    if (number_of_grid_points == this->number_of_grid_points()) {
+      return false;
+    }
+    storage_ =
+        storage_type(Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                                        "Variables", space),
+                     number_of_grid_points);
+#if defined(SPECTRE_NAN_INIT)
+    Kokkos::parallel_for(
+        "Variables::nan_init",
+        Kokkos::RangePolicy<ExecSpace, Kokkos::IndexType<size_t>>(
+            exec, 0, storage_.size()),
+        VariablesKokkos_detail::FillWithSignalingNaN<value_type>{
+            storage_.data()});
+#endif  // SPECTRE_NAN_INIT
+    set_reference_variable_data();
+    return true;
+  }
+
   void set_reference_variable_data() {
     size_t variable_offset = 0;
     tmpl::for_each<tags_list>([this, &variable_offset](auto tag_v) {
@@ -195,9 +225,48 @@ KOKKOS_FUNCTION void set_at_index(
 }
 /// @}
 
-/// Allocate a `Variables` of the same size as `vars_host` in device memory,
-/// without copying the data yet. You can specify a `memory_space` to allocate
-/// the memory on a specific GPU.
+namespace VariablesKokkos_detail {
+// Views that wrap the data of a DataVector-backed Variables without owning it,
+// so it can be deep-copied. Relies on the memory layout of the
+// DataVector-backed Variables being the same as the Kokkos view (LayoutLeft).
+template <typename HostVars>
+using HostUnmanaged =
+    Kokkos::View<typename HostVars::value_type *
+                     [HostVars::number_of_independent_components],
+                 Kokkos::LayoutLeft, Kokkos::HostSpace,
+                 Kokkos::MemoryUnmanaged>;
+template <typename HostVars>
+using ConstHostUnmanaged =
+    Kokkos::View<const typename HostVars::value_type *
+                     [HostVars::number_of_independent_components],
+                 Kokkos::LayoutLeft, Kokkos::HostSpace,
+                 Kokkos::MemoryUnmanaged>;
+}  // namespace VariablesKokkos_detail
+
+/// @{
+/*!
+ * \brief Allocate a `Variables` of the same size as `vars_host` in device
+ * memory, without copying the data yet.
+ *
+ * The allocation is enqueued on the execution space instance `exec` (see
+ * `Variables::initialize`). Without `exec` this blocks until the memory is
+ * ready. You can specify a `memory_space` to allocate the memory on a specific
+ * GPU.
+ */
+template <typename ExecSpace, typename... Tags>
+  requires Kokkos::is_execution_space_v<ExecSpace>
+auto allocate_on_device(const ExecSpace& exec,
+                        const Variables<tmpl::list<Tags...>>& vars_host) {
+  static_assert((std::is_same_v<typename Tags::type::type, DataVector> and ...),
+                "Only a DataVector-backed Variables can be mirrored in device "
+                "memory.");
+  Variables<tmpl::list<::Tags::MirrorView<Tags>...>> vars_device{};
+  if constexpr (sizeof...(Tags) > 0) {
+    vars_device.initialize(exec, vars_host.number_of_grid_points());
+  }
+  return vars_device;
+}
+
 template <typename... Tags>
 auto allocate_on_device(
     const Variables<tmpl::list<Tags...>>& vars_host,
@@ -211,39 +280,62 @@ auto allocate_on_device(
   }
   return vars_device;
 }
+/// @}
 
-/// Copy the `vars_host` to an existing `Variables` in device memory. The device
-/// memory is only reallocated if the number of grid points changed.
-template <typename DeviceTags, typename... Tags>
-void copy_to_device(const gsl::not_null<Variables<DeviceTags>*> vars_device,
+/// @{
+/*!
+ * \brief Copy the `vars_host` to an existing `Variables` in device memory. The
+ * device memory is only reallocated if the number of grid points changed.
+ *
+ * The allocation and copy are enqueued on the execution space instance `exec`,
+ * so work that uses the result must run on the same instance (or fence it
+ * first), and `vars_host` must stay alive until `exec` is fenced. Without
+ * `exec` the default instance is used and this function blocks until the copy
+ * is complete, like `Kokkos::deep_copy`.
+ */
+template <typename ExecSpace, typename DeviceTags, typename... Tags>
+  requires Kokkos::is_execution_space_v<ExecSpace>
+void copy_to_device(const ExecSpace& exec,
+                    const gsl::not_null<Variables<DeviceTags>*> vars_device,
                     const Variables<tmpl::list<Tags...>>& vars_host) {
   static_assert((std::is_same_v<typename Tags::type::type, DataVector> and ...),
                 "Only a DataVector-backed Variables can be copied to device "
                 "memory.");
   if constexpr (sizeof...(Tags) > 0) {
-    using HostVars = Variables<tmpl::list<Tags...>>;
-    using ValueType = typename HostVars::value_type;
-    static constexpr size_t num_components =
-        HostVars::number_of_independent_components;
     const size_t num_points = vars_host.number_of_grid_points();
-    if (vars_device->number_of_grid_points() != num_points) {
-      vars_device->initialize(num_points);
-    }
-    // View that wraps the host data (DataVector-backed Variables) in a
-    // Kokkos::View without owning it so we can deep-copy the data. Relies on
-    // the memory layout in the DataVector-backed Variables being the same as
-    // the Kokkos view (LayoutLeft).
-    using HostUnmanaged =
-        Kokkos::View<const ValueType* [num_components], Kokkos::LayoutLeft,
-                     Kokkos::HostSpace, Kokkos::MemoryUnmanaged>;
-    HostUnmanaged unmanaged_host_view(vars_host.data(), num_points);
-    // Copy to device
-    Kokkos::deep_copy(vars_device->view(), unmanaged_host_view);
+    vars_device->initialize(exec, num_points);
+    const VariablesKokkos_detail::ConstHostUnmanaged<
+        Variables<tmpl::list<Tags...>>>
+        unmanaged_host_view(vars_host.data(), num_points);
+    Kokkos::deep_copy(exec, vars_device->view(), unmanaged_host_view);
   }
 }
 
-/// Copy the `vars_host` to device memory. You can specify a `memory_space` to
-/// allocate the memory on a specific GPU.
+template <typename DeviceTags, typename... Tags>
+void copy_to_device(const gsl::not_null<Variables<DeviceTags>*> vars_device,
+                    const Variables<tmpl::list<Tags...>>& vars_host) {
+  const Kokkos::DefaultExecutionSpace exec{};
+  copy_to_device(exec, vars_device, vars_host);
+  exec.fence("copy_to_device");
+}
+/// @}
+
+/// @{
+/*!
+ * \brief Copy the `vars_host` to device memory.
+ *
+ * See the other overloads for the meaning of `exec`. You can specify a
+ * `memory_space` to allocate the memory on a specific GPU.
+ */
+template <typename ExecSpace, typename... Tags>
+  requires Kokkos::is_execution_space_v<ExecSpace>
+auto copy_to_device(const ExecSpace& exec,
+                    const Variables<tmpl::list<Tags...>>& vars_host) {
+  auto vars_device = allocate_on_device(exec, vars_host);
+  copy_to_device(exec, make_not_null(&vars_device), vars_host);
+  return vars_device;
+}
+
 template <typename... Tags>
 auto copy_to_device(
     const Variables<tmpl::list<Tags...>>& vars_host,
@@ -252,34 +344,42 @@ auto copy_to_device(
   copy_to_device(make_not_null(&vars_device), vars_host);
   return vars_device;
 }
+/// @}
 
-/// Copy a `Variables` from device to host memory.
-template <typename HostTags, typename DeviceTags>
-void copy_to_host(const gsl::not_null<Variables<HostTags>*> vars_host,
+/// @{
+/*!
+ * \brief Copy a `Variables` from device to host memory.
+ *
+ * The copy is enqueued on the execution space instance `exec` (the default
+ * instance if not given), which is fenced before returning so the host data is
+ * ready to use.
+ */
+template <typename ExecSpace, typename HostTags, typename DeviceTags>
+  requires Kokkos::is_execution_space_v<ExecSpace>
+void copy_to_host(const ExecSpace& exec,
+                  const gsl::not_null<Variables<HostTags>*> vars_host,
                   const Variables<DeviceTags>& vars_device) {
   if constexpr (tmpl::size<DeviceTags>::value > 0) {
     using HostVars = Variables<HostTags>;
     static_assert(std::is_same_v<typename HostVars::vector_type, DataVector>,
                   "Only a DataVector-backed Variables can be copied from "
                   "device memory.");
-    using ValueType = typename HostVars::value_type;
-    static constexpr size_t num_components =
-        HostVars::number_of_independent_components;
     const size_t num_points = vars_device.number_of_grid_points();
-    // View that wraps the host data (DataVector-backed Variables) in a
-    // Kokkos::View without owning it so we can deep-copy the data. Relies on
-    // the memory layout in the DataVector-backed Variables being the same as
-    // the Kokkos view (LayoutLeft).
-    using HostUnmanaged =
-        Kokkos::View<ValueType* [num_components], Kokkos::LayoutLeft,
-                     Kokkos::HostSpace, Kokkos::MemoryUnmanaged>;
     if (vars_host->number_of_grid_points() != num_points) {
       vars_host->initialize(num_points);
     }
-    HostUnmanaged unmanaged_host_view(vars_host->data(), num_points);
-    // Copy to host
-    Kokkos::deep_copy(unmanaged_host_view, vars_device.view());
+    const VariablesKokkos_detail::HostUnmanaged<HostVars> unmanaged_host_view(
+        vars_host->data(), num_points);
+    Kokkos::deep_copy(exec, unmanaged_host_view, vars_device.view());
+    exec.fence("copy_to_host");
   }
 }
+
+template <typename HostTags, typename DeviceTags>
+void copy_to_host(const gsl::not_null<Variables<HostTags>*> vars_host,
+                  const Variables<DeviceTags>& vars_device) {
+  copy_to_host(Kokkos::DefaultExecutionSpace{}, vars_host, vars_device);
+}
+/// @}
 
 #endif  // SPECTRE_KOKKOS

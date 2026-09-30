@@ -49,6 +49,22 @@ SPECTRE_TEST_CASE("Unit.DataStructures.Tensor.Kokkos",
     for (size_t i = 0; i < num_points; ++i) {
       CHECK(get(result_host)[i] == 4.0 * static_cast<double>(i));
     }
+
+    // Same with the copies enqueued on an execution space instance
+    const Kokkos::DefaultExecutionSpace exec{};
+    const auto scalar_exec = copy_to_device(exec, scalar_host);
+    Scalar<Kokkos::View<double*>> result_exec{
+        Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "result"),
+        num_points};
+    Kokkos::parallel_for(
+        "compute_on_instance",
+        Kokkos::RangePolicy<Kokkos::DefaultExecutionSpace,
+                            Kokkos::IndexType<size_t>>(exec, 0, num_points),
+        KOKKOS_LAMBDA(const size_t i) {
+          set_at_index(make_not_null(&result_exec),
+                       tensor_func(make_at_index(scalar_exec, i)), i);
+        });
+    CHECK(copy_to_host(exec, result_exec) == result_host);
   }
 }
 

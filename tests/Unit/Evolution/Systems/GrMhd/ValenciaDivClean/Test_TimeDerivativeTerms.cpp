@@ -98,9 +98,8 @@ void forward_to_time_deriv(
       make_not_null(&get<typename grmhd::ValenciaDivClean::TimeDerivativeTerms::
                              DensitizedStress>(temp)),
       make_not_null(
-          &get<gr::Tags::SpatialChristoffelFirstKind<DataVector, 3>>(temp)),
-      make_not_null(
-          &get<gr::Tags::SpatialChristoffelSecondKind<DataVector, 3>>(temp)),
+          &get<gr::Tags::TraceSpatialChristoffelFirstKind<DataVector, 3>>(
+              temp)),
       make_not_null(
           &get<gr::Tags::TraceSpatialChristoffelSecondKind<DataVector, 3>>(
               temp)),

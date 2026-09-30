@@ -4,15 +4,19 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Sources.hpp"
 
 #include <cstddef>
+#include <limits>
+#include <type_traits>
 
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/Tags/TempTensor.hpp"
+#include "DataStructures/TempBuffer.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.hpp"
 #include "DataStructures/Tensor/EagerMath/Trace.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
-#include "DataStructures/Variables.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
+#include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Christoffel.hpp"
@@ -21,19 +25,25 @@
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "PointwiseFunctions/Hydro/TransportVelocity.hpp"
 #include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/ContainerHelpers.hpp"
+#include "Utilities/EqualWithinRoundoff.hpp"
+#include "Utilities/ErrorHandling/Assert.hpp"
+#include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 
 namespace {
-void densitized_stress(
-    const gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*> result,
-    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
-    const Scalar<DataVector>& magnetic_field_dot_spatial_velocity,
-    const Scalar<DataVector>& one_over_w_squared,
-    const Scalar<DataVector>& pressure_star,
-    const Scalar<DataVector>& h_rho_w_squared_plus_b_squared,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
-    const Scalar<DataVector>& sqrt_det_spatial_metric) {
+template <typename DataType>
+KOKKOS_FUNCTION void densitized_stress(
+    const gsl::not_null<tnsr::II<DataType, 3, Frame::Inertial>*> result,
+    const tnsr::II<DataType, 3, Frame::Inertial>& inv_spatial_metric,
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& one_over_w_squared,
+    const Scalar<DataType>& pressure_star,
+    const Scalar<DataType>& h_rho_w_squared_plus_b_squared,
+    const tnsr::I<DataType, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataType, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataType>& sqrt_det_spatial_metric) {
   *result = inv_spatial_metric;
   for (size_t i = 0; i < 3; ++i) {
     for (size_t j = i; j < 3; ++j) {
@@ -51,78 +61,83 @@ void densitized_stress(
   }
 }
 
+template <typename DataType>
 struct MagneticFieldOneForm : db::SimpleTag {
-  using type = tnsr::i<DataVector, 3, Frame::Inertial>;
+  using type = tnsr::i<DataType, 3, Frame::Inertial>;
 };
+template <typename DataType>
 struct TildeSUp : db::SimpleTag {
-  using type = tnsr::I<DataVector, 3, Frame::Inertial>;
+  using type = tnsr::I<DataType, 3, Frame::Inertial>;
 };
+template <typename DataType>
 struct DensitizedStress : db::SimpleTag {
-  using type = tnsr::II<DataVector, 3, Frame::Inertial>;
+  using type = tnsr::II<DataType, 3, Frame::Inertial>;
 };
+template <typename DataType>
 struct OneOverLorentzFactorSquared : db::SimpleTag {
-  using type = Scalar<DataVector>;
+  using type = Scalar<DataType>;
 };
+template <typename DataType>
 struct PressureStar : db::SimpleTag {
-  using type = Scalar<DataVector>;
+  using type = Scalar<DataType>;
 };
+template <typename DataType>
 struct EnthalpyTimesDensityWSquaredPlusBSquared : db::SimpleTag {
-  using type = Scalar<DataVector>;
+  using type = Scalar<DataType>;
 };
 }  // namespace
 
 namespace grmhd::ValenciaDivClean {
 namespace detail {
-void sources_impl(
-    const gsl::not_null<Scalar<DataVector>*> source_tilde_tau,
-    const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
-        source_tilde_s,
-    const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
-        source_tilde_b,
-    const gsl::not_null<Scalar<DataVector>*> source_tilde_phi,
+template <typename DataType>
+KOKKOS_FUNCTION void sources_impl(
+    const gsl::not_null<Scalar<DataType>*> source_tilde_tau,
+    const gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*> source_tilde_s,
+    const gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> source_tilde_b,
+    const gsl::not_null<Scalar<DataType>*> source_tilde_phi,
 
-    const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_s_up,
-    const gsl::not_null<tnsr::II<DataVector, 3, Frame::Inertial>*>
+    const gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_s_up,
+    const gsl::not_null<tnsr::II<DataType, 3, Frame::Inertial>*>
         densitized_stress,
-    const gsl::not_null<Scalar<DataVector>*> h_rho_w_squared_plus_b_squared,
+    const gsl::not_null<Scalar<DataType>*> h_rho_w_squared_plus_b_squared,
 
-    const Scalar<DataVector>& magnetic_field_dot_spatial_velocity,
-    const Scalar<DataVector>& magnetic_field_squared,
-    const Scalar<DataVector>& one_over_w_squared,
-    const Scalar<DataVector>& pressure_star,
-    const tnsr::I<DataVector, 3, Frame::Inertial>&
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& magnetic_field_squared,
+    const Scalar<DataType>& one_over_w_squared,
+    const Scalar<DataType>& pressure_star,
+    const tnsr::I<DataType, 3, Frame::Inertial>&
         trace_spatial_christoffel_second,
 
-    const Scalar<DataVector>& tilde_d, const Scalar<DataVector>& /* tilde_ye */,
-    const Scalar<DataVector>& tilde_tau,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b,
-    const Scalar<DataVector>& tilde_phi, const Scalar<DataVector>& lapse,
-    const Scalar<DataVector>& sqrt_det_spatial_metric,
-    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& d_lapse,
-    const tnsr::iJ<DataVector, 3, Frame::Inertial>& d_shift,
-    const tnsr::ijj<DataVector, 3, Frame::Inertial>& d_spatial_metric,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
-    const Scalar<DataVector>& lorentz_factor,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataType>& tilde_d, const Scalar<DataType>& /* tilde_ye */,
+    const Scalar<DataType>& tilde_tau,
+    const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s,
+    const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b,
+    const Scalar<DataType>& tilde_phi, const Scalar<DataType>& lapse,
+    const Scalar<DataType>& sqrt_det_spatial_metric,
+    const tnsr::II<DataType, 3, Frame::Inertial>& inv_spatial_metric,
+    const tnsr::i<DataType, 3, Frame::Inertial>& d_lapse,
+    const tnsr::iJ<DataType, 3, Frame::Inertial>& d_shift,
+    const tnsr::ijj<DataType, 3, Frame::Inertial>& d_spatial_metric,
+    const tnsr::I<DataType, 3, Frame::Inertial>& spatial_velocity,
+    const Scalar<DataType>& lorentz_factor,
+    const tnsr::I<DataType, 3, Frame::Inertial>& magnetic_field,
 
-    const Scalar<DataVector>& rest_mass_density,
-    const Scalar<DataVector>& /* electron_fraction */,
-    const Scalar<DataVector>& pressure,
-    const Scalar<DataVector>& specific_internal_energy,
-    const tnsr::ii<DataVector, 3, Frame::Inertial>& extrinsic_curvature,
+    const Scalar<DataType>& rest_mass_density,
+    const Scalar<DataType>& /* electron_fraction */,
+    const Scalar<DataType>& pressure,
+    const Scalar<DataType>& specific_internal_energy,
+    const tnsr::ii<DataType, 3, Frame::Inertial>& extrinsic_curvature,
     const double constraint_damping_parameter) {
   get(*h_rho_w_squared_plus_b_squared) =
       get(magnetic_field_squared) +
       (get(rest_mass_density) * (1.0 + get(specific_internal_energy)) +
        get(pressure)) *
           square(get(lorentz_factor));
-  ::densitized_stress(densitized_stress, inv_spatial_metric,
-                      magnetic_field_dot_spatial_velocity, one_over_w_squared,
-                      pressure_star, *h_rho_w_squared_plus_b_squared,
-                      spatial_velocity, magnetic_field,
-                      sqrt_det_spatial_metric);
+  ::densitized_stress<DataType>(
+      densitized_stress, inv_spatial_metric,
+      magnetic_field_dot_spatial_velocity, one_over_w_squared, pressure_star,
+      *h_rho_w_squared_plus_b_squared, spatial_velocity, magnetic_field,
+      sqrt_det_spatial_metric);
   raise_or_lower_index(tilde_s_up, tilde_s, inv_spatial_metric);
 
   get(*source_tilde_tau) = get(lapse) * get<0, 0>(extrinsic_curvature) *
@@ -170,36 +185,48 @@ void sources_impl(
   }
 }
 
-void cartoon_sources_impl(
-    const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
-        source_tilde_s,
-    const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
-        source_tilde_b,
+template <typename DataType>
+KOKKOS_FUNCTION void cartoon_sources_impl(
+    const gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*> source_tilde_s,
+    const gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> source_tilde_b,
 
-    const Scalar<DataVector>& pressure_star,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& magnetic_field_one_form,
-    const Scalar<DataVector>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& pressure_star,
+    const tnsr::i<DataType, 3, Frame::Inertial>& magnetic_field_one_form,
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
 
-    const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b,
-    const Scalar<DataVector>& tilde_phi,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
-    const Scalar<DataVector>& lorentz_factor, const Scalar<DataVector>& lapse,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
-    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
-    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
-    const Scalar<DataVector>& sqrt_det_spatial_metric,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& inertial_coords,
+    const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s,
+    const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b,
+    const Scalar<DataType>& tilde_phi,
+    const tnsr::I<DataType, 3, Frame::Inertial>& spatial_velocity,
+    const Scalar<DataType>& lorentz_factor, const Scalar<DataType>& lapse,
+    const tnsr::I<DataType, 3, Frame::Inertial>& shift,
+    const tnsr::ii<DataType, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::II<DataType, 3, Frame::Inertial>& inv_spatial_metric,
+    const Scalar<DataType>& sqrt_det_spatial_metric,
+    const tnsr::I<DataType, 3, Frame::Inertial>& inertial_coords,
     const Spectral::Quadrature cartoon_quadrature) {
 #ifdef SPECTRE_DEBUG
-  for (size_t i = 0; i < get<0>(inertial_coords).size(); ++i) {
-    ASSERT(not equal_within_roundoff(
-               0.0, get<0>(inertial_coords)[i],
-               std::numeric_limits<double>::epsilon() * 100.0,
-               max(get<0>(inertial_coords))),
-           "Cannot compute the Cartoon source terms with x=0 in the domain but "
-           "we got inertial_coords = "
-               << inertial_coords);
+  if constexpr (std::is_same_v<DataType, double>) {
+    // A single grid point, possibly on the device where we can't use `ASSERT`
+    KOKKOS_IF_ON_HOST(
+        (ASSERT(get<0>(inertial_coords) != 0.0,
+                "Cannot compute the Cartoon source terms with x=0 in the "
+                "domain but we got inertial_coords = "
+                    << inertial_coords);))
+    KOKKOS_IF_ON_DEVICE((if (get<0>(inertial_coords) == 0.0) {
+      Kokkos::abort(
+          "Cannot compute the Cartoon source terms with x=0 in the domain");
+    }))
+  } else {
+    for (size_t i = 0; i < get<0>(inertial_coords).size(); ++i) {
+      ASSERT(not equal_within_roundoff(
+                 0.0, get<0>(inertial_coords)[i],
+                 std::numeric_limits<double>::epsilon() * 100.0,
+                 max(get<0>(inertial_coords))),
+             "Cannot compute the Cartoon source terms with x=0 in the domain "
+             "but we got inertial_coords = "
+                 << inertial_coords);
+    }
   }
 #endif  // SPECTRE_DEBUG
   if (cartoon_quadrature == Spectral::Quadrature::SphericalSymmetry) {
@@ -210,31 +237,33 @@ void cartoon_sources_impl(
         (get<1, 1>(inv_spatial_metric) + get<2, 2>(inv_spatial_metric)) *
         get(tilde_phi) / get<0>(inertial_coords);
   } else {
-    ASSERT(
-        cartoon_quadrature == Spectral::Quadrature::AxialSymmetry,
-        "Got unexpected quadrature for Cartoon basis: " << cartoon_quadrature);
+    KOKKOS_IF_ON_HOST(
+        (ASSERT(cartoon_quadrature == Spectral::Quadrature::AxialSymmetry,
+                "Got unexpected quadrature for Cartoon basis: "
+                    << cartoon_quadrature);))
 
-    Variables<
-        tmpl::list<hydro::Tags::SpatialVelocityOneForm<DataVector, 3>,
-                   grmhd::ValenciaDivClean::Tags::ComovingMagneticFieldOneForm,
-                   hydro::Tags::TransportVelocity<DataVector, 3>>>
-        temp_tensors(get<0>(inertial_coords).size());
+    TempBuffer<tmpl::list<
+        hydro::Tags::SpatialVelocityOneForm<DataType, 3, Frame::Inertial>,
+        ::Tags::Tempa<0, 3, Frame::Inertial, DataType>,
+        hydro::Tags::TransportVelocity<DataType, 3, Frame::Inertial>>>
+        temp_tensors{get_size(get(lapse))};
 
     auto& spatial_velocity_one_form =
-        get<hydro::Tags::SpatialVelocityOneForm<DataVector, 3>>(temp_tensors);
+        get<hydro::Tags::SpatialVelocityOneForm<DataType, 3, Frame::Inertial>>(
+            temp_tensors);
     raise_or_lower_index(make_not_null(&spatial_velocity_one_form),
                          spatial_velocity, spatial_metric);
 
     auto& comoving_magnetic_field_one_form =
-        get<grmhd::ValenciaDivClean::Tags::ComovingMagneticFieldOneForm>(
-            temp_tensors);
+        get<::Tags::Tempa<0, 3, Frame::Inertial, DataType>>(temp_tensors);
     hydro::comoving_magnetic_field_one_form(
         make_not_null(&comoving_magnetic_field_one_form),
         spatial_velocity_one_form, magnetic_field_one_form,
         magnetic_field_dot_spatial_velocity, lorentz_factor, shift, lapse);
 
     auto& transport_velocity =
-        get<hydro::Tags::TransportVelocity<DataVector, 3>>(temp_tensors);
+        get<hydro::Tags::TransportVelocity<DataType, 3, Frame::Inertial>>(
+            temp_tensors);
     hydro::transport_velocity(make_not_null(&transport_velocity),
                               spatial_velocity, lapse, shift);
 
@@ -265,77 +294,78 @@ void cartoon_sources_impl(
 }
 }  // namespace detail
 
-void ComputeSources::apply(
-    const gsl::not_null<Scalar<DataVector>*> source_tilde_tau,
-    const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*>
-        source_tilde_s,
-    const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*>
-        source_tilde_b,
-    const gsl::not_null<Scalar<DataVector>*> source_tilde_phi,
-    const Scalar<DataVector>& tilde_d, const Scalar<DataVector>& tilde_ye,
-    const Scalar<DataVector>& tilde_tau,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& tilde_s,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b,
-    const Scalar<DataVector>& tilde_phi,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
-    const Scalar<DataVector>& rest_mass_density,
-    const Scalar<DataVector>& electron_fraction,
-    const Scalar<DataVector>& specific_internal_energy,
-    const Scalar<DataVector>& lorentz_factor,
-    const Scalar<DataVector>& pressure, const Scalar<DataVector>& lapse,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& d_lapse,
-    const tnsr::iJ<DataVector, 3, Frame::Inertial>& d_shift,
-    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
-    const tnsr::ijj<DataVector, 3, Frame::Inertial>& d_spatial_metric,
-    const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
-    const Scalar<DataVector>& sqrt_det_spatial_metric,
-    const tnsr::ii<DataVector, 3, Frame::Inertial>& extrinsic_curvature,
+template <typename DataType>
+KOKKOS_FUNCTION void ComputeSources::apply(
+    const gsl::not_null<Scalar<DataType>*> source_tilde_tau,
+    const gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*> source_tilde_s,
+    const gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> source_tilde_b,
+    const gsl::not_null<Scalar<DataType>*> source_tilde_phi,
+    const Scalar<DataType>& tilde_d, const Scalar<DataType>& tilde_ye,
+    const Scalar<DataType>& tilde_tau,
+    const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s,
+    const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b,
+    const Scalar<DataType>& tilde_phi,
+    const tnsr::I<DataType, 3, Frame::Inertial>& spatial_velocity,
+    const tnsr::I<DataType, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataType>& rest_mass_density,
+    const Scalar<DataType>& electron_fraction,
+    const Scalar<DataType>& specific_internal_energy,
+    const Scalar<DataType>& lorentz_factor, const Scalar<DataType>& pressure,
+    const Scalar<DataType>& lapse,
+    const tnsr::I<DataType, 3, Frame::Inertial>& shift,
+    const tnsr::i<DataType, 3, Frame::Inertial>& d_lapse,
+    const tnsr::iJ<DataType, 3, Frame::Inertial>& d_shift,
+    const tnsr::ii<DataType, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::ijj<DataType, 3, Frame::Inertial>& d_spatial_metric,
+    const tnsr::II<DataType, 3, Frame::Inertial>& inv_spatial_metric,
+    const Scalar<DataType>& sqrt_det_spatial_metric,
+    const tnsr::ii<DataType, 3, Frame::Inertial>& extrinsic_curvature,
     const double constraint_damping_parameter,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& inertial_coords,
+    const tnsr::I<DataType, 3, Frame::Inertial>& inertial_coords,
     const Mesh<3>& dg_mesh) {
-  Variables<
-      tmpl::list<TildeSUp, DensitizedStress, MagneticFieldOneForm,
-                 hydro::Tags::MagneticFieldDotSpatialVelocity<DataVector>,
-                 hydro::Tags::MagneticFieldSquared<DataVector>,
-                 OneOverLorentzFactorSquared, PressureStar,
-                 EnthalpyTimesDensityWSquaredPlusBSquared,
-                 gr::Tags::TraceSpatialChristoffelFirstKind<DataVector, 3>,
-                 gr::Tags::TraceSpatialChristoffelSecondKind<DataVector, 3>>>
-      temp_tensors(get<0>(tilde_s).size());
+  TempBuffer<
+      tmpl::list<TildeSUp<DataType>, DensitizedStress<DataType>,
+                 MagneticFieldOneForm<DataType>,
+                 hydro::Tags::MagneticFieldDotSpatialVelocity<DataType>,
+                 hydro::Tags::MagneticFieldSquared<DataType>,
+                 OneOverLorentzFactorSquared<DataType>, PressureStar<DataType>,
+                 EnthalpyTimesDensityWSquaredPlusBSquared<DataType>,
+                 gr::Tags::TraceSpatialChristoffelFirstKind<DataType, 3>,
+                 gr::Tags::TraceSpatialChristoffelSecondKind<DataType, 3>>>
+      temp_tensors{get_size(get(tilde_d))};
 
-  auto& magnetic_field_oneform = get<MagneticFieldOneForm>(temp_tensors);
+  auto& magnetic_field_oneform =
+      get<MagneticFieldOneForm<DataType>>(temp_tensors);
   raise_or_lower_index(make_not_null(&magnetic_field_oneform), magnetic_field,
                        spatial_metric);
 
   auto& magnetic_field_squared =
-      get<hydro::Tags::MagneticFieldSquared<DataVector>>(temp_tensors);
+      get<hydro::Tags::MagneticFieldSquared<DataType>>(temp_tensors);
   dot_product(make_not_null(&magnetic_field_squared), magnetic_field,
               magnetic_field_oneform);
 
   auto& magnetic_field_dot_spatial_velocity =
-      get<hydro::Tags::MagneticFieldDotSpatialVelocity<DataVector>>(
-          temp_tensors);
+      get<hydro::Tags::MagneticFieldDotSpatialVelocity<DataType>>(temp_tensors);
   dot_product(make_not_null(&magnetic_field_dot_spatial_velocity),
               magnetic_field_oneform, spatial_velocity);
 
-  auto& one_over_w_squared = get<OneOverLorentzFactorSquared>(temp_tensors);
+  auto& one_over_w_squared =
+      get<OneOverLorentzFactorSquared<DataType>>(temp_tensors);
   get(one_over_w_squared) = 1.0 / square(get(lorentz_factor));
 
-  auto& pressure_star = get<PressureStar>(temp_tensors);
+  auto& pressure_star = get<PressureStar<DataType>>(temp_tensors);
   get(pressure_star) =
       get(pressure) + 0.5 * square(get(magnetic_field_dot_spatial_velocity)) +
       0.5 * get(magnetic_field_squared) * get(one_over_w_squared);
 
   auto& trace_spatial_christoffel_first =
-      get<gr::Tags::TraceSpatialChristoffelFirstKind<DataVector, 3>>(
+      get<gr::Tags::TraceSpatialChristoffelFirstKind<DataType, 3>>(
           temp_tensors);
   gr::trace_spatial_christoffel_first_kind(
       make_not_null(&trace_spatial_christoffel_first), d_spatial_metric,
       inv_spatial_metric);
   auto& trace_spatial_christoffel_second =
-      get<gr::Tags::TraceSpatialChristoffelSecondKind<DataVector, 3>>(
+      get<gr::Tags::TraceSpatialChristoffelSecondKind<DataType, 3>>(
           temp_tensors);
   raise_or_lower_index(make_not_null(&trace_spatial_christoffel_second),
                        trace_spatial_christoffel_first, inv_spatial_metric);
@@ -343,10 +373,10 @@ void ComputeSources::apply(
   detail::sources_impl(
       source_tilde_tau, source_tilde_s, source_tilde_b, source_tilde_phi,
 
-      make_not_null(&get<TildeSUp>(temp_tensors)),
-      make_not_null(&get<DensitizedStress>(temp_tensors)),
-      make_not_null(
-          &get<EnthalpyTimesDensityWSquaredPlusBSquared>(temp_tensors)),
+      make_not_null(&get<TildeSUp<DataType>>(temp_tensors)),
+      make_not_null(&get<DensitizedStress<DataType>>(temp_tensors)),
+      make_not_null(&get<EnthalpyTimesDensityWSquaredPlusBSquared<DataType>>(
+          temp_tensors)),
 
       magnetic_field_dot_spatial_velocity, magnetic_field_squared,
       one_over_w_squared, pressure_star, trace_spatial_christoffel_second,
@@ -368,3 +398,96 @@ void ComputeSources::apply(
   }
 }
 }  // namespace grmhd::ValenciaDivClean
+
+#define DTYPE(data) BOOST_PP_TUPLE_ELEM(0, data)
+
+#define INSTANTIATE(_, data)                                                   \
+  template void grmhd::ValenciaDivClean::detail::sources_impl(                 \
+      gsl::not_null<Scalar<DTYPE(data)>*> source_tilde_tau,                    \
+      gsl::not_null<tnsr::i<DTYPE(data), 3, Frame::Inertial>*> source_tilde_s, \
+      gsl::not_null<tnsr::I<DTYPE(data), 3, Frame::Inertial>*> source_tilde_b, \
+      gsl::not_null<Scalar<DTYPE(data)>*> source_tilde_phi,                    \
+      gsl::not_null<tnsr::I<DTYPE(data), 3, Frame::Inertial>*> tilde_s_up,     \
+      gsl::not_null<tnsr::II<DTYPE(data), 3, Frame::Inertial>*>                \
+          densitized_stress,                                                   \
+      gsl::not_null<Scalar<DTYPE(data)>*> h_rho_w_squared_plus_b_squared,      \
+      const Scalar<DTYPE(data)>& magnetic_field_dot_spatial_velocity,          \
+      const Scalar<DTYPE(data)>& magnetic_field_squared,                       \
+      const Scalar<DTYPE(data)>& one_over_w_squared,                           \
+      const Scalar<DTYPE(data)>& pressure_star,                                \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>&                          \
+          trace_spatial_christoffel_second,                                    \
+      const Scalar<DTYPE(data)>& tilde_d, const Scalar<DTYPE(data)>& tilde_ye, \
+      const Scalar<DTYPE(data)>& tilde_tau,                                    \
+      const tnsr::i<DTYPE(data), 3, Frame::Inertial>& tilde_s,                 \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& tilde_b,                 \
+      const Scalar<DTYPE(data)>& tilde_phi, const Scalar<DTYPE(data)>& lapse,  \
+      const Scalar<DTYPE(data)>& sqrt_det_spatial_metric,                      \
+      const tnsr::II<DTYPE(data), 3, Frame::Inertial>& inv_spatial_metric,     \
+      const tnsr::i<DTYPE(data), 3, Frame::Inertial>& d_lapse,                 \
+      const tnsr::iJ<DTYPE(data), 3, Frame::Inertial>& d_shift,                \
+      const tnsr::ijj<DTYPE(data), 3, Frame::Inertial>& d_spatial_metric,      \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& spatial_velocity,        \
+      const Scalar<DTYPE(data)>& lorentz_factor,                               \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& magnetic_field,          \
+      const Scalar<DTYPE(data)>& rest_mass_density,                            \
+      const Scalar<DTYPE(data)>& electron_fraction,                            \
+      const Scalar<DTYPE(data)>& pressure,                                     \
+      const Scalar<DTYPE(data)>& specific_internal_energy,                     \
+      const tnsr::ii<DTYPE(data), 3, Frame::Inertial>& extrinsic_curvature,    \
+      double constraint_damping_parameter);                                    \
+  template void grmhd::ValenciaDivClean::ComputeSources::apply(                \
+      gsl::not_null<Scalar<DTYPE(data)>*> source_tilde_tau,                    \
+      gsl::not_null<tnsr::i<DTYPE(data), 3, Frame::Inertial>*> source_tilde_s, \
+      gsl::not_null<tnsr::I<DTYPE(data), 3, Frame::Inertial>*> source_tilde_b, \
+      gsl::not_null<Scalar<DTYPE(data)>*> source_tilde_phi,                    \
+      const Scalar<DTYPE(data)>& tilde_d, const Scalar<DTYPE(data)>& tilde_ye, \
+      const Scalar<DTYPE(data)>& tilde_tau,                                    \
+      const tnsr::i<DTYPE(data), 3, Frame::Inertial>& tilde_s,                 \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& tilde_b,                 \
+      const Scalar<DTYPE(data)>& tilde_phi,                                    \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& spatial_velocity,        \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& magnetic_field,          \
+      const Scalar<DTYPE(data)>& rest_mass_density,                            \
+      const Scalar<DTYPE(data)>& electron_fraction,                            \
+      const Scalar<DTYPE(data)>& specific_internal_energy,                     \
+      const Scalar<DTYPE(data)>& lorentz_factor,                               \
+      const Scalar<DTYPE(data)>& pressure, const Scalar<DTYPE(data)>& lapse,   \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& shift,                   \
+      const tnsr::i<DTYPE(data), 3, Frame::Inertial>& d_lapse,                 \
+      const tnsr::iJ<DTYPE(data), 3, Frame::Inertial>& d_shift,                \
+      const tnsr::ii<DTYPE(data), 3, Frame::Inertial>& spatial_metric,         \
+      const tnsr::ijj<DTYPE(data), 3, Frame::Inertial>& d_spatial_metric,      \
+      const tnsr::II<DTYPE(data), 3, Frame::Inertial>& inv_spatial_metric,     \
+      const Scalar<DTYPE(data)>& sqrt_det_spatial_metric,                      \
+      const tnsr::ii<DTYPE(data), 3, Frame::Inertial>& extrinsic_curvature,    \
+      double constraint_damping_parameter,                                     \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& inertial_coords,         \
+      const Mesh<3>& dg_mesh);                                                 \
+  template void grmhd::ValenciaDivClean::detail::cartoon_sources_impl(         \
+      gsl::not_null<tnsr::i<DTYPE(data), 3, Frame::Inertial>*> source_tilde_s, \
+      gsl::not_null<tnsr::I<DTYPE(data), 3, Frame::Inertial>*> source_tilde_b, \
+      const Scalar<DTYPE(data)>& pressure_star,                                \
+      const tnsr::i<DTYPE(data), 3, Frame::Inertial>& magnetic_field_one_form, \
+      const Scalar<DTYPE(data)>& magnetic_field_dot_spatial_velocity,          \
+      const tnsr::i<DTYPE(data), 3, Frame::Inertial>& tilde_s,                 \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& tilde_b,                 \
+      const Scalar<DTYPE(data)>& tilde_phi,                                    \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& spatial_velocity,        \
+      const Scalar<DTYPE(data)>& lorentz_factor,                               \
+      const Scalar<DTYPE(data)>& lapse,                                        \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& shift,                   \
+      const tnsr::ii<DTYPE(data), 3, Frame::Inertial>& spatial_metric,         \
+      const tnsr::II<DTYPE(data), 3, Frame::Inertial>& inv_spatial_metric,     \
+      const Scalar<DTYPE(data)>& sqrt_det_spatial_metric,                      \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& inertial_coords,         \
+      Spectral::Quadrature cartoon_quadrature);
+
+GENERATE_INSTANTIATIONS(INSTANTIATE, (double))
+// The `DataVector` versions are never called on the device
+#ifndef SPECTRE_KOKKOS_DEVICE_PASS
+GENERATE_INSTANTIATIONS(INSTANTIATE, (DataVector))
+#endif  // SPECTRE_KOKKOS_DEVICE_PASS
+
+#undef INSTANTIATE
+#undef DTYPE

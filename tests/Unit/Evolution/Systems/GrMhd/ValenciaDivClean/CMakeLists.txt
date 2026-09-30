@@ -48,6 +48,12 @@ set(LIBRARY_SOURCES
   Test_ValenciaDivClean.cpp
   )
 
+if (SPECTRE_KOKKOS)
+  list(APPEND LIBRARY_SOURCES
+    Test_FluxesKokkos.cpp
+    )
+endif()
+
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")
 
 target_link_libraries(

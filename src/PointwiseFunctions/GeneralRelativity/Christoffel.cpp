@@ -5,18 +5,20 @@
 
 #include <cstddef>
 
+#include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
-#include "Utilities/ContainerHelpers.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
-#include "Utilities/MakeWithValue.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
+#include "Utilities/SetNumberOfGridPoints.hpp"
 
 namespace gr {
 template <size_t SpatialDim, typename Frame, IndexType Index, typename DataType>
-void christoffel_first_kind(
+KOKKOS_FUNCTION void christoffel_first_kind(
     const gsl::not_null<tnsr::abb<DataType, SpatialDim, Frame, Index>*>
         christoffel,
     const tnsr::abb<DataType, SpatialDim, Frame, Index>& d_metric) {
+  set_number_of_grid_points(christoffel, d_metric);
   constexpr auto dimensionality =
       Index == IndexType::Spatial ? SpatialDim : SpatialDim + 1;
   for (size_t k = 0; k < dimensionality; ++k) {
@@ -31,21 +33,21 @@ void christoffel_first_kind(
 }
 
 template <size_t SpatialDim, typename Frame, IndexType Index, typename DataType>
-tnsr::abb<DataType, SpatialDim, Frame, Index> christoffel_first_kind(
+KOKKOS_FUNCTION tnsr::abb<DataType, SpatialDim, Frame, Index>
+christoffel_first_kind(
     const tnsr::abb<DataType, SpatialDim, Frame, Index>& d_metric) {
-  auto christoffel =
-      make_with_value<tnsr::abb<DataType, SpatialDim, Frame, Index>>(d_metric,
-                                                                     0.);
+  tnsr::abb<DataType, SpatialDim, Frame, Index> christoffel{};
   christoffel_first_kind(make_not_null(&christoffel), d_metric);
   return christoffel;
 }
 
 template <size_t SpatialDim, typename Frame, IndexType Index, typename DataType>
-void christoffel_second_kind(
+KOKKOS_FUNCTION void christoffel_second_kind(
     const gsl::not_null<tnsr::Abb<DataType, SpatialDim, Frame, Index>*>
         christoffel,
     const tnsr::abb<DataType, SpatialDim, Frame, Index>& d_metric,
     const tnsr::AA<DataType, SpatialDim, Frame, Index>& inverse_metric) {
+  set_number_of_grid_points(christoffel, d_metric);
   constexpr auto dimensionality =
       Index == IndexType::Spatial ? SpatialDim : SpatialDim + 1;
   for (size_t d = 0; d < dimensionality; ++d) {
@@ -66,15 +68,44 @@ void christoffel_second_kind(
   }
 }
 template <size_t SpatialDim, typename Frame, IndexType Index, typename DataType>
-auto christoffel_second_kind(
+KOKKOS_FUNCTION auto christoffel_second_kind(
     const tnsr::abb<DataType, SpatialDim, Frame, Index>& d_metric,
     const tnsr::AA<DataType, SpatialDim, Frame, Index>& inverse_metric)
     -> tnsr::Abb<DataType, SpatialDim, Frame, Index> {
-  tnsr::Abb<DataType, SpatialDim, Frame, Index> christoffel(
-      get_size(get<0, 0, 0>(d_metric)));
+  tnsr::Abb<DataType, SpatialDim, Frame, Index> christoffel{};
   christoffel_second_kind(make_not_null(&christoffel), d_metric,
                           inverse_metric);
   return christoffel;
+}
+
+template <typename DataType, size_t SpatialDim, typename Frame>
+KOKKOS_FUNCTION void trace_spatial_christoffel_first_kind(
+    const gsl::not_null<tnsr::i<DataType, SpatialDim, Frame>*> result,
+    const tnsr::ijj<DataType, SpatialDim, Frame>& d_spatial_metric,
+    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric) {
+  set_number_of_grid_points(result, inverse_spatial_metric);
+  // Use the symmetry of the inverse spatial metric to sum over each of its
+  // independent components once:
+  // Gamma_i = sum_j gamma^{jj} (d_j gamma_{ij} - d_i gamma_{jj} / 2)
+  //   + sum_{j<k} gamma^{jk} (d_j gamma_{ik} + d_k gamma_{ij} - d_i gamma_{jk})
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    result->get(i) =
+        get<0, 0>(inverse_spatial_metric) *
+        (d_spatial_metric.get(0, i, 0) - 0.5 * d_spatial_metric.get(i, 0, 0));
+    for (size_t j = 0; j < SpatialDim; ++j) {
+      if (j != 0) {
+        result->get(i) += inverse_spatial_metric.get(j, j) *
+                          (d_spatial_metric.get(j, i, j) -
+                           0.5 * d_spatial_metric.get(i, j, j));
+      }
+      for (size_t k = j + 1; k < SpatialDim; ++k) {
+        result->get(i) +=
+            inverse_spatial_metric.get(j, k) *
+            (d_spatial_metric.get(j, i, k) + d_spatial_metric.get(k, i, j) -
+             d_spatial_metric.get(i, j, k));
+      }
+    }
+  }
 }
 }  // namespace gr
 
@@ -109,15 +140,32 @@ auto christoffel_second_kind(
       const tnsr::AA<DTYPE(data), DIM(data), FRAME(data), INDEXTYPE(data)>&  \
           inverse_metric);
 
-GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3), (double, DataVector),
+GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3),
+                        SPECTRE_DEVICE_AND_HOST_TYPES((double),
+                                                      (double, DataVector)),
                         (Frame::Grid, Frame::Distorted, Frame::Inertial,
                          Frame::Spherical<Frame::Inertial>,
                          Frame::Spherical<Frame::Distorted>,
                          Frame::Spherical<Frame::Grid>),
                         (IndexType::Spatial, IndexType::Spacetime))
 
+#undef INSTANTIATE
+
+#define INSTANTIATE_TRACE(_, data)                                            \
+  template void gr::trace_spatial_christoffel_first_kind(                     \
+      const gsl::not_null<tnsr::i<DTYPE(data), DIM(data), FRAME(data)>*>      \
+          result,                                                             \
+      const tnsr::ijj<DTYPE(data), DIM(data), FRAME(data)>& d_spatial_metric, \
+      const tnsr::II<DTYPE(data), DIM(data), FRAME(data)>&                    \
+          inverse_spatial_metric);
+
+GENERATE_INSTANTIATIONS(INSTANTIATE_TRACE, (1, 2, 3),
+                        SPECTRE_DEVICE_AND_HOST_TYPES((double),
+                                                      (double, DataVector)),
+                        (Frame::Grid, Frame::Distorted, Frame::Inertial))
+
 #undef DIM
 #undef DTYPE
 #undef FRAME
 #undef INDEXTYPE
-#undef INSTANTIATE
+#undef INSTANTIATE_TRACE

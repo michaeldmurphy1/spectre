@@ -15,6 +15,7 @@
 #include "DataStructures/Tensor/IndexType.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 /// \cond
 namespace gsl {
@@ -36,12 +37,13 @@ namespace gr {
  * where \f$g_{bc}\f$ is either a spatial or spacetime metric
  */
 template <size_t SpatialDim, typename Frame, IndexType Index, typename DataType>
-void christoffel_first_kind(
+KOKKOS_FUNCTION void christoffel_first_kind(
     gsl::not_null<tnsr::abb<DataType, SpatialDim, Frame, Index>*> christoffel,
     const tnsr::abb<DataType, SpatialDim, Frame, Index>& d_metric);
 
 template <size_t SpatialDim, typename Frame, IndexType Index, typename DataType>
-tnsr::abb<DataType, SpatialDim, Frame, Index> christoffel_first_kind(
+KOKKOS_FUNCTION tnsr::abb<DataType, SpatialDim, Frame, Index>
+christoffel_first_kind(
     const tnsr::abb<DataType, SpatialDim, Frame, Index>& d_metric);
 /// @}
 
@@ -60,17 +62,43 @@ tnsr::abb<DataType, SpatialDim, Frame, Index> christoffel_first_kind(
  * Christoffel symbol of the first kind and then raising the index.
  */
 template <size_t SpatialDim, typename Frame, IndexType Index, typename DataType>
-void christoffel_second_kind(
+KOKKOS_FUNCTION void christoffel_second_kind(
     gsl::not_null<tnsr::Abb<DataType, SpatialDim, Frame, Index>*> christoffel,
     const tnsr::abb<DataType, SpatialDim, Frame, Index>& d_metric,
     const tnsr::AA<DataType, SpatialDim, Frame, Index>& inverse_metric);
 
 template <size_t SpatialDim, typename Frame, IndexType Index, typename DataType>
-auto christoffel_second_kind(
+KOKKOS_FUNCTION auto christoffel_second_kind(
     const tnsr::abb<DataType, SpatialDim, Frame, Index>& d_metric,
     const tnsr::AA<DataType, SpatialDim, Frame, Index>& inverse_metric)
     -> tnsr::Abb<DataType, SpatialDim, Frame, Index>;
 /// @}
+
+/*!
+ * \ingroup GeneralRelativityGroup
+ * \brief Computes the trace of the spatial Christoffel symbols of the first
+ * kind from the derivative of the spatial metric and the inverse spatial
+ * metric.
+ *
+ * \details Computes
+ *
+ * \f{align*}
+ * \Gamma_i = \gamma^{jk} \Gamma_{ijk}
+ *   = \gamma^{jk} \left(\partial_j \gamma_{ik}
+ *     - \frac{1}{2} \partial_i \gamma_{jk}\right)
+ * \f}
+ *
+ * without computing the rank-3 Christoffel symbols. The trace of the
+ * Christoffel symbols of the second kind is \f$\Gamma^i = \gamma^{ij}
+ * \Gamma_j\f$ (see `raise_or_lower_index`).
+ *
+ * Instantiated for `DataVector` and `double`.
+ */
+template <typename DataType, size_t SpatialDim, typename Frame>
+KOKKOS_FUNCTION void trace_spatial_christoffel_first_kind(
+    gsl::not_null<tnsr::i<DataType, SpatialDim, Frame>*> result,
+    const tnsr::ijj<DataType, SpatialDim, Frame>& d_spatial_metric,
+    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric);
 
 namespace Tags {
 /// Compute item for spatial Christoffel symbols of the first kind

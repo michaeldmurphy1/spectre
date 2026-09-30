@@ -56,7 +56,10 @@ if(NOT ${KOKKOS_CXX_COMPILER_ID} STREQUAL "NVIDIA")
 endif()
 
 if (TARGET Kokkos::kokkos)
-  list(APPEND LIBRARY_SOURCES Test_VariablesKokkos.cpp)
+  list(APPEND LIBRARY_SOURCES
+    Test_DeviceArguments.cpp
+    Test_VariablesKokkos.cpp
+    )
 endif()
 
 add_subdirectory(DataBox)

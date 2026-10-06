@@ -29,6 +29,7 @@ spectre_target_headers(
   HEADERS
   AoWeno.hpp
   DerivativeOrder.hpp
+  DerivativeStencils.hpp
   FallbackReconstructorType.hpp
   Filter.hpp
   FiniteDifference.hpp

@@ -12,6 +12,7 @@
 #include "DataStructures/Transpose.hpp"
 #include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/DirectionMap.hpp"
+#include "NumericalAlgorithms/FiniteDifference/DerivativeStencils.hpp"
 #include "NumericalAlgorithms/FiniteDifference/PartialDerivatives.tpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/CollocationPoints.hpp"
@@ -23,165 +24,6 @@
 
 namespace fd {
 namespace {
-template <size_t Order, bool UnitStride>
-struct ComputeImpl;
-
-template <bool UnitStride>
-struct ComputeImpl<2, UnitStride> {
-  static constexpr size_t fd_order = 2;
-
-  SPECTRE_ALWAYS_INLINE static double pointwise(
-      const double* const q, const int stride,
-      const std::array<double, 1>& weights) {
-    if constexpr (UnitStride) {
-      ASSERT(stride == 1, "UnitStride is true but got stride " << stride);
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      return weights[0] * (q[1] - q[-1]);
-    } else {
-      const auto signed_stride = static_cast<ptrdiff_t>(stride);
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      return weights[0] * (q[signed_stride] - q[-signed_stride]);
-    }
-  }
-
-  static constexpr std::array<double, 1> derivative_weights(
-      const double one_over_delta) {
-    return {{0.5 * one_over_delta}};
-  }
-};
-
-template <bool UnitStride>
-struct ComputeImpl<4, UnitStride> {
-  static constexpr size_t fd_order = 4;
-
-  SPECTRE_ALWAYS_INLINE static double pointwise(
-      const double* const q, const int stride,
-      const std::array<double, 2>& weights) {
-    if constexpr (UnitStride) {
-      ASSERT(stride == 1, "UnitStride is true but got stride " << stride);
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      return weights[1] * (q[-2] - q[2]) + weights[0] * (q[1] - q[-1]);
-    } else {
-      const auto signed_stride = static_cast<ptrdiff_t>(stride);
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      return weights[1] * (q[-2 * signed_stride] - q[2 * signed_stride]) +
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[0] * (q[signed_stride] - q[-signed_stride]);
-    }
-  }
-
-  static constexpr std::array<double, 2> derivative_weights(
-      const double one_over_delta) {
-    return {{0.6666666666666666 * one_over_delta,
-             0.08333333333333333 * one_over_delta}};
-  }
-};
-
-template <bool UnitStride>
-struct ComputeImpl<6, UnitStride> {
-  static constexpr size_t fd_order = 6;
-
-  SPECTRE_ALWAYS_INLINE static double pointwise(
-      const double* const q, const int stride,
-      const std::array<double, 3>& weights) {
-    if constexpr (UnitStride) {
-      ASSERT(stride == 1, "UnitStride is true but got stride " << stride);
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      return weights[2] * (q[3] - q[-3]) - weights[1] * (q[2] - q[-2]) +
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[0] * (q[1] - q[-1]);
-    } else {
-      const auto signed_stride = static_cast<ptrdiff_t>(stride);
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      return weights[2] * (q[3 * signed_stride] - q[-3 * signed_stride]) -
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[1] * (q[2 * signed_stride] - q[-2 * signed_stride]) +
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[0] * (q[signed_stride] - q[-signed_stride]);
-    }
-  }
-
-  static constexpr std::array<double, 3> derivative_weights(
-      const double one_over_delta) {
-    return {{0.75 * one_over_delta, 0.15 * one_over_delta,
-             0.016666666666666666 * one_over_delta}};
-  }
-};
-
-template <bool UnitStride>
-struct ComputeImpl<8, UnitStride> {
-  static constexpr size_t fd_order = 8;
-
-  SPECTRE_ALWAYS_INLINE static double pointwise(
-      const double* const q, const int stride,
-      const std::array<double, 4>& weights) {
-    if constexpr (UnitStride) {
-      ASSERT(stride == 1, "UnitStride is true but got stride " << stride);
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      return weights[3] * (q[4] - q[-4]) + weights[2] * (q[3] - q[-3]) -
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[1] * (q[2] - q[-2]) + weights[0] * (q[1] - q[-1]);
-    } else {
-      const auto signed_stride = static_cast<ptrdiff_t>(stride);
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      return weights[3] * (q[4 * signed_stride] - q[-4 * signed_stride]) +
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[2] * (q[3 * signed_stride] - q[-3 * signed_stride]) -
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[1] * (q[2 * signed_stride] - q[-2 * signed_stride]) +
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[0] * (q[signed_stride] - q[-signed_stride]);
-    }
-  }
-
-  static constexpr std::array<double, 4> derivative_weights(
-      const double one_over_delta) {
-    return {{0.8 * one_over_delta, 0.2 * one_over_delta,
-             0.0380952380952381 * one_over_delta,
-             -0.0035714285714285713 * one_over_delta}};
-  }
-};
-
-template <bool UnitStride>
-struct ComputeImpl<10, UnitStride> {
-  static constexpr size_t fd_order = 10;
-
-  SPECTRE_ALWAYS_INLINE static double pointwise(
-      const double* const q, const int stride,
-      const std::array<double, 5>& weights) {
-    if constexpr (UnitStride) {
-      ASSERT(stride == 1, "UnitStride is true but got stride " << stride);
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      return weights[4] * (q[5] - q[-5]) + weights[3] * (q[4] - q[-4]) +
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[2] * (q[3] - q[-3]) - weights[1] * (q[2] - q[-2]) +
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[0] * (q[1] - q[-1]);
-    } else {
-      const auto signed_stride = static_cast<ptrdiff_t>(stride);
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-      return weights[4] * (q[5 * signed_stride] - q[-5 * signed_stride]) +
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[3] * (q[4 * signed_stride] - q[-4 * signed_stride]) +
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[2] * (q[3 * signed_stride] - q[-3 * signed_stride]) -
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[1] * (q[2 * signed_stride] - q[-2 * signed_stride]) +
-             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-             weights[0] * (q[signed_stride] - q[-signed_stride]);
-    }
-  }
-
-  static constexpr std::array<double, 5> derivative_weights(
-      const double one_over_delta) {
-    return {{0.8333333333333334 * one_over_delta,
-             0.2380952380952381 * one_over_delta,
-             0.05952380952380952 * one_over_delta,
-             -0.009920634920634921 * one_over_delta,
-             0.0007936507936507937 * one_over_delta}};
-  }
-};
-
 template <typename DerivativeComputer, size_t Dim>
 void logical_partial_derivatives_fastest_dim(
     const gsl::not_null<gsl::span<double>*> derivative,
@@ -463,27 +305,27 @@ void logical_partial_derivatives_impl(
     const size_t fd_order) {
   switch (fd_order) {
     case 2:
-      ::fd::logical_partial_derivatives_impl<ComputeImpl<2, true>>(
+      ::fd::logical_partial_derivatives_impl<DerivativeStencil<2, true>>(
           logical_derivatives, buffer, volume_vars, ghost_cell_vars,
           volume_mesh, number_of_variables);
       break;
     case 4:
-      ::fd::logical_partial_derivatives_impl<ComputeImpl<4, true>>(
+      ::fd::logical_partial_derivatives_impl<DerivativeStencil<4, true>>(
           logical_derivatives, buffer, volume_vars, ghost_cell_vars,
           volume_mesh, number_of_variables);
       break;
     case 6:
-      ::fd::logical_partial_derivatives_impl<ComputeImpl<6, true>>(
+      ::fd::logical_partial_derivatives_impl<DerivativeStencil<6, true>>(
           logical_derivatives, buffer, volume_vars, ghost_cell_vars,
           volume_mesh, number_of_variables);
       break;
     case 8:
-      ::fd::logical_partial_derivatives_impl<ComputeImpl<8, true>>(
+      ::fd::logical_partial_derivatives_impl<DerivativeStencil<8, true>>(
           logical_derivatives, buffer, volume_vars, ghost_cell_vars,
           volume_mesh, number_of_variables);
       break;
     case 10:
-      ::fd::logical_partial_derivatives_impl<ComputeImpl<10, true>>(
+      ::fd::logical_partial_derivatives_impl<DerivativeStencil<10, true>>(
           logical_derivatives, buffer, volume_vars, ghost_cell_vars,
           volume_mesh, number_of_variables);
       break;

@@ -21,6 +21,10 @@ set(LIBRARY_SOURCES
   Test_Wcns5z.cpp
   )
 
+if(SPECTRE_KOKKOS)
+  list(APPEND LIBRARY_SOURCES Test_DerivativeStencilsKokkos.cpp)
+endif()
+
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")
 
 target_link_libraries(

@@ -11,6 +11,7 @@
 #include "NumericalAlgorithms/FiniteDifference/Reconstruct.hpp"
 #include "Utilities/ForceInline.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/Math.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -24,7 +25,7 @@ class Index;
 namespace fd::reconstruction {
 namespace detail {
 struct MonotonisedCentralReconstructor {
-  SPECTRE_ALWAYS_INLINE static std::array<double, 2> pointwise(
+  KOKKOS_FUNCTION SPECTRE_ALWAYS_INLINE static std::array<double, 2> pointwise(
       const double* const q, const int stride) {
     using std::abs;
 
@@ -44,7 +45,10 @@ struct MonotonisedCentralReconstructor {
     }
   }
 
-  SPECTRE_ALWAYS_INLINE static constexpr size_t stencil_width() { return 3; }
+  KOKKOS_FUNCTION SPECTRE_ALWAYS_INLINE static constexpr size_t
+  stencil_width() {
+    return 3;
+  }
 };
 }  // namespace detail
 

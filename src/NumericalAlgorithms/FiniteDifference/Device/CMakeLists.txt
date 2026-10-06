@@ -13,6 +13,7 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   MonotonisedCentral.cpp
+  PartialDerivatives.cpp
   VolumeView.cpp
   )
 
@@ -21,6 +22,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   MonotonisedCentral.hpp
+  PartialDerivatives.hpp
   Reconstruct.hpp
   VolumeView.hpp
   )
@@ -35,4 +37,5 @@ target_link_libraries(
   PRIVATE
   DomainStructure
   ErrorHandling
+  Spectral
   )

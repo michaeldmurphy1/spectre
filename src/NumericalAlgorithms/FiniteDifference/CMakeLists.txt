@@ -59,3 +59,5 @@ target_link_libraries(
   DomainStructure
   ErrorHandling
   )
+
+add_subdirectory(Device)

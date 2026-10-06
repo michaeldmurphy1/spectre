@@ -8,6 +8,7 @@ endif()
 set(LIBRARY "Test_FiniteDifferenceDevice")
 
 set(LIBRARY_SOURCES
+  Test_MonotonisedCentral.cpp
   Test_VolumeView.cpp
   )
 
@@ -18,6 +19,7 @@ target_link_libraries(
   PRIVATE
   DataStructures
   DomainStructure
+  FiniteDifference
   FiniteDifferenceDevice
   SpectreKokkos
   Utilities

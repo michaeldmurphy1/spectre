@@ -9,6 +9,7 @@ set(LIBRARY "Test_FiniteDifferenceDevice")
 
 set(LIBRARY_SOURCES
   Test_MonotonisedCentral.cpp
+  Test_PartialDerivatives.cpp
   Test_VolumeView.cpp
   )
 

@@ -7,6 +7,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/TagsDeclarations.hpp"
 #include "PointwiseFunctions/GeneralRelativity/TagsDeclarations.hpp"
 #include "PointwiseFunctions/Hydro/TagsDeclarations.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
@@ -74,23 +75,24 @@ struct ConservativeFromPrimitive {
                  gr::Tags::SpatialMetric<DataVector, 3>,
                  hydro::Tags::DivergenceCleaningField<DataVector>>;
 
-  static void apply(
-      gsl::not_null<Scalar<DataVector>*> tilde_d,
-      gsl::not_null<Scalar<DataVector>*> tilde_ye,
-      gsl::not_null<Scalar<DataVector>*> tilde_tau,
-      gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*> tilde_s,
-      gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_b,
-      gsl::not_null<Scalar<DataVector>*> tilde_phi,
-      const Scalar<DataVector>& rest_mass_density,
-      const Scalar<DataVector>& electron_fraction,
-      const Scalar<DataVector>& specific_internal_energy,
-      const Scalar<DataVector>& pressure,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
-      const Scalar<DataVector>& lorentz_factor,
-      const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
-      const Scalar<DataVector>& sqrt_det_spatial_metric,
-      const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
-      const Scalar<DataVector>& divergence_cleaning_field);
+  template <typename DataType>
+  KOKKOS_FUNCTION static void apply(
+      gsl::not_null<Scalar<DataType>*> tilde_d,
+      gsl::not_null<Scalar<DataType>*> tilde_ye,
+      gsl::not_null<Scalar<DataType>*> tilde_tau,
+      gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*> tilde_s,
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_b,
+      gsl::not_null<Scalar<DataType>*> tilde_phi,
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& electron_fraction,
+      const Scalar<DataType>& specific_internal_energy,
+      const Scalar<DataType>& pressure,
+      const tnsr::I<DataType, 3, Frame::Inertial>& spatial_velocity,
+      const Scalar<DataType>& lorentz_factor,
+      const tnsr::I<DataType, 3, Frame::Inertial>& magnetic_field,
+      const Scalar<DataType>& sqrt_det_spatial_metric,
+      const tnsr::ii<DataType, 3, Frame::Inertial>& spatial_metric,
+      const Scalar<DataType>& divergence_cleaning_field);
 };
 }  // namespace ValenciaDivClean
 }  // namespace grmhd

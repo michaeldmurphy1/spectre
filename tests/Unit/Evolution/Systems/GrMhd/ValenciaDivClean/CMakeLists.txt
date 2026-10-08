@@ -50,6 +50,7 @@ set(LIBRARY_SOURCES
 
 if (SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
+    Test_ConservativeFromPrimitiveKokkos.cpp
     Test_FluxesKokkos.cpp
     Test_SourcesKokkos.cpp
     )

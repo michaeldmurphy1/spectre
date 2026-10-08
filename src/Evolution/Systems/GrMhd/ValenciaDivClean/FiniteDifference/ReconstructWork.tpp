@@ -35,8 +35,35 @@
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/TMPL.hpp"
+
+#ifdef SPECTRE_KOKKOS
+#include "DataStructures/ApplyPointwiseOnDevice.hpp"
+#endif  // SPECTRE_KOKKOS
 
 namespace grmhd::ValenciaDivClean::fd {
+namespace detail {
+// Calls `ConservativeFromPrimitive` with the return and argument tags in
+// `vars`. With Kokkos, the conservative variables are computed pointwise in a
+// Kokkos kernel.
+template <typename TagsList, typename... ReturnTags, typename... ArgumentTags>
+void conservative_from_primitive_impl(
+    const gsl::not_null<Variables<TagsList>*> vars,
+    tmpl::list<ReturnTags...> return_tags,
+    tmpl::list<ArgumentTags...> argument_tags) {
+#ifdef SPECTRE_KOKKOS
+  copy_and_apply_pointwise_on_device<ConservativeFromPrimitive>(
+      vars, return_tags, argument_tags, get<ArgumentTags>(*vars)...);
+#else
+  (void)return_tags;
+  (void)argument_tags;
+  ConservativeFromPrimitive::apply(make_not_null(&get<ReturnTags>(*vars))...,
+                                   get<ArgumentTags>(*vars)...);
+#endif  // SPECTRE_KOKKOS
+}
+}  // namespace detail
+
 template <typename TagsList, size_t ThermodynamicDim>
 void compute_conservatives_for_reconstruction(
     const gsl::not_null<Variables<TagsList>*> vars_on_face,
@@ -125,22 +152,9 @@ void compute_conservatives_for_reconstruction(
     ERROR("EOS Must be 1, 2, or 3d");
   }
 
-  ConservativeFromPrimitive::apply(
-      make_not_null(&get<ValenciaDivClean::Tags::TildeD>(*vars_on_face)),
-      make_not_null(&get<ValenciaDivClean::Tags::TildeYe>(*vars_on_face)),
-      make_not_null(&get<ValenciaDivClean::Tags::TildeTau>(*vars_on_face)),
-      make_not_null(
-          &get<ValenciaDivClean::Tags::TildeS<Frame::Inertial>>(*vars_on_face)),
-      make_not_null(
-          &get<ValenciaDivClean::Tags::TildeB<Frame::Inertial>>(*vars_on_face)),
-      make_not_null(&get<ValenciaDivClean::Tags::TildePhi>(*vars_on_face)),
-      rest_mass_density, electron_fraction, specific_internal_energy, pressure,
-      spatial_velocity, lorentz_factor,
-      get<hydro::Tags::MagneticField<DataVector, 3, Frame::Inertial>>(
-          *vars_on_face),
-      get<gr::Tags::SqrtDetSpatialMetric<DataVector>>(*vars_on_face),
-      get<gr::Tags::SpatialMetric<DataVector, 3>>(*vars_on_face),
-      get<hydro::Tags::DivergenceCleaningField<DataVector>>(*vars_on_face));
+  detail::conservative_from_primitive_impl(
+      vars_on_face, ConservativeFromPrimitive::return_tags{},
+      ConservativeFromPrimitive::argument_tags{});
 }
 
 template <typename PrimTagsForReconstruction, typename PrimsTags,

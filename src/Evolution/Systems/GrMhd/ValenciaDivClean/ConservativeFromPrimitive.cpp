@@ -6,61 +6,64 @@
 #include <cstddef>
 
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TempBuffer.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
 #include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
-#include "DataStructures/Variables.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/ContainerHelpers.hpp"
+#include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 
 namespace grmhd::ValenciaDivClean {
 
-void ConservativeFromPrimitive::apply(
-    const gsl::not_null<Scalar<DataVector>*> tilde_d,
-    const gsl::not_null<Scalar<DataVector>*> tilde_ye,
-    const gsl::not_null<Scalar<DataVector>*> tilde_tau,
-    const gsl::not_null<tnsr::i<DataVector, 3, Frame::Inertial>*> tilde_s,
-    const gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> tilde_b,
-    const gsl::not_null<Scalar<DataVector>*> tilde_phi,
-    const Scalar<DataVector>& rest_mass_density,
-    const Scalar<DataVector>& electron_fraction,
-    const Scalar<DataVector>& specific_internal_energy,
-    const Scalar<DataVector>& pressure,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& spatial_velocity,
-    const Scalar<DataVector>& lorentz_factor,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& magnetic_field,
-    const Scalar<DataVector>& sqrt_det_spatial_metric,
-    const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
-    const Scalar<DataVector>& divergence_cleaning_field) {
-  Variables<tmpl::list<hydro::Tags::SpatialVelocityOneForm<DataVector, 3>,
-                       hydro::Tags::SpatialVelocitySquared<DataVector>,
-                       hydro::Tags::MagneticFieldOneForm<DataVector, 3>,
-                       hydro::Tags::MagneticFieldDotSpatialVelocity<DataVector>,
-                       hydro::Tags::MagneticFieldSquared<DataVector>>>
-      temp_tensors{get(rest_mass_density).size()};
+template <typename DataType>
+KOKKOS_FUNCTION void ConservativeFromPrimitive::apply(
+    const gsl::not_null<Scalar<DataType>*> tilde_d,
+    const gsl::not_null<Scalar<DataType>*> tilde_ye,
+    const gsl::not_null<Scalar<DataType>*> tilde_tau,
+    const gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*> tilde_s,
+    const gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> tilde_b,
+    const gsl::not_null<Scalar<DataType>*> tilde_phi,
+    const Scalar<DataType>& rest_mass_density,
+    const Scalar<DataType>& electron_fraction,
+    const Scalar<DataType>& specific_internal_energy,
+    const Scalar<DataType>& pressure,
+    const tnsr::I<DataType, 3, Frame::Inertial>& spatial_velocity,
+    const Scalar<DataType>& lorentz_factor,
+    const tnsr::I<DataType, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<DataType>& sqrt_det_spatial_metric,
+    const tnsr::ii<DataType, 3, Frame::Inertial>& spatial_metric,
+    const Scalar<DataType>& divergence_cleaning_field) {
+  TempBuffer<tmpl::list<hydro::Tags::SpatialVelocityOneForm<DataType, 3>,
+                        hydro::Tags::SpatialVelocitySquared<DataType>,
+                        hydro::Tags::MagneticFieldOneForm<DataType, 3>,
+                        hydro::Tags::MagneticFieldDotSpatialVelocity<DataType>,
+                        hydro::Tags::MagneticFieldSquared<DataType>>>
+      temp_tensors{get_size(get(rest_mass_density))};
   auto& spatial_velocity_one_form =
-      get<hydro::Tags::SpatialVelocityOneForm<DataVector, 3>>(temp_tensors);
+      get<hydro::Tags::SpatialVelocityOneForm<DataType, 3>>(temp_tensors);
   raise_or_lower_index(make_not_null(&spatial_velocity_one_form),
                        spatial_velocity, spatial_metric);
   auto& magnetic_field_one_form =
-      get<hydro::Tags::MagneticFieldOneForm<DataVector, 3>>(temp_tensors);
+      get<hydro::Tags::MagneticFieldOneForm<DataType, 3>>(temp_tensors);
   raise_or_lower_index(make_not_null(&magnetic_field_one_form), magnetic_field,
                        spatial_metric);
   auto& magnetic_field_dot_spatial_velocity =
-      get<hydro::Tags::MagneticFieldDotSpatialVelocity<DataVector>>(
-          temp_tensors);
+      get<hydro::Tags::MagneticFieldDotSpatialVelocity<DataType>>(temp_tensors);
   dot_product(make_not_null(&magnetic_field_dot_spatial_velocity),
               magnetic_field, spatial_velocity_one_form);
   auto& spatial_velocity_squared =
-      get<hydro::Tags::SpatialVelocitySquared<DataVector>>(temp_tensors);
+      get<hydro::Tags::SpatialVelocitySquared<DataType>>(temp_tensors);
   dot_product(make_not_null(&spatial_velocity_squared), spatial_velocity,
               spatial_velocity_one_form);
 
   auto& magnetic_field_squared =
-      get<hydro::Tags::MagneticFieldSquared<DataVector>>(temp_tensors);
+      get<hydro::Tags::MagneticFieldSquared<DataType>>(temp_tensors);
   dot_product(make_not_null(&magnetic_field_squared), magnetic_field,
               magnetic_field_one_form);
 
@@ -81,8 +84,8 @@ void ConservativeFromPrimitive::apply(
                        0.5 * square(get(magnetic_field_dot_spatial_velocity)));
 
   // Reuse allocation
-  Scalar<DataVector>& common_factor =
-      get<hydro::Tags::MagneticFieldSquared<DataVector>>(temp_tensors);
+  Scalar<DataType>& common_factor =
+      get<hydro::Tags::MagneticFieldSquared<DataType>>(temp_tensors);
   get(common_factor) +=
       (get(rest_mass_density) * (1.0 + get(specific_internal_energy)) +
        get(pressure)) *
@@ -103,3 +106,33 @@ void ConservativeFromPrimitive::apply(
 }
 
 }  // namespace grmhd::ValenciaDivClean
+
+#define DTYPE(data) BOOST_PP_TUPLE_ELEM(0, data)
+
+#define INSTANTIATE(_, data)                                               \
+  template void grmhd::ValenciaDivClean::ConservativeFromPrimitive::apply( \
+      gsl::not_null<Scalar<DTYPE(data)>*> tilde_d,                         \
+      gsl::not_null<Scalar<DTYPE(data)>*> tilde_ye,                        \
+      gsl::not_null<Scalar<DTYPE(data)>*> tilde_tau,                       \
+      gsl::not_null<tnsr::i<DTYPE(data), 3, Frame::Inertial>*> tilde_s,    \
+      gsl::not_null<tnsr::I<DTYPE(data), 3, Frame::Inertial>*> tilde_b,    \
+      gsl::not_null<Scalar<DTYPE(data)>*> tilde_phi,                       \
+      const Scalar<DTYPE(data)>& rest_mass_density,                        \
+      const Scalar<DTYPE(data)>& electron_fraction,                        \
+      const Scalar<DTYPE(data)>& specific_internal_energy,                 \
+      const Scalar<DTYPE(data)>& pressure,                                 \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& spatial_velocity,    \
+      const Scalar<DTYPE(data)>& lorentz_factor,                           \
+      const tnsr::I<DTYPE(data), 3, Frame::Inertial>& magnetic_field,      \
+      const Scalar<DTYPE(data)>& sqrt_det_spatial_metric,                  \
+      const tnsr::ii<DTYPE(data), 3, Frame::Inertial>& spatial_metric,     \
+      const Scalar<DTYPE(data)>& divergence_cleaning_field);
+
+GENERATE_INSTANTIATIONS(INSTANTIATE, (double))
+// The `DataVector` version is never called on the device
+#ifndef SPECTRE_KOKKOS_DEVICE_PASS
+GENERATE_INSTANTIATIONS(INSTANTIATE, (DataVector))
+#endif  // SPECTRE_KOKKOS_DEVICE_PASS
+
+#undef INSTANTIATE
+#undef DTYPE

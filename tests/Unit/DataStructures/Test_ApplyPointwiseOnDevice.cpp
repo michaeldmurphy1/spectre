@@ -35,6 +35,12 @@ struct SquaredMagnitude : db::SimpleTag {
 struct Untouched : db::SimpleTag {
   using type = Scalar<DataVector>;
 };
+struct Value : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+struct Clamped : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
 
 // A pointwise function in the form that `apply_pointwise_on_device` expects
 struct ScaleAndSquare {
@@ -53,6 +59,20 @@ struct ScaleAndSquare {
         get(*squared_magnitude) += vector.get(d) * vector.get(d);
       }
     }
+  }
+};
+
+// A pointwise function that reports whether it changed anything
+struct ClampToZero {
+  using return_tags = tmpl::list<Clamped>;
+  using argument_tags = tmpl::list<Value>;
+
+  KOKKOS_FUNCTION static bool apply(
+      const gsl::not_null<Scalar<double>*> clamped,
+      const Scalar<double>& value) {
+    const bool is_negative = get(value) < 0.0;
+    get(*clamped) = is_negative ? 0.0 : get(value);
+    return is_negative;
   }
 };
 
@@ -151,6 +171,23 @@ void test_device_data() {
           squared_magnitude);
   }
 }
+
+// Functions that return a `bool` report whether they returned `true` at any
+// grid point
+void test_reduction() {
+  Variables<tmpl::list<Clamped>> results{4};
+  Scalar<DataVector> value{DataVector{1.0, 2.0, 3.0, 4.0}};
+  CHECK_FALSE(copy_and_apply_pointwise_on_device<ClampToZero>(
+      make_not_null(&results), ClampToZero::return_tags{},
+      ClampToZero::argument_tags{}, value));
+  CHECK(get(get<Clamped>(results)) == get(value));
+
+  get(value)[2] = -3.0;
+  CHECK(copy_and_apply_pointwise_on_device<ClampToZero>(
+      make_not_null(&results), ClampToZero::return_tags{},
+      ClampToZero::argument_tags{}, value));
+  CHECK(get(get<Clamped>(results)) == DataVector{1.0, 2.0, 0.0, 4.0});
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.DataStructures.ApplyPointwiseOnDevice",
@@ -158,4 +195,5 @@ SPECTRE_TEST_CASE("Unit.DataStructures.ApplyPointwiseOnDevice",
   test_against_host();
   test_other_tags_and_instance();
   test_device_data();
+  test_reduction();
 }

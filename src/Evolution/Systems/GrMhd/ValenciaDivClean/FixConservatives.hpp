@@ -5,13 +5,16 @@
 
 #include <limits>
 
+#include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/TagsDeclarations.hpp"
+#include "Evolution/VariableFixing/Tags.hpp"
 #include "Options/Context.hpp"
 #include "Options/String.hpp"
 #include "PointwiseFunctions/GeneralRelativity/TagsDeclarations.hpp"
 #include "PointwiseFunctions/Hydro/MagneticFieldTreatment.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
@@ -217,9 +220,55 @@ class FixConservatives {
       const tnsr::II<DataVector, 3, Frame::Inertial>& inv_spatial_metric,
       const Scalar<DataVector>& sqrt_det_spatial_metric) const;
 
+  /*!
+   * \brief Fix the conservative variables at a single grid point, e.g. in a
+   * Kokkos kernel.
+   *
+   * Applies the same fixes as the `DataVector` overload. Whether to assume a
+   * non-zero magnetic field is decided for all grid points of an element, so
+   * it is passed in (see `assume_non_zero_magnetic_field`). Returns `true` if
+   * any variables were fixed.
+   */
+  KOKKOS_FUNCTION bool operator()(
+      gsl::not_null<Scalar<double>*> tilde_d,
+      gsl::not_null<Scalar<double>*> tilde_ye,
+      gsl::not_null<Scalar<double>*> tilde_tau,
+      gsl::not_null<tnsr::i<double, 3, Frame::Inertial>*> tilde_s,
+      const tnsr::I<double, 3, Frame::Inertial>& tilde_b,
+      const tnsr::ii<double, 3, Frame::Inertial>& spatial_metric,
+      const tnsr::II<double, 3, Frame::Inertial>& inv_spatial_metric,
+      const Scalar<double>& sqrt_det_spatial_metric,
+      bool assume_non_zero_magnetic_field) const;
+
+  /// Whether to assume a non-zero magnetic field on all grid points of an
+  /// element, according to the `MagneticField` option.
+  bool assume_non_zero_magnetic_field(
+      const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b) const;
+
+  /// Whether to assume a non-zero magnetic field (see
+  /// `FixConservatives::assume_non_zero_magnetic_field`)
+  struct AssumeNonZeroMagneticField : db::SimpleTag {
+    using type = bool;
+  };
+
+  struct AtGridPoint;
+
  private:
   friend bool operator==(const FixConservatives& lhs,
                          const FixConservatives& rhs);
+
+  // Fixes the variables at a grid point (`T = double`) or at a SIMD batch of
+  // grid points. Instead of rescaling the momentum density it returns the
+  // `s_tilde_rescaling_factor`. Lanes in the `completion_mask` are skipped.
+  template <bool NonZeroMagneticField, typename T, typename Mask>
+  KOKKOS_FUNCTION bool fix_impl(gsl::not_null<T*> d_tilde_ptr,
+                                gsl::not_null<T*> ye_tilde_ptr,
+                                gsl::not_null<T*> tau_tilde_ptr,
+                                gsl::not_null<T*> s_tilde_rescaling_factor,
+                                const T& sqrt_det_g, const T& s_tilde_squared,
+                                const T& b_tilde_squared_in,
+                                const T& s_tilde_dot_b_tilde_in,
+                                const Mask& completion_mask) const;
 
   double minimum_rest_mass_density_times_lorentz_factor_{
       std::numeric_limits<double>::signaling_NaN()};
@@ -240,6 +289,38 @@ class FixConservatives {
   bool enable_{true};
   hydro::MagneticFieldTreatment magnetic_field_treatment_{
       hydro::MagneticFieldTreatment::AssumeNonZero};
+};
+
+/*!
+ * \brief Pointwise function for `apply_pointwise_on_device` that fixes the
+ * conservative variables at a grid point with `FixConservatives`.
+ *
+ * The `return_tags` are the fixed variables and the first `argument_tags` are
+ * the same variables before fixing. Returns `true` if any variables were
+ * fixed.
+ */
+struct FixConservatives::AtGridPoint {
+  using return_tags = FixConservatives::return_tags;
+  using argument_tags =
+      tmpl::append<return_tags, FixConservatives::argument_tags,
+                   tmpl::list<::Tags::VariableFixer<FixConservatives>,
+                              FixConservatives::AssumeNonZeroMagneticField>>;
+
+  KOKKOS_FUNCTION static bool apply(
+      gsl::not_null<Scalar<double>*> tilde_d,
+      gsl::not_null<Scalar<double>*> tilde_ye,
+      gsl::not_null<Scalar<double>*> tilde_tau,
+      gsl::not_null<tnsr::i<double, 3, Frame::Inertial>*> tilde_s,
+      const Scalar<double>& unfixed_tilde_d,
+      const Scalar<double>& unfixed_tilde_ye,
+      const Scalar<double>& unfixed_tilde_tau,
+      const tnsr::i<double, 3, Frame::Inertial>& unfixed_tilde_s,
+      const tnsr::I<double, 3, Frame::Inertial>& tilde_b,
+      const tnsr::ii<double, 3, Frame::Inertial>& spatial_metric,
+      const tnsr::II<double, 3, Frame::Inertial>& inv_spatial_metric,
+      const Scalar<double>& sqrt_det_spatial_metric,
+      const FixConservatives& fix_conservatives,
+      bool assume_non_zero_magnetic_field);
 };
 
 bool operator!=(const FixConservatives& lhs, const FixConservatives& rhs);

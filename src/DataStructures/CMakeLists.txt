@@ -59,6 +59,7 @@ spectre_target_headers(
   Matrix.hpp
   MaybeOwned.hpp
   ModalVector.hpp
+  PointwiseStatus.hpp
   SimpleSparseMatrix.hpp
   SliceIterator.hpp
   SliceTensorToVariables.hpp

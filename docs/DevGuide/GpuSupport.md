@@ -161,6 +161,18 @@ also compiles the host-only instantiations for the device. The
 rejects functions with a disabled exec check that don't call
 `ASSERT_DEVICE_CAPABLE`.
 
+## Errors in device code
+
+Device code can't throw exceptions. `ERROR` and `ASSERT` work on the device
+(see above), but they abort the whole program and can only print the values
+that `DeviceMessage` supports. So return expected failures, such as a root find
+that doesn't converge, as values instead, e.g. `RootFinder::toms748` returns an
+`Expected` that holds the error. Pointwise functions that can fail return a
+`PointwiseStatus`, which `apply_pointwise_on_device` reduces to the number of
+failures and the grid point and element of the first one. The host then errors
+with the inputs at that grid point, which only needs that one grid point to be
+copied back, so it also works when the data stays on the device.
+
 ## The C++ standard library in device code
 
 \warning Don't call standard library algorithms in device code, i.e. in

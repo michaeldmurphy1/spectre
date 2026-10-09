@@ -58,6 +58,7 @@ Scalar<DataTypeResult> dot_product(
  * or \f$A_a B^b \delta^a_b\f$ for input one form \f$A_a\f$ and
  * input vector \f$B^b\f$.
  */
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <typename DataTypeLhs, typename DataTypeRhs, typename Index,
           typename DataTypeResult = decltype(blaze::evaluate(DataTypeLhs() *
                                                              DataTypeRhs()))>
@@ -97,11 +98,12 @@ Scalar<DataTypeResult> dot_product(
  * Or, returns \f$g^{ab} A_a B_b\f$ when given one forms \f$A_a\f$
  * and \f$B_b\f$ with an inverse metric \f$g^{ab}\f$.
  */
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <typename DataTypeLhs, typename DataTypeRhs, typename DataTypeMetric,
           typename Index,
           typename DataTypeResult = decltype(blaze::evaluate(
               DataTypeLhs() * DataTypeRhs() * DataTypeMetric()))>
-void dot_product(
+KOKKOS_FUNCTION void dot_product(
     const gsl::not_null<Scalar<DataTypeResult>*> dot_product,
     const Tensor<DataTypeLhs, Symmetry<1>, index_list<Index>>& vector_a,
     const Tensor<DataTypeRhs, Symmetry<1>, index_list<Index>>& vector_b,

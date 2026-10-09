@@ -14,6 +14,7 @@
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/ErrorHandling/Exceptions.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 
 namespace {
 double f_free(double x) { return 2.0 - square(x); }
@@ -128,6 +129,39 @@ void test_datavector() {
   check_root(root_function_values);
 }
 
+#ifdef SPECTRE_KOKKOS
+// The scalar version is also used in Kokkos kernels, where it must give the
+// same roots as on the host
+void test_device() {
+  const size_t num_points = 20;
+  const double abs_tol = 1.e-14;
+  const double rel_tol = 1.e-14;
+  const auto make_f = [](const double c) {
+    return [c](const double x) { return x * x * x - c; };
+  };
+  const Kokkos::View<double*> roots("roots", num_points);
+  Kokkos::parallel_for(
+      "TestTOMS748OnDevice",
+      Kokkos::RangePolicy<Kokkos::IndexType<size_t>>(0, num_points),
+      KOKKOS_LAMBDA(const size_t i) {
+        const double c = 0.1 + static_cast<double>(i);
+        roots(i) =
+            RootFinder::toms748([c](const double x) { return x * x * x - c; },
+                                0.0, c + 1.0, abs_tol, rel_tol);
+      });
+  const auto host_roots =
+      Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, roots);
+  const Approx custom_approx = Approx::custom().epsilon(1.e-13).scale(1.0);
+  for (size_t i = 0; i < num_points; ++i) {
+    const double c = 0.1 + static_cast<double>(i);
+    CAPTURE(c);
+    CHECK(host_roots(i) == custom_approx(RootFinder::toms748(
+                               make_f(c), 0.0, c + 1.0, abs_tol, rel_tol)));
+    CHECK(host_roots(i) == custom_approx(cbrt(c)));
+  }
+}
+#endif  // SPECTRE_KOKKOS
+
 void test_convergence_error_double() {
   CHECK_THROWS_AS(
       []() {
@@ -220,6 +254,9 @@ SPECTRE_TEST_CASE("Unit.Numerical.RootFinding.TOMS748",
   test_datavector();
   test_convergence_error_double();
   test_convergence_error_datavector();
+#ifdef SPECTRE_KOKKOS
+  test_device();
+#endif  // SPECTRE_KOKKOS
   benchmark_root_find(false);
 
 #ifdef SPECTRE_DEBUG

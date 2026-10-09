@@ -94,8 +94,12 @@ class numeric_limits<::xsimd::batch<T, Arch>> : public numeric_limits<T> {
 #include <complex>
 #include <type_traits>
 
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/Requires.hpp"
 
+// Without xsimd these scalar functions are also used in Kokkos kernels, so the
+// ones that aren't from the standard library are `KOKKOS_FUNCTION`s. Builds
+// with a Kokkos GPU backend don't support xsimd.
 namespace simd {
 template <typename T, typename A = void>
 class batch;
@@ -201,11 +205,11 @@ using std::tgamma;
 using std::trunc;
 // NOLINTEND(misc-unused-using-decls)
 
-inline bool all(const bool mask) { return mask; }
+KOKKOS_INLINE_FUNCTION bool all(const bool mask) { return mask; }
 
-inline bool any(const bool mask) { return mask; }
+KOKKOS_INLINE_FUNCTION bool any(const bool mask) { return mask; }
 
-inline bool none(const bool mask) { return not mask; }
+KOKKOS_INLINE_FUNCTION bool none(const bool mask) { return not mask; }
 
 template <typename T, Requires<std::is_scalar_v<T>> = nullptr>
 T clip(const T& val, const T& low, const T& hi) {
@@ -227,26 +231,28 @@ inline double exp10(const double& x) {
 }
 #endif
 
-inline double sign(const bool& v) { return static_cast<double>(v); }
+KOKKOS_INLINE_FUNCTION double sign(const bool& v) {
+  return static_cast<double>(v);
+}
 
 template <typename T>
-T sign(const T& v) {
+KOKKOS_FUNCTION T sign(const T& v) {
   return v < static_cast<T>(0)    ? static_cast<T>(-1.)
          : v == static_cast<T>(0) ? static_cast<T>(0.)
                                   : static_cast<T>(1.);
 }
 
 template <typename T>
-T select(const bool cond, const T true_branch, const T false_branch) {
+KOKKOS_FUNCTION T select(const bool cond, const T true_branch,
+                         const T false_branch) {
   return cond ? true_branch : false_branch;
 }
 
-inline std::pair<float, float> sincos(const float val) {
+KOKKOS_INLINE_FUNCTION std::pair<float, float> sincos(const float val) {
   // The nvcc compiler's built-in __sincos is for GPU code, not CPU code. In
-  // the case that we are running on a GPU (__CUDA_ARCH__ is defined) or we
-  // are not using nvcc then use the builtin, otherwise call sin and cos
-  // separately.
-#if (defined(__CUDACC__) && defined(__CUDA_ARCH__)) or (not defined(__CUDACC__))
+  // the case that we are compiling for the device or we are not using nvcc
+  // then use the builtin, otherwise call sin and cos separately.
+#if defined(SPECTRE_KOKKOS_DEVICE_PASS) or (not defined(__CUDACC__))
   float result_sin{};
   float result_cos{};
   __sincosf(val, &result_sin, &result_cos);
@@ -256,12 +262,11 @@ inline std::pair<float, float> sincos(const float val) {
 #endif
 }
 
-inline std::pair<double, double> sincos(const double val) {
+KOKKOS_INLINE_FUNCTION std::pair<double, double> sincos(const double val) {
   // The nvcc compiler's built-in __sincos is for GPU code, not CPU code. In
-  // the case that we are running on a GPU (__CUDA_ARCH__ is defined) or we
-  // are not using nvcc then use the builtin, otherwise call sin and cos
-  // separately.
-#if (defined(__CUDACC__) && defined(__CUDA_ARCH__)) or (not defined(__CUDACC__))
+  // the case that we are compiling for the device or we are not using nvcc
+  // then use the builtin, otherwise call sin and cos separately.
+#if defined(SPECTRE_KOKKOS_DEVICE_PASS) or (not defined(__CUDACC__))
   double result_sin{};
   double result_cos{};
   __sincos(val, &result_sin, &result_cos);
@@ -272,42 +277,42 @@ inline std::pair<double, double> sincos(const double val) {
 }
 
 template <typename T, Requires<std::is_integral_v<T>> = nullptr>
-T fma(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fma(const T a, const T b, const T c) {
   return a * b + c;
 }
 
 template <typename T, Requires<std::is_floating_point_v<T>> = nullptr>
-T fma(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fma(const T a, const T b, const T c) {
   return std::fma(a, b, c);
 }
 
 template <typename T, Requires<std::is_integral_v<T>> = nullptr>
-T fms(const T& a, const T& b, const T& c) {
+KOKKOS_FUNCTION T fms(const T& a, const T& b, const T& c) {
   return a * b - c;
 }
 
 template <typename T, Requires<std::is_floating_point_v<T>> = nullptr>
-T fms(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fms(const T a, const T b, const T c) {
   return std::fma(a, b, -c);
 }
 
 template <typename T, Requires<std::is_integral_v<T>> = nullptr>
-T fnma(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fnma(const T a, const T b, const T c) {
   return -(a * b) + c;
 }
 
 template <typename T, Requires<std::is_floating_point_v<T>> = nullptr>
-T fnma(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fnma(const T a, const T b, const T c) {
   return std::fma(-a, b, c);
 }
 
 template <typename T, Requires<std::is_integral_v<T>> = nullptr>
-T fnms(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fnms(const T a, const T b, const T c) {
   return -(a * b) - c;
 }
 
 template <typename T, Requires<std::is_floating_point_v<T>> = nullptr>
-T fnms(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fnms(const T a, const T b, const T c) {
   return -std::fma(a, b, c);
 }
 

@@ -4,9 +4,12 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
+#include <type_traits>
 #include <utility>
 
 #include "DataStructures/DeviceArguments.hpp"
+#include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/AtIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
@@ -23,6 +26,44 @@
 #include "DataStructures/VariablesKokkos.hpp"
 
 namespace ApplyPointwiseOnDevice_detail {
+// The value reduced over all grid points for functions that return a
+// `PointwiseStatus`. `first_failure` is the flat index (see `Functor`) of the
+// first failure, which is the largest `size_t` if there are none.
+struct StatusValue {
+  bool any_flag;
+  size_t number_of_failures;
+  size_t first_failure;
+};
+
+// Kokkos reducer for `StatusValue`
+struct StatusReducer {
+  using reducer = StatusReducer;
+  using value_type = StatusValue;
+  using result_view_type =
+      Kokkos::View<value_type, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>;
+
+  explicit StatusReducer(value_type& value) : value_(&value) {}
+
+  KOKKOS_FUNCTION void join(value_type& dest, const value_type& src) const {
+    dest.any_flag = dest.any_flag or src.any_flag;
+    dest.number_of_failures += src.number_of_failures;
+    if (src.first_failure < dest.first_failure) {
+      dest.first_failure = src.first_failure;
+    }
+  }
+  KOKKOS_FUNCTION void init(value_type& value) const {
+    value.any_flag = false;
+    value.number_of_failures = 0;
+    value.first_failure = std::numeric_limits<size_t>::max();
+  }
+  KOKKOS_FUNCTION value_type& reference() const { return *value_.data(); }
+  KOKKOS_FUNCTION result_view_type view() const { return value_; }
+  KOKKOS_FUNCTION bool references_scalar() const { return true; }
+
+ private:
+  result_view_type value_;
+};
+
 // Kokkos functor that calls `Function::apply` at every grid point of every
 // element of a batch. The members are exactly the data that is copied to the
 // device.
@@ -31,20 +72,68 @@ struct Functor;
 
 template <typename Function, typename... ResultTags, typename... ArgsTags>
 struct Functor<Function, tmpl::list<ResultTags...>, tmpl::list<ArgsTags...>> {
-  // The flat index `k` runs over the grid points of each element in turn, so
-  // consecutive threads access consecutive grid points
-  KOKKOS_FUNCTION void operator()(const size_t k) const {
-    const size_t i = k % number_of_grid_points;
-    const size_t e = k / number_of_grid_points;
+  // Returns what `Function::apply` returns (`void`, `bool` or
+  // `PointwiseStatus`) at grid point `i` of element `e`
+  KOKKOS_FUNCTION auto apply_at(const size_t i, const size_t e) const {
     // Results at this grid point, on the stack of this thread
     tuples::TaggedTuple<::Tags::AtIndex<ResultTags>...> results_i{};
-    Function::apply(
-        make_not_null(&get<::Tags::AtIndex<ResultTags>>(results_i))...,
-        device_argument_at_index<ArgsTags>(args, i, e)...);
-    (..., set_at_index(
-              make_not_null(&get<::Tags::BatchView<ResultTags>>(results)),
-              get<::Tags::AtIndex<ResultTags>>(results_i), i, e));
+    const auto set_results = [this, &results_i, i, e]() {
+      (...,
+       set_at_index(make_not_null(&get<::Tags::BatchView<ResultTags>>(results)),
+                    get<::Tags::AtIndex<ResultTags>>(results_i), i, e));
+    };
+    if constexpr (std::is_void_v<return_type>) {
+      Function::apply(
+          make_not_null(&get<::Tags::AtIndex<ResultTags>>(results_i))...,
+          device_argument_at_index<ArgsTags>(args, i, e)...);
+      set_results();
+    } else {
+      const return_type result = Function::apply(
+          make_not_null(&get<::Tags::AtIndex<ResultTags>>(results_i))...,
+          device_argument_at_index<ArgsTags>(args, i, e)...);
+      set_results();
+      return result;
+    }
   }
+
+  // The flat index `k` runs over the grid points of each element in turn, so
+  // consecutive threads access consecutive grid points
+  // For `Kokkos::parallel_for`
+  KOKKOS_FUNCTION void operator()(const size_t k) const {
+    apply_at(k % number_of_grid_points, k / number_of_grid_points);
+  }
+
+  // For `Kokkos::parallel_reduce` with `Kokkos::LOr`
+  KOKKOS_FUNCTION void operator()(const size_t k, bool& result) const {
+    if (apply_at(k % number_of_grid_points, k / number_of_grid_points)) {
+      result = true;
+    }
+  }
+
+  // For `Kokkos::parallel_reduce` with `StatusReducer`
+  KOKKOS_FUNCTION void operator()(const size_t k, StatusValue& result) const {
+    const PointwiseStatus status =
+        apply_at(k % number_of_grid_points, k / number_of_grid_points);
+    if (status.flag) {
+      result.any_flag = true;
+    }
+    if (status.failed) {
+      ++result.number_of_failures;
+      if (k < result.first_failure) {
+        result.first_failure = k;
+      }
+    }
+  }
+
+  using return_type = decltype(Function::apply(
+      std::declval<
+          gsl::not_null<typename ::Tags::AtIndex<ResultTags>::type*>>()...,
+      device_argument_at_index<ArgsTags>(
+          std::declval<const DeviceArguments<ArgsTags...>&>(), 0, 0)...));
+  static_assert(std::is_void_v<return_type> or
+                    std::is_same_v<return_type, bool> or
+                    std::is_same_v<return_type, PointwiseStatus>,
+                "Function::apply must return void, bool or PointwiseStatus");
 
   tuples::TaggedTuple<::Tags::BatchView<ResultTags>...> results;
   DeviceArguments<ArgsTags...> args;
@@ -54,7 +143,7 @@ struct Functor<Function, tmpl::list<ResultTags...>, tmpl::list<ArgsTags...>> {
 // Launches the `Functor` over the batch `results`
 template <typename Function, typename ExecSpace, typename... ResultTags,
           typename... ArgsTags>
-void apply_on_batch(
+auto apply_on_batch(
     const ExecSpace& exec,
     tuples::TaggedTuple<::Tags::BatchView<ResultTags>...> results,
     const size_t number_of_grid_points, const size_t number_of_elements,
@@ -89,11 +178,30 @@ void apply_on_batch(
   // the kernel writes directly into `results`
   const Functor<Function, tmpl::list<ResultTags...>, tmpl::list<ArgsTags...>>
       functor{std::move(results), args, number_of_grid_points};
-  Kokkos::parallel_for(
-      "apply_pointwise_on_device",
-      Kokkos::RangePolicy<ExecSpace, Kokkos::IndexType<size_t>>(
-          exec, 0, number_of_grid_points * number_of_elements),
-      functor);
+  const Kokkos::RangePolicy<ExecSpace, Kokkos::IndexType<size_t>> policy(
+      exec, 0, number_of_grid_points * number_of_elements);
+  using return_type = typename decltype(functor)::return_type;
+  if constexpr (std::is_void_v<return_type>) {
+    Kokkos::parallel_for("apply_pointwise_on_device", policy, functor);
+  } else if constexpr (std::is_same_v<return_type, bool>) {
+    bool result = false;
+    Kokkos::parallel_reduce("apply_pointwise_on_device", policy, functor,
+                            Kokkos::LOr<bool>(result));
+    return result;
+  } else {
+    StatusValue result{};
+    Kokkos::parallel_reduce("apply_pointwise_on_device", policy, functor,
+                            StatusReducer(result));
+    PointwiseStatusSummary summary{result.any_flag, result.number_of_failures,
+                                   0, 0};
+    if (result.number_of_failures > 0) {
+      summary.first_failed_grid_point =
+          result.first_failure % number_of_grid_points;
+      summary.first_failed_element =
+          result.first_failure / number_of_grid_points;
+    }
+    return summary;
+  }
 }
 
 // Enqueue the copy of the device tensor into the (already allocated) host
@@ -137,16 +245,22 @@ void copy_result_to_host(
  * `exec`, so later kernels on the same instance can use the results directly.
  * Use this for data that stays on the device, and
  * `copy_and_apply_pointwise_on_device` for data on the host.
+ *
+ * If `Function::apply` returns a `bool` (e.g. whether it changed anything),
+ * this returns whether it returned `true` at any grid point. If it returns a
+ * `PointwiseStatus`, this returns the `PointwiseStatusSummary` over all grid
+ * points, e.g. so the caller can report the first failure. Since the result is
+ * needed on the host, this waits for the kernel to complete in both cases.
  */
 template <typename Function, typename ExecSpace, typename BatchTags,
           typename... ResultTags, typename... ArgsTags>
   requires Kokkos::is_execution_space_v<ExecSpace>
-void apply_pointwise_on_device(
+auto apply_pointwise_on_device(
     const ExecSpace& exec,
     const gsl::not_null<BatchedVariables<BatchTags>*> results,
     tmpl::list<ResultTags...> /*meta*/, tmpl::list<ArgsTags...> args_tags,
     const DeviceArguments<ArgsTags...>& args) {
-  ApplyPointwiseOnDevice_detail::apply_on_batch<Function>(
+  return ApplyPointwiseOnDevice_detail::apply_on_batch<Function>(
       exec,
       tuples::TaggedTuple<::Tags::BatchView<ResultTags>...>{
           get<::Tags::BatchView<ResultTags>>(*results)...},
@@ -157,12 +271,12 @@ void apply_pointwise_on_device(
 template <typename Function, typename ExecSpace, typename DeviceVarsTags,
           typename... ResultTags, typename... ArgsTags>
   requires Kokkos::is_execution_space_v<ExecSpace>
-void apply_pointwise_on_device(
+auto apply_pointwise_on_device(
     const ExecSpace& exec,
     const gsl::not_null<Variables<DeviceVarsTags>*> results,
     tmpl::list<ResultTags...> /*meta*/, tmpl::list<ArgsTags...> args_tags,
     const DeviceArguments<ArgsTags...>& args) {
-  ApplyPointwiseOnDevice_detail::apply_on_batch<Function>(
+  return ApplyPointwiseOnDevice_detail::apply_on_batch<Function>(
       exec,
       tuples::TaggedTuple<::Tags::BatchView<ResultTags>...>{
           DeviceArguments_detail::as_batch_of_one<ResultTags>(
@@ -188,6 +302,9 @@ void apply_pointwise_on_device(
  * `exec` (the default instance if not given). The instance is fenced before
  * returning, so `results` are ready to use on the host.
  *
+ * If `Function::apply` returns a `bool` or a `PointwiseStatus`, this returns
+ * its reduction over all grid points (see `apply_pointwise_on_device`).
+ *
  * \note The copies make this convenient for code that keeps its data on the
  * host, and for tests. Code that keeps its data on the device should call
  * `apply_pointwise_on_device` instead.
@@ -195,7 +312,7 @@ void apply_pointwise_on_device(
 template <typename Function, typename ExecSpace, typename VarsTags,
           typename... ResultTags, typename... ArgsTags>
   requires Kokkos::is_execution_space_v<ExecSpace>
-void copy_and_apply_pointwise_on_device(
+auto copy_and_apply_pointwise_on_device(
     const ExecSpace& exec, const gsl::not_null<Variables<VarsTags>*> results,
     tmpl::list<ResultTags...> result_tags, tmpl::list<ArgsTags...> args_tags,
     const typename ArgsTags::type&... args) {
@@ -207,25 +324,38 @@ void copy_and_apply_pointwise_on_device(
       Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "results"),
       results->number_of_grid_points()}};
   const auto device_args = make_device_arguments<ArgsTags...>(exec, args...);
-  apply_pointwise_on_device<Function>(exec, make_not_null(&device_results),
-                                      result_tags, args_tags, device_args);
-  (..., ApplyPointwiseOnDevice_detail::copy_result_to_host<ResultTags>(
-            exec, make_not_null(&get<ResultTags>(*results)),
-            get<::Tags::MirrorView<ResultTags>>(device_results)));
-  // The host arguments, host results and device views must stay alive until
-  // all work on `exec` is complete
-  exec.fence("copy_and_apply_pointwise_on_device");
+  const auto copy_results_and_fence = [&exec, &results, &device_results]() {
+    (..., ApplyPointwiseOnDevice_detail::copy_result_to_host<ResultTags>(
+              exec, make_not_null(&get<ResultTags>(*results)),
+              get<::Tags::MirrorView<ResultTags>>(device_results)));
+    // The host arguments, host results and device views must stay alive until
+    // all work on `exec` is complete
+    exec.fence("copy_and_apply_pointwise_on_device");
+  };
+  if constexpr (std::is_void_v<decltype(apply_pointwise_on_device<Function>(
+                    exec, make_not_null(&device_results), result_tags,
+                    args_tags, device_args))>) {
+    apply_pointwise_on_device<Function>(exec, make_not_null(&device_results),
+                                        result_tags, args_tags, device_args);
+    copy_results_and_fence();
+  } else {
+    const auto result = apply_pointwise_on_device<Function>(
+        exec, make_not_null(&device_results), result_tags, args_tags,
+        device_args);
+    copy_results_and_fence();
+    return result;
+  }
 }
 
 template <typename Function, typename VarsTags, typename... ResultTags,
           typename... ArgsTags>
-void copy_and_apply_pointwise_on_device(
+auto copy_and_apply_pointwise_on_device(
     const gsl::not_null<Variables<VarsTags>*> results,
     tmpl::list<ResultTags...> result_tags, tmpl::list<ArgsTags...> args_tags,
     const typename ArgsTags::type&... args) {
-  copy_and_apply_pointwise_on_device<Function>(Kokkos::DefaultExecutionSpace{},
-                                               results, result_tags, args_tags,
-                                               args...);
+  return copy_and_apply_pointwise_on_device<Function>(
+      Kokkos::DefaultExecutionSpace{}, results, result_tags, args_tags,
+      args...);
 }
 /// @}
 #endif  // SPECTRE_KOKKOS

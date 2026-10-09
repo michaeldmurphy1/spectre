@@ -3,7 +3,9 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <cmath>
 #include <cstddef>
+#include <type_traits>
 #include <vector>
 
 #include "DataStructures/ApplyPointwiseOnDevice.hpp"
@@ -11,6 +13,7 @@
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/DeviceArguments.hpp"
+#include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/Tags/MirrorView.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
@@ -35,6 +38,12 @@ struct SquaredMagnitude : db::SimpleTag {
   using type = Scalar<DataVector>;
 };
 struct Untouched : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+struct Value : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+struct Clamped : db::SimpleTag {
   using type = Scalar<DataVector>;
 };
 
@@ -70,6 +79,37 @@ struct ScaleAndSquarePerElement {
       const gsl::not_null<Scalar<double>*> squared_magnitude,
       const tnsr::I<double, 3>& vector, const double factor) {
     ScaleAndSquare::apply(scaled_vector, squared_magnitude, vector, factor);
+  }
+};
+
+// A pointwise function that reports whether it changed anything
+struct ClampToZero {
+  using return_tags = tmpl::list<Clamped>;
+  using argument_tags = tmpl::list<Value>;
+
+  KOKKOS_FUNCTION static bool apply(
+      const gsl::not_null<Scalar<double>*> clamped,
+      const Scalar<double>& value) {
+    const bool is_negative = get(value) < 0.0;
+    get(*clamped) = is_negative ? 0.0 : get(value);
+    return is_negative;
+  }
+};
+
+// A pointwise function that can fail: takes the square root, flags values
+// that are already 1 and fails for negative values
+struct SquareRoot {
+  using return_tags = tmpl::list<Clamped>;
+  using argument_tags = tmpl::list<Value>;
+
+  KOKKOS_FUNCTION static PointwiseStatus apply(
+      const gsl::not_null<Scalar<double>*> root, const Scalar<double>& value) {
+    if (get(value) < 0.0) {
+      get(*root) = 0.0;
+      return {false, true};
+    }
+    get(*root) = std::sqrt(get(value));
+    return {get(value) == 1.0, false};
   }
 };
 
@@ -220,6 +260,73 @@ void test_batch() {
           get<SquaredMagnitude>(expected));
   }
 }
+
+// Functions that return a `bool` report whether they returned `true` at any
+// grid point
+void test_reduction() {
+  Variables<tmpl::list<Clamped>> results{4};
+  Scalar<DataVector> value{DataVector{1.0, 2.0, 3.0, 4.0}};
+  CHECK_FALSE(copy_and_apply_pointwise_on_device<ClampToZero>(
+      make_not_null(&results), ClampToZero::return_tags{},
+      ClampToZero::argument_tags{}, value));
+  CHECK(get(get<Clamped>(results)) == get(value));
+
+  get(value)[2] = -3.0;
+  CHECK(copy_and_apply_pointwise_on_device<ClampToZero>(
+      make_not_null(&results), ClampToZero::return_tags{},
+      ClampToZero::argument_tags{}, value));
+  CHECK(get(get<Clamped>(results)) == DataVector{1.0, 2.0, 0.0, 4.0});
+
+  // Functions that return a `PointwiseStatus` report the number of failures
+  // and the first failure
+  Scalar<DataVector> squares{DataVector{4.0, 9.0, 16.0, 25.0}};
+  auto summary = copy_and_apply_pointwise_on_device<SquareRoot>(
+      make_not_null(&results), SquareRoot::return_tags{},
+      SquareRoot::argument_tags{}, squares);
+  static_assert(std::is_same_v<decltype(summary), PointwiseStatusSummary>);
+  CHECK_FALSE(summary.any_flag);
+  CHECK(summary.number_of_failures == 0);
+  CHECK(get(get<Clamped>(results)) == DataVector{2.0, 3.0, 4.0, 5.0});
+  get(squares)[0] = 1.0;
+  get(squares)[1] = -9.0;
+  get(squares)[3] = -25.0;
+  summary = copy_and_apply_pointwise_on_device<SquareRoot>(
+      make_not_null(&results), SquareRoot::return_tags{},
+      SquareRoot::argument_tags{}, squares);
+  CHECK(summary.any_flag);
+  CHECK(summary.number_of_failures == 2);
+  CHECK(summary.first_failed_grid_point == 1);
+  CHECK(summary.first_failed_element == 0);
+  CHECK(get(get<Clamped>(results)) == DataVector{1.0, 0.0, 4.0, 0.0});
+
+  // The first failure in a batch is in the element with the smallest index
+  const size_t num_points = 3;
+  const size_t num_elements = 4;
+  BatchedVariables<tmpl::list<Value>, Kokkos::HostSpace> host_values{
+      num_points, num_elements};
+  for (size_t e = 0; e < num_elements; ++e) {
+    for (size_t i = 0; i < num_points; ++i) {
+      // Negative at grid point 0 of element 3 and grid point 2 of element 1
+      get(get<Tags::BatchView<Value, Kokkos::HostSpace>>(host_values))(i, e) =
+          (e == 3 and i == 0) or (e == 1 and i == 2) ? -1.0 : 4.0;
+    }
+  }
+  const Kokkos::DefaultExecutionSpace exec{};
+  BatchedVariables<tmpl::list<Value>> device_values{exec, num_points,
+                                                    num_elements};
+  deep_copy(exec, make_not_null(&device_values), host_values);
+  BatchedVariables<tmpl::list<Clamped>> batch_results{exec, num_points,
+                                                      num_elements};
+  const auto batch_summary = apply_pointwise_on_device<SquareRoot>(
+      exec, make_not_null(&batch_results), SquareRoot::return_tags{},
+      SquareRoot::argument_tags{},
+      make_device_arguments<Value>(exec,
+                                   get<Tags::BatchView<Value>>(device_values)));
+  CHECK_FALSE(batch_summary.any_flag);
+  CHECK(batch_summary.number_of_failures == 2);
+  CHECK(batch_summary.first_failed_grid_point == 2);
+  CHECK(batch_summary.first_failed_element == 1);
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.DataStructures.ApplyPointwiseOnDevice",
@@ -228,4 +335,5 @@ SPECTRE_TEST_CASE("Unit.DataStructures.ApplyPointwiseOnDevice",
   test_other_tags_and_instance();
   test_device_data();
   test_batch();
+  test_reduction();
 }

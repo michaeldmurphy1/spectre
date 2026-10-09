@@ -76,6 +76,21 @@ following configuration options:
 - Test device code by comparing against its host counterpart. The tests run on
   the host backend in CI, which has no GPUs.
 
+## Errors in device code
+
+- Device code can't throw exceptions, and `ERROR` can only be called on the
+  host. `ASSERT` works in `KOKKOS_FUNCTION`s: on the device it aborts with the
+  failed condition, file and line, since the message can't be streamed there.
+- Return expected failures, such as a root find that doesn't converge, as
+  values instead of throwing, e.g. `RootFinder::try_toms748` returns
+  `std::nullopt`. Pointwise functions that can fail return a `PointwiseStatus`,
+  which `apply_pointwise_on_device` reduces to the number of failures and the
+  grid point and element of the first one. The host then errors with the
+  inputs at that grid point, which only needs that one grid point to be copied
+  back, so it also works when the data stays on the device. Don't use
+  `Kokkos::abort` for such failures, since it can't report the state that
+  failed.
+
 ## The C++ standard library in device code
 
 \warning Don't call standard library algorithms in device code, i.e. in

@@ -92,9 +92,17 @@ class CaptureForError : public CaptureForErrorBase {
  * and any subsequent changes to it will be reflected in the error
  * message.
  */
+#if defined(__CUDA_ARCH__) or defined(__HIP_DEVICE_COMPILE__) or \
+    defined(__SYCL_DEVICE_ONLY__)
+// Errors in device code can't print captures (see `SPECTRE_KOKKOS_ASSERT`), so
+// this is a no-op when compiling for a GPU (`SPECTRE_KOKKOS_DEVICE_PASS`, which
+// can't be used here because this header can't depend on Kokkos)
+#define CAPTURE_FOR_ERROR(var) static_cast<void>(var)
+#else
 #define CAPTURE_FOR_ERROR(var)                                          \
   const CaptureForError_detail::CaptureForError CAPTURE_FOR_ERROR_NAME( \
       __LINE__)(#var, var)
+#endif
 
 /*!
  * \brief Stream all objects currently captured by CaptureForError.

@@ -47,6 +47,25 @@
   }
 #endif  // #if __has_include(<Kokkos_Core.hpp>)
 
+/*!
+ * \brief Put before a `KOKKOS_FUNCTION` template whose instantiations for
+ * some types can only run on the host.
+ *
+ * Examples are templates that call a callable passed by the caller (e.g. the
+ * function of a root finder), or header-defined templates that are also
+ * instantiated for `DataVector` (e.g. `dot_product`). nvcc warns about these
+ * host-only instantiations, even if they are only used on the host. This
+ * disables that check for the function that follows. The compiler then also
+ * doesn't diagnose device code that uses a host-only instantiation, so
+ * callables used on the device must be `KOKKOS_FUNCTION`s or lambdas defined
+ * inside a kernel.
+ */
+#ifdef __NVCC__
+#define SPECTRE_KOKKOS_DISABLE_EXEC_CHECK _Pragma("nv_exec_check_disable")
+#else
+#define SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+#endif
+
 /// \cond
 #define SPECTRE_KOKKOS_STRINGIFY_IMPL(x) #x
 #define SPECTRE_KOKKOS_STRINGIFY(x) SPECTRE_KOKKOS_STRINGIFY_IMPL(x)

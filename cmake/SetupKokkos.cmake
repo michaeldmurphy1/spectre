@@ -74,6 +74,15 @@ if(SPECTRE_KOKKOS)
     )
     FetchContent_MakeAvailable(Kokkos)
   endif()
+
+  # Code that runs on GPUs calls the scalar `simd` functions in
+  # Utilities/Simd/Simd.hpp. xsimd's versions of these can't be called on the
+  # device, and xsimd itself doesn't compile with nvcc.
+  if (USE_XSIMD AND
+      (Kokkos_ENABLE_CUDA OR Kokkos_ENABLE_HIP OR Kokkos_ENABLE_SYCL))
+    message(FATAL_ERROR "xsimd can't be used with a Kokkos GPU backend. "
+      "Set USE_XSIMD=OFF.")
+  endif()
 endif()
 
 # Determine if the compiler is NVIDIA's nvcc (if not already determined by

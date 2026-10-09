@@ -12,6 +12,7 @@ spectre_target_sources(
   ComovingMagneticFieldMagnitude.cpp
   ConservativeFromPrimitive.cpp
   FixConservatives.cpp
+  FixConservativesOnDevice.cpp
   Flattener.cpp
   Fluxes.cpp
   PrimitiveFromConservative.cpp
@@ -32,6 +33,7 @@ spectre_target_headers(
   ComputeFluxesFromPrimitives.hpp
   ConservativeFromPrimitive.hpp
   FixConservatives.hpp
+  FixConservativesOnDevice.hpp
   Flattener.hpp
   Fluxes.hpp
   KastaunEtAl.hpp

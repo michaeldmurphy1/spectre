@@ -9,6 +9,7 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservatives.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservativesOnDevice.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/KastaunEtAl.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/NewmanHamlin.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PalenzuelaEtAl.hpp"
@@ -18,6 +19,7 @@
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 
 namespace grmhd::ValenciaDivClean::subcell {
 template <typename OrderedListOfRecoverySchemes>
@@ -34,13 +36,24 @@ void FixConservativesAndComputePrims<OrderedListOfRecoverySchemes>::apply(
     const Scalar<DataVector>& sqrt_det_spatial_metric,
     const grmhd::ValenciaDivClean::PrimitiveFromConservativeOptions&
         primitive_from_conservative_options) {
+  const auto& tilde_b = get<Tags::TildeB<Frame::Inertial>>(*conserved_vars_ptr);
+#ifdef SPECTRE_KOKKOS
+  // Fix the conservative variables pointwise in a Kokkos kernel
+  *needed_fixing = fix_conservatives_on_device(
+      make_not_null(&get<Tags::TildeD>(*conserved_vars_ptr)),
+      make_not_null(&get<Tags::TildeYe>(*conserved_vars_ptr)),
+      make_not_null(&get<Tags::TildeTau>(*conserved_vars_ptr)),
+      make_not_null(&get<Tags::TildeS<Frame::Inertial>>(*conserved_vars_ptr)),
+      tilde_b, spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
+      fix_conservatives);
+#else
   *needed_fixing = fix_conservatives(
       make_not_null(&get<Tags::TildeD>(*conserved_vars_ptr)),
       make_not_null(&get<Tags::TildeYe>(*conserved_vars_ptr)),
       make_not_null(&get<Tags::TildeTau>(*conserved_vars_ptr)),
       make_not_null(&get<Tags::TildeS<Frame::Inertial>>(*conserved_vars_ptr)),
-      get<Tags::TildeB<Frame::Inertial>>(*conserved_vars_ptr), spatial_metric,
-      inv_spatial_metric, sqrt_det_spatial_metric);
+      tilde_b, spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric);
+#endif  // SPECTRE_KOKKOS
   grmhd::ValenciaDivClean::
       PrimitiveFromConservative<OrderedListOfRecoverySchemes, true>::apply(
           make_not_null(&get<hydro::Tags::RestMassDensity<DataVector>>(

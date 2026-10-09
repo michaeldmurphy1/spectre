@@ -29,6 +29,7 @@ spectre_target_headers(
   HEADERS
   AoWeno.hpp
   DerivativeOrder.hpp
+  DerivativeStencils.hpp
   FallbackReconstructorType.hpp
   Filter.hpp
   FiniteDifference.hpp
@@ -58,3 +59,5 @@ target_link_libraries(
   DomainStructure
   ErrorHandling
   )
+
+add_subdirectory(Device)

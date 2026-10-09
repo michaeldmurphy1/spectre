@@ -10,14 +10,17 @@
 #include <iomanip>
 #include <ios>
 #include <limits>
+#include <optional>
 #include <string>
 #include <type_traits>
 
 #include "DataStructures/DataVector.hpp"
+#include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/CaptureForError.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/ErrorHandling/Exceptions.hpp"
 #include "Utilities/GetOutput.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeString.hpp"
 #include "Utilities/Simd/Simd.hpp"
 
@@ -33,7 +36,7 @@ namespace toms748_detail {
 // Deppe. Changes are copyrighted by SXS Collaboration under the MIT License.
 
 template <typename T>
-T safe_div(const T& num, const T& denom, const T& r) {
+KOKKOS_FUNCTION T safe_div(const T& num, const T& denom, const T& r) {
   if constexpr (std::is_floating_point_v<T>) {
     using std::abs;
     if (abs(denom) < static_cast<T>(1)) {
@@ -70,8 +73,9 @@ T safe_div(const T& num, const T& denom, const T& r) {
 }
 
 template <typename T>
-T secant_interpolate(const T& a, const T& b, const T& fa, const T& fb,
-                     const simd::mask_type_t<T>& incomplete_mask) {
+KOKKOS_FUNCTION T
+secant_interpolate(const T& a, const T& b, const T& fa, const T& fb,
+                   const simd::mask_type_t<T>& incomplete_mask) {
   //
   // Performs standard secant interpolation of [a,b] given
   // function evaluations f(a) and f(b).  Performs a bisection
@@ -113,10 +117,9 @@ T secant_interpolate(const T& a, const T& b, const T& fa, const T& fb,
 }
 
 template <bool AssumeFinite, typename T>
-T quadratic_interpolate(const T& a, const T& b, const T& d, const T& fa,
-                        const T& fb, const T& fd,
-                        const simd::mask_type_t<T>& incomplete_mask,
-                        const unsigned count) {
+KOKKOS_FUNCTION T quadratic_interpolate(
+    const T& a, const T& b, const T& d, const T& fa, const T& fb, const T& fd,
+    const simd::mask_type_t<T>& incomplete_mask, const unsigned count) {
   // Performs quadratic interpolation to determine the next point,
   // takes count Newton steps to find the location of the
   // quadratic polynomial.
@@ -170,9 +173,9 @@ T quadratic_interpolate(const T& a, const T& b, const T& d, const T& fa,
 }
 
 template <bool AssumeFinite, typename T>
-T cubic_interpolate(const T& a, const T& b, const T& d, const T& e, const T& fa,
-                    const T& fb, const T& fd, const T& fe,
-                    const simd::mask_type_t<T>& incomplete_mask) {
+KOKKOS_FUNCTION T cubic_interpolate(
+    const T& a, const T& b, const T& d, const T& e, const T& fa, const T& fb,
+    const T& fd, const T& fe, const simd::mask_type_t<T>& incomplete_mask) {
   // Uses inverse cubic interpolation of f(x) at points
   // [a,b,d,e] to obtain an approximate root of f(x).
   // Points d and e lie outside the interval [a,b]
@@ -244,9 +247,10 @@ T cubic_interpolate(const T& a, const T& b, const T& d, const T& e, const T& fa,
   return c;
 }
 
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool AssumeFinite, typename F, typename T>
-void bracket(F f, T& a, T& b, T c, T& fa, T& fb, T& d, T& fd,
-             const simd::mask_type_t<T>& incomplete_mask) {
+KOKKOS_FUNCTION void bracket(F f, T& a, T& b, T c, T& fa, T& fb, T& d, T& fd,
+                             const simd::mask_type_t<T>& incomplete_mask) {
   // Given a point c inside the existing enclosing interval
   // [a, b] sets a = c if f(c) == 0, otherwise finds the new
   // enclosing interval: either [a, c] or [c, b] and sets
@@ -319,15 +323,27 @@ void bracket(F f, T& a, T& b, T c, T& fa, T& fb, T& d, T& fd,
   fa = simd::select(mask_else, fc, fa);
 }
 
+// Why a root find failed. `toms748` turns failures into errors and
+// `try_toms748` into `std::nullopt`.
+enum class Failure {
+  None,
+  RootNotBracketed,
+  LowerBoundLargerThanUpperBound,
+  BoundsDoNotBracketRoot,
+  MaxIterations
+};
+
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool AssumeFinite, class F, class T, class Tol>
-std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
-                              const T& fbx, Tol tol,
-                              const simd::mask_type_t<T>& ignore_filter,
-                              size_t& max_iter) {
+KOKKOS_FUNCTION std::pair<T, T> toms748_solve(
+    F f, const T& ax, const T& bx, const T& fax, const T& fbx, Tol tol,
+    const simd::mask_type_t<T>& ignore_filter, size_t& max_iter,
+    Failure& failure) {
   // Main entry point and logic for Toms Algorithm 748
   // root finder.
   if (UNLIKELY(simd::any(ax > bx))) {
-    ERROR_AS("Lower bound is larger than upper bound", std::domain_error);
+    failure = Failure::LowerBoundLargerThanUpperBound;
+    return std::pair{ax, bx};
   }
 
   // Sanity check - are we allowed to iterate at all?
@@ -337,7 +353,7 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
 
   size_t count = max_iter;
   // mu is a parameter in the algorithm that must be between (0, 1).
-  static const T mu = 0.5f;
+  const T mu = static_cast<T>(0.5);
 
   // initialise a, b and fa, fb:
   T a = ax;
@@ -366,8 +382,8 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
                                        : (simd::sign(fa) * simd::sign(fb) >
                                           static_cast<T>(0))) and
                          (not fa_is_zero_mask) and (not fb_is_zero_mask)))) {
-    ERROR_AS("Parameters lower and upper bounds do not bracket a root.",
-             std::domain_error);
+    failure = Failure::BoundsDoNotBracketRoot;
+    return std::pair{ax, bx};
   }
   // dummy value for fd, e and fe:
   T fe(static_cast<T>(1e5F));
@@ -436,7 +452,7 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
     // fa, fb, fd, and fe are distinct, should that not be the case
     // then variable prof will get set to true, and we'll end up
     // taking a quadratic step instead.
-    static const T min_diff = std::numeric_limits<T>::min() * 32;
+    const T min_diff = std::numeric_limits<T>::min() * 32;
     bool prof =
         simd::any(((fabs(fa - fb) < min_diff) or (fabs(fa - fd) < min_diff) or
                    (fabs(fa - fe) < min_diff) or (fabs(fb - fd) < min_diff) or
@@ -534,6 +550,47 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
       simd::select(completed_fb == static_cast<T>(0), completed_b, completed_a);
   return std::pair{completed_a, completed_b};
 }
+
+// The root find of `toms748` without the error handling. Returns the final
+// bracket of the root and sets `failure` if the root find failed.
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <bool AssumeFinite, typename Function, typename T>
+KOKKOS_FUNCTION std::pair<T, T> toms748_bracket(
+    Failure& failure, const Function& f, const T lower_bound,
+    const T upper_bound, const T f_at_lower_bound, const T f_at_upper_bound,
+    const simd::scalar_type_t<T> absolute_tolerance,
+    const simd::scalar_type_t<T> relative_tolerance,
+    const size_t max_iterations, const simd::mask_type_t<T> ignore_filter) {
+  ASSERT(relative_tolerance >
+             std::numeric_limits<simd::scalar_type_t<T>>::epsilon(),
+         "The relative tolerance is too small. Got "
+             << relative_tolerance << " but must be at least "
+             << std::numeric_limits<simd::scalar_type_t<T>>::epsilon());
+  if (simd::any(f_at_lower_bound * f_at_upper_bound > 0.0)) {
+    failure = Failure::RootNotBracketed;
+    return std::pair{lower_bound, upper_bound};
+  }
+
+  std::size_t max_iters = max_iterations;
+
+  // This solver requires tol to be passed as a termination condition. This
+  // termination condition is equivalent to the convergence criteria used by the
+  // GSL
+  const auto tol = [absolute_tolerance, relative_tolerance](const T& lhs,
+                                                            const T& rhs) {
+    return simd::abs(lhs - rhs) <=
+           simd::fma(T(relative_tolerance),
+                     simd::min(simd::abs(lhs), simd::abs(rhs)),
+                     T(absolute_tolerance));
+  };
+  const auto result = toms748_solve<AssumeFinite>(
+      f, lower_bound, upper_bound, f_at_lower_bound, f_at_upper_bound, tol,
+      ignore_filter, max_iters, failure);
+  if (failure == Failure::None and max_iters >= max_iterations) {
+    failure = Failure::MaxIterations;
+  }
+  return result;
+}
 }  // namespace toms748_detail
 
 /*!
@@ -565,48 +622,53 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
  * \throws `convergence_error` if the requested tolerance is not met after
  *                            `max_iterations` iterations.
  */
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool AssumeFinite = false, typename Function, typename T>
-T toms748(const Function& f, const T lower_bound, const T upper_bound,
-          const T f_at_lower_bound, const T f_at_upper_bound,
-          const simd::scalar_type_t<T> absolute_tolerance,
-          const simd::scalar_type_t<T> relative_tolerance,
-          const size_t max_iterations = 100,
-          const simd::mask_type_t<T> ignore_filter =
-              static_cast<simd::mask_type_t<T>>(0)) {
-  ASSERT(relative_tolerance >
-             std::numeric_limits<simd::scalar_type_t<T>>::epsilon(),
-         "The relative tolerance is too small. Got "
-             << relative_tolerance << " but must be at least "
-             << std::numeric_limits<simd::scalar_type_t<T>>::epsilon());
-  if (simd::any(f_at_lower_bound * f_at_upper_bound > 0.0)) {
-    ERROR("Root not bracketed: f(" << lower_bound << ") = " << f_at_lower_bound
-                                   << ", f(" << upper_bound
-                                   << ") = " << f_at_upper_bound);
+KOKKOS_FUNCTION T toms748(const Function& f, const T lower_bound,
+                          const T upper_bound, const T f_at_lower_bound,
+                          const T f_at_upper_bound,
+                          const simd::scalar_type_t<T> absolute_tolerance,
+                          const simd::scalar_type_t<T> relative_tolerance,
+                          const size_t max_iterations = 100,
+                          const simd::mask_type_t<T> ignore_filter =
+                              static_cast<simd::mask_type_t<T>>(0)) {
+  auto failure = toms748_detail::Failure::None;
+  const auto result = toms748_detail::toms748_bracket<AssumeFinite>(
+      failure, f, lower_bound, upper_bound, f_at_lower_bound, f_at_upper_bound,
+      absolute_tolerance, relative_tolerance, max_iterations, ignore_filter);
+  if (UNLIKELY(failure == toms748_detail::Failure::RootNotBracketed)) {
+    KOKKOS_IF_ON_HOST(
+        (ERROR("Root not bracketed: f("
+               << lower_bound << ") = " << f_at_lower_bound << ", f("
+               << upper_bound << ") = " << f_at_upper_bound);))
+    KOKKOS_IF_ON_DEVICE((Kokkos::abort("toms748: Root not bracketed");))
   }
-
-  std::size_t max_iters = max_iterations;
-
-  // This solver requires tol to be passed as a termination condition. This
-  // termination condition is equivalent to the convergence criteria used by the
-  // GSL
-  const auto tol = [absolute_tolerance, relative_tolerance](const T& lhs,
-                                                            const T& rhs) {
-    return simd::abs(lhs - rhs) <=
-           simd::fma(T(relative_tolerance),
-                     simd::min(simd::abs(lhs), simd::abs(rhs)),
-                     T(absolute_tolerance));
-  };
-  auto result = toms748_detail::toms748_solve<AssumeFinite>(
-      f, lower_bound, upper_bound, f_at_lower_bound, f_at_upper_bound, tol,
-      ignore_filter, max_iters);
-  if (max_iters >= max_iterations) {
-    ERROR_AS(
-        "toms748 reached max iterations without converging.\nAbsolute "
-        "tolerance: "
-            << absolute_tolerance << "\nRelative tolerance: "
-            << relative_tolerance << "\nResult: " << get_output(result.first)
-            << " " << get_output(result.second),
-        convergence_error);
+  if (UNLIKELY(failure ==
+               toms748_detail::Failure::LowerBoundLargerThanUpperBound)) {
+    KOKKOS_IF_ON_HOST((
+        ERROR_AS("Lower bound is larger than upper bound", std::domain_error);))
+    KOKKOS_IF_ON_DEVICE(
+        (Kokkos::abort("toms748: Lower bound is larger than upper bound");))
+  }
+  if (UNLIKELY(failure == toms748_detail::Failure::BoundsDoNotBracketRoot)) {
+    KOKKOS_IF_ON_HOST(
+        (ERROR_AS("Parameters lower and upper bounds do not bracket a root.",
+                  std::domain_error);))
+    KOKKOS_IF_ON_DEVICE((Kokkos::abort("toms748: Parameters lower and upper "
+                                       "bounds do not bracket a root.");))
+  }
+  if (UNLIKELY(failure == toms748_detail::Failure::MaxIterations)) {
+    KOKKOS_IF_ON_HOST((
+        ERROR_AS("toms748 reached max iterations without converging.\nAbsolute "
+                 "tolerance: "
+                     << absolute_tolerance
+                     << "\nRelative tolerance: " << relative_tolerance
+                     << "\nResult: " << get_output(result.first) << " "
+                     << get_output(result.second),
+                 convergence_error);))
+    KOKKOS_IF_ON_DEVICE((Kokkos::abort("toms748: Reached max iterations "
+                                       "without converging. Run on the host "
+                                       "for the full error message.");))
   }
   return simd::fma(static_cast<T>(0.5), (result.second - result.first),
                    result.first);
@@ -622,17 +684,59 @@ T toms748(const Function& f, const T lower_bound, const T upper_bound,
  * runtime but will cause bugs if the numbers aren't finite. It also assumes
  * that products like `fa * fb` are also finite.
  */
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool AssumeFinite = false, typename Function, typename T>
-T toms748(const Function& f, const T lower_bound, const T upper_bound,
-          const simd::scalar_type_t<T> absolute_tolerance,
-          const simd::scalar_type_t<T> relative_tolerance,
-          const size_t max_iterations = 100,
-          const simd::mask_type_t<T> ignore_filter =
-              static_cast<simd::mask_type_t<T>>(0)) {
+KOKKOS_FUNCTION T toms748(const Function& f, const T lower_bound,
+                          const T upper_bound,
+                          const simd::scalar_type_t<T> absolute_tolerance,
+                          const simd::scalar_type_t<T> relative_tolerance,
+                          const size_t max_iterations = 100,
+                          const simd::mask_type_t<T> ignore_filter =
+                              static_cast<simd::mask_type_t<T>>(0)) {
   return toms748<AssumeFinite>(
       f, lower_bound, upper_bound, f(lower_bound), f(upper_bound),
       absolute_tolerance, relative_tolerance, max_iterations, ignore_filter);
 }
+
+/// @{
+/*!
+ * \ingroup NumericalAlgorithmsGroup
+ * \brief Finds the root of the function `f` with the TOMS_748 method like
+ * `toms748`, but returns `std::nullopt` if the root find fails.
+ *
+ * The root find fails if [`lower_bound`, `upper_bound`] doesn't bracket a root
+ * or if the requested tolerance isn't met after `max_iterations` iterations.
+ * Use this function when failing is expected and handled, e.g. by trying a
+ * different method.
+ */
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <bool AssumeFinite = false, typename Function>
+KOKKOS_FUNCTION std::optional<double> try_toms748(
+    const Function& f, const double lower_bound, const double upper_bound,
+    const double f_at_lower_bound, const double f_at_upper_bound,
+    const double absolute_tolerance, const double relative_tolerance,
+    const size_t max_iterations = 100) {
+  auto failure = toms748_detail::Failure::None;
+  const auto result = toms748_detail::toms748_bracket<AssumeFinite>(
+      failure, f, lower_bound, upper_bound, f_at_lower_bound, f_at_upper_bound,
+      absolute_tolerance, relative_tolerance, max_iterations, false);
+  if (failure != toms748_detail::Failure::None) {
+    return std::nullopt;
+  }
+  return simd::fma(0.5, result.second - result.first, result.first);
+}
+
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <bool AssumeFinite = false, typename Function>
+KOKKOS_FUNCTION std::optional<double> try_toms748(
+    const Function& f, const double lower_bound, const double upper_bound,
+    const double absolute_tolerance, const double relative_tolerance,
+    const size_t max_iterations = 100) {
+  return try_toms748<AssumeFinite>(f, lower_bound, upper_bound, f(lower_bound),
+                                   f(upper_bound), absolute_tolerance,
+                                   relative_tolerance, max_iterations);
+}
+/// @}
 
 /*!
  * \ingroup NumericalAlgorithmsGroup

@@ -56,7 +56,10 @@ set(LIBRARY_SOURCES
   )
 
 if(SPECTRE_KOKKOS)
-  list(APPEND LIBRARY_SOURCES Test_AlgorithmKokkos.cpp)
+  list(APPEND LIBRARY_SOURCES
+    Test_AlgorithmKokkos.cpp
+    Test_SimdKokkos.cpp
+    )
 endif()
 
 add_subdirectory(Autodiff)

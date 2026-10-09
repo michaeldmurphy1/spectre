@@ -161,6 +161,28 @@ void test_convergence_error_datavector() {
       convergence_error);
 }
 
+void test_try_toms748() {
+  const double abs_tol = 1e-15;
+  const double rel_tol = 1e-15;
+  const auto f = [](double x) { return 2.0 - square(x); };
+  // Same root as `toms748`
+  CHECK(RootFinder::try_toms748(f, 0.0, 2.0, abs_tol, rel_tol) ==
+        RootFinder::toms748(f, 0.0, 2.0, abs_tol, rel_tol));
+  CHECK(
+      RootFinder::try_toms748(f, 0.0, 2.0, f(0.0), f(2.0), abs_tol, rel_tol) ==
+      RootFinder::toms748(f, 0.0, 2.0, abs_tol, rel_tol));
+  // Failures that `toms748` errors on
+  CHECK_FALSE(RootFinder::try_toms748(f, -1.0, 1.0, abs_tol, rel_tol));
+  CHECK_FALSE(RootFinder::try_toms748(f, 2.0, 0.0, abs_tol, rel_tol));
+  CHECK_FALSE(RootFinder::try_toms748(f, 0.0, 2.0, abs_tol, rel_tol, 2));
+  // Function values with the same sign whose product underflows to zero, which
+  // only the core algorithm catches
+  const auto f_tiny = [](double x) { return 1.0e-200 * (1.0 + x); };
+  CHECK_THROWS_AS(RootFinder::toms748(f_tiny, 0.0, 1.0, abs_tol, rel_tol),
+                  std::domain_error);
+  CHECK_FALSE(RootFinder::try_toms748(f_tiny, 0.0, 1.0, abs_tol, rel_tol));
+}
+
 void benchmark_root_find(const bool enable) {
   if (not enable) {
     return;
@@ -220,6 +242,7 @@ SPECTRE_TEST_CASE("Unit.Numerical.RootFinding.TOMS748",
   test_datavector();
   test_convergence_error_double();
   test_convergence_error_datavector();
+  test_try_toms748();
   benchmark_root_find(false);
 
 #ifdef SPECTRE_DEBUG

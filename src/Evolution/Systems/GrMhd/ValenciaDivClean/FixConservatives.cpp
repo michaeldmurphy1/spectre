@@ -6,9 +6,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <exception>
+#include <iomanip>
+#include <ios>
 #include <limits>
 #include <ostream>
 #include <pup.h>
+#include <stdexcept>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/ExtractPoint.hpp"
@@ -20,6 +24,10 @@
 #include "Options/ParseError.hpp"
 #include "PointwiseFunctions/Hydro/MagneticFieldTreatment.hpp"
 #include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
+#include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/MakeString.hpp"
 #include "Utilities/Math.hpp"
 #include "Utilities/Simd/Simd.hpp"
 #include "Utilities/TMPL.hpp"
@@ -50,9 +58,9 @@ namespace {
 template <bool AssumeNonZeroMagneticField, typename T>
 class FunctionOfLorentzFactor {
  public:
-  FunctionOfLorentzFactor(const T b_squared_over_d, const T tau_over_d,
-                          [[maybe_unused]] const T normalized_s_dot_b,
-                          const T lower_bound) {
+  KOKKOS_FUNCTION FunctionOfLorentzFactor(
+      const T b_squared_over_d, const T tau_over_d,
+      [[maybe_unused]] const T normalized_s_dot_b, const T lower_bound) {
     const auto mask = lower_bound == 0.0;
     T sqr_normalized_s_dot_b_times_b_squared_over_d{};
     if constexpr (AssumeNonZeroMagneticField) {
@@ -65,19 +73,25 @@ class FunctionOfLorentzFactor {
     const auto nonzero_bound_values =
         nonzero_bound(b_squared_over_d, tau_over_d, lower_bound,
                       sqr_normalized_s_dot_b_times_b_squared_over_d);
-    for (size_t i = 0; i < 4; ++i) {
-      gsl::at(coefficients_, i) =
-          simd::select(mask, gsl::at(zero_bound_values, i),
-                       gsl::at(nonzero_bound_values, i));
-    }
+    coefficients_ = {
+        {simd::select(mask, zero_bound_values[0], nonzero_bound_values[0]),
+         simd::select(mask, zero_bound_values[1], nonzero_bound_values[1]),
+         simd::select(mask, zero_bound_values[2], nonzero_bound_values[2]),
+         simd::select(mask, zero_bound_values[3], nonzero_bound_values[3])}};
   }
 
-  T operator()(const T excess_lorentz_factor) const {
-    return evaluate_polynomial(coefficients_, excess_lorentz_factor);
+  KOKKOS_FUNCTION T operator()(const T excess_lorentz_factor) const {
+    // Horner's method, like `evaluate_polynomial` (which can't be used in a
+    // Kokkos kernel)
+    return ((coefficients_[3] * excess_lorentz_factor + coefficients_[2]) *
+                excess_lorentz_factor +
+            coefficients_[1]) *
+               excess_lorentz_factor +
+           coefficients_[0];
   }
 
  private:
-  static std::array<T, 4> zero_bound(
+  KOKKOS_FUNCTION static std::array<T, 4> zero_bound(
       const T& b_squared_over_d, const T& tau_over_d,
       const T& sqr_normalized_s_dot_b_times_b_squared_over_d) {
     if constexpr (AssumeNonZeroMagneticField) {
@@ -97,7 +111,7 @@ class FunctionOfLorentzFactor {
     }
   }
 
-  static std::array<T, 4> nonzero_bound(
+  KOKKOS_FUNCTION static std::array<T, 4> nonzero_bound(
       const T& b_squared_over_d, const T& tau_over_d, const T& lower_bound,
       const T& sqr_normalized_s_dot_b_times_b_squared_over_d) {
     if constexpr (AssumeNonZeroMagneticField) {
@@ -122,7 +136,7 @@ class FunctionOfLorentzFactor {
   std::array<T, 4> coefficients_;
 };
 template <bool AssumeNonZeroMagneticField, typename T>
-FunctionOfLorentzFactor<AssumeNonZeroMagneticField, T>
+KOKKOS_FUNCTION FunctionOfLorentzFactor<AssumeNonZeroMagneticField, T>
 make_function_of_lorentz_factor(T b_squared_over_d, T tau_over_d,
                                 T normalized_s_dot_b, T lower_bound) {
   return {b_squared_over_d, tau_over_d, normalized_s_dot_b, lower_bound};
@@ -201,6 +215,16 @@ void FixConservatives::pup(PUP::er& p) {
   p | magnetic_field_treatment_;
 }
 
+bool FixConservatives::assume_non_zero_magnetic_field(
+    const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b) const {
+  if (magnetic_field_treatment_ == hydro::MagneticFieldTreatment::CheckIfZero) {
+    return max(max(abs(get<0>(tilde_b)), abs(get<1>(tilde_b)),
+                   abs(get<2>(tilde_b)))) > 0.0;
+  }
+  return magnetic_field_treatment_ ==
+         hydro::MagneticFieldTreatment::AssumeNonZero;
+}
+
 // WARNING!
 // Notation of Foucart is not that of SpECTRE
 // SpECTRE           Foucart
@@ -210,6 +234,265 @@ void FixConservatives::pup(PUP::er& p) {
 // {\tilde B}^k      B^k \sqrt{g}
 // \rho              \rho_0
 // \gamma_{mn}       g_{mn}
+template <bool NonZeroMagneticField, typename T, typename Mask>
+KOKKOS_FUNCTION bool FixConservatives::fix_impl(
+    const gsl::not_null<T*> d_tilde_ptr, const gsl::not_null<T*> ye_tilde_ptr,
+    const gsl::not_null<T*> tau_tilde_ptr,
+    const gsl::not_null<T*> s_tilde_rescaling_factor, const T& sqrt_det_g,
+    const T& s_tilde_squared, const T& b_tilde_squared_in,
+    const T& s_tilde_dot_b_tilde_in, const Mask& completion_mask) const {
+  using SimdType = T;
+  bool needed_fixing = false;
+  T& d_tilde = *d_tilde_ptr;
+  T& ye_tilde = *ye_tilde_ptr;
+  T& tau_tilde = *tau_tilde_ptr;
+  *s_tilde_rescaling_factor = SimdType{1.0};
+
+  const double one_over_one_minus_safety_factor_for_magnetic_field =
+      1.0 / one_minus_safety_factor_for_magnetic_field_;
+  const double one_over_safety_factor_for_momentum_density_cutoff_d =
+      1.0 / safety_factor_for_momentum_density_cutoff_d_;
+
+  const SimdType one_over_sqrt_det_g = 1.0 / sqrt_det_g;
+  SimdType one_over_d_tilde = 1.0 / d_tilde;
+  SimdType rest_mass_density_times_lorentz_factor =
+      d_tilde * one_over_sqrt_det_g;
+
+  // Increase electron fraction if necessary
+  if (const auto ye_mask = ye_tilde < electron_fraction_cutoff_ * d_tilde;
+      simd::any(ye_mask)) {
+    needed_fixing = true;
+    ye_tilde =
+        simd::select(ye_mask, minimum_electron_fraction_ * d_tilde, ye_tilde);
+  }
+
+  // Increase mass density if necessary
+  if (const auto tilde_d_mask = rest_mass_density_times_lorentz_factor <
+                                rest_mass_density_times_lorentz_factor_cutoff_;
+      simd::any(tilde_d_mask)) {
+    needed_fixing = true;
+    d_tilde = simd::select(
+        tilde_d_mask,
+        minimum_rest_mass_density_times_lorentz_factor_ * sqrt_det_g, d_tilde);
+    ye_tilde = d_tilde * one_over_d_tilde * ye_tilde;
+    one_over_d_tilde = 1.0 / d_tilde;
+    rest_mass_density_times_lorentz_factor = simd::select(
+        tilde_d_mask,
+        static_cast<SimdType>(minimum_rest_mass_density_times_lorentz_factor_),
+        rest_mass_density_times_lorentz_factor);
+  }
+
+  // Increase internal energy if necessary
+  auto b_tilde_squared = static_cast<SimdType>(0);
+  if constexpr (NonZeroMagneticField) {
+    b_tilde_squared = b_tilde_squared_in;
+    // Equation B.39 of Foucart
+    if (const auto tilde_tau_mask =
+            b_tilde_squared > one_minus_safety_factor_for_magnetic_field_ * 2. *
+                                  tau_tilde * sqrt_det_g;
+        simd::any(tilde_tau_mask)) {
+      needed_fixing = true;
+      tau_tilde =
+          simd::select(tilde_tau_mask,
+                       0.5 * b_tilde_squared *
+                           one_over_one_minus_safety_factor_for_magnetic_field *
+                           one_over_sqrt_det_g,
+                       tau_tilde);
+    }
+  } else {
+    auto zeroes = static_cast<SimdType>(0);
+    if (const auto tilde_tau_mask = tau_tilde < zeroes;
+        simd::any(tilde_tau_mask)) {
+      needed_fixing = true;
+      tau_tilde = simd::select(tilde_tau_mask, zeroes, tau_tilde);
+    }
+  }
+
+  // Decrease momentum density if necessary
+  // Equation B.24 of Foucart
+  const SimdType tau_over_d = tau_tilde * one_over_d_tilde;
+  // Equation B.23 of Foucart
+  const SimdType b_squared_over_d =
+      NonZeroMagneticField
+          ? b_tilde_squared * one_over_sqrt_det_g * one_over_d_tilde
+          : static_cast<SimdType>(0);
+  const SimdType s_tilde_dot_b_tilde =
+      NonZeroMagneticField ? s_tilde_dot_b_tilde_in : static_cast<SimdType>(0);
+
+  // Equation B.27 of Foucart
+  //
+  // We avoid division by zero in the SIMD case using a mask and then set the
+  // result to zero using the same mask.
+  const auto normaled_s_dot_b_mask =
+      (b_tilde_squared > 1.e-16 * d_tilde and
+       s_tilde_squared > 1.e-16 * square(d_tilde));
+  const SimdType normalized_s_dot_b =
+      NonZeroMagneticField
+          ? simd::select(
+                normaled_s_dot_b_mask,
+                s_tilde_dot_b_tilde /
+                    simd::select(normaled_s_dot_b_mask,
+                                 sqrt(b_tilde_squared * s_tilde_squared),
+                                 SimdType{1.0}),
+                SimdType{0.0})
+          : static_cast<SimdType>(0);
+
+  // Equation B.40 of Foucart
+  const auto lower_bound_of_lorentz_factor_minus_one =
+      simd::max(tau_over_d - b_squared_over_d, SimdType{0.});
+  // Equation B.31 of Foucart
+  const auto upper_bound_for_s_tilde_squared =
+      [&b_squared_over_d, &d_tilde, &lower_bound_of_lorentz_factor_minus_one,
+       &normalized_s_dot_b](const auto local_excess_lorentz_factor) {
+        const auto local_lorentz_factor_minus_one =
+            lower_bound_of_lorentz_factor_minus_one +
+            local_excess_lorentz_factor;
+        if constexpr (NonZeroMagneticField) {
+          return square(1.0 + local_lorentz_factor_minus_one +
+                        b_squared_over_d) *
+                 local_lorentz_factor_minus_one *
+                 (2.0 + local_lorentz_factor_minus_one) /
+                 (square(1.0 + local_lorentz_factor_minus_one) +
+                  square(normalized_s_dot_b) * b_squared_over_d *
+                      (b_squared_over_d +
+                       2.0 * (1.0 + local_lorentz_factor_minus_one))) *
+                 square(d_tilde);
+        } else {
+          (void)b_squared_over_d;
+          (void)normalized_s_dot_b;
+          return local_lorentz_factor_minus_one *
+                 (2.0 + local_lorentz_factor_minus_one) * square(d_tilde);
+        }
+      };
+  const SimdType simple_upper_bound_for_s_tilde_squared =
+      upper_bound_for_s_tilde_squared(SimdType{0.});
+
+  // If s_tilde_squared is small enough, no fix is needed. Otherwise, we need
+  // to do some real work.
+  const auto one_minus_safety_factor_for_momentum_density_at_density =
+      simd::select(
+          rest_mass_density_times_lorentz_factor >
+              safety_factor_for_momentum_density_cutoff_d_,
+          SimdType{one_minus_safety_factor_for_momentum_density_},
+          one_minus_safety_factor_for_momentum_density_ +
+              safety_factor_for_momentum_density_slope_ *
+                  log10(rest_mass_density_times_lorentz_factor *
+                        one_over_safety_factor_for_momentum_density_cutoff_d));
+  if (const auto tilde_s_mask =
+          s_tilde_squared >
+              one_minus_safety_factor_for_momentum_density_at_density *
+                  simple_upper_bound_for_s_tilde_squared and
+          not completion_mask;
+      simd::any(tilde_s_mask)) {
+    // Find root of Equation B.34 of Foucart
+    // NOTE:
+    // - This assumes minimum specific enthalpy is 1.
+    // - SpEC implements a more complicated formula (B.32) which is equivalent
+    // - Bounds on root are given by Equation  B.40 of Foucart
+    // - In regions where the solution is just above atmosphere we sometimes
+    //   obtain an upper bound on the Lorentz factor somewhere around ~1e5,
+    //   while the actual Lorentz factor is only 1+1e-6. This leads to
+    //   situations where the solver must perform many (over 50) iterations to
+    //   converge. A simple way of avoiding this is to check that
+    //   [W_{lower_bound}, 10 * W_{lower_bound}] brackets the root and then
+    //   use 10 * W_{lower_bound} as the upper bound. This reduces the number
+    //   of iterations for the TOMS748 algorithm to converge to less than 10.
+    //   Note that the factor 10 is chosen arbitrarily and could probably be
+    //   reduced if required. The reasoning behind 10 is that it is unlikely
+    //   the Lorentz factor will increase by a factor of 10 from one time step
+    //   to the next in a physically meaning situation, and so 10 provides a
+    //   reasonable bound.
+    const auto f_of_lorentz_factor =
+        make_function_of_lorentz_factor<NonZeroMagneticField>(
+            b_squared_over_d, tau_over_d, normalized_s_dot_b,
+            lower_bound_of_lorentz_factor_minus_one);
+    SimdType upper_bound =
+        simd::select(lower_bound_of_lorentz_factor_minus_one == 0.0, tau_over_d,
+                     b_squared_over_d);
+
+    SimdType excess_lorentz_factor = 0.0;
+    if (const auto upper_not_zero_mask = upper_bound != 0.0;
+        simd::any(upper_not_zero_mask)) {
+      const SimdType f_at_lower = f_of_lorentz_factor(SimdType{0.0});
+      const SimdType candidate_upper_bound =
+          9.0 * (lower_bound_of_lorentz_factor_minus_one + 1.0);
+      // The if-based implementation is here as a reference since it's
+      // likely easier to understand.
+      //
+      // auto f_at_upper = std::numeric_limits<SimdType>::signaling_NaN();
+      // if (upper_bound < candidate_upper_bound) {
+      //   f_at_upper = f_of_lorentz_factor(upper_bound);
+      // } else {
+      //   f_at_upper = f_of_lorentz_factor(candidate_upper_bound);
+      //   if (f_at_upper > 0.0) {
+      //     upper_bound = candidate_upper_bound;
+      //   } else {
+      //     f_at_upper = f_of_lorentz_factor(upper_bound);
+      //   }
+      // }
+      auto f_at_upper = f_of_lorentz_factor(upper_bound);
+      if (const auto not_upper_less_candidate_bound =
+              not(upper_bound < candidate_upper_bound);
+          simd::any(not_upper_less_candidate_bound)) {
+        const SimdType f_at_candidate_upper_bound =
+            f_of_lorentz_factor(candidate_upper_bound);
+        upper_bound = simd::select((f_at_candidate_upper_bound > 0.0) and
+                                       not_upper_less_candidate_bound,
+                                   candidate_upper_bound, upper_bound);
+        f_at_upper = simd::select((f_at_candidate_upper_bound > 0.0) and
+                                      not_upper_less_candidate_bound,
+                                  f_at_candidate_upper_bound, f_at_upper);
+      }
+
+      const auto find_root = [&]() {
+        return RootFinder::toms748<true>(f_of_lorentz_factor, SimdType{0.0},
+                                         upper_bound, f_at_lower, f_at_upper,
+                                         1.e-14, 1.e-14, 100, not tilde_s_mask);
+      };
+      // On the host, add the state at this point to the error. On the device
+      // the root finder aborts.
+      KOKKOS_IF_ON_HOST((
+          try {
+            excess_lorentz_factor = find_root();
+          } catch (std::exception& exception) {
+            // clang-format makes the streamed text hard to read in code...
+            // clang-format off
+        throw std::runtime_error(MakeString{}
+            << std::scientific << std::setprecision(18)
+            << "  upper_bound = " << upper_bound
+            << "\n  lower_bound_of_lorentz_factor_minus_one = "
+            << lower_bound_of_lorentz_factor_minus_one
+            << "\n  s_tilde_squared = " << s_tilde_squared
+            << "\n  d_tilde = " << d_tilde
+            << "\n  sqrt_det_g = " << sqrt_det_g
+            << "\n  tau_tilde = " << tau_tilde
+            << "\n  b_tilde_squared = " << b_tilde_squared
+            << "\n  b_squared_over_d = " << b_squared_over_d
+            << "\n  tau_over_d = " << tau_over_d
+            << "\n  normalized_s_dot_b = " << normalized_s_dot_b
+            << "\nThe message of the exception thrown by the root finder "
+               "is:\n"
+            << exception.what());
+            // clang-format on
+          }))
+      KOKKOS_IF_ON_DEVICE((excess_lorentz_factor = find_root();))
+    }
+
+    const auto rescaling_factor = simd::select(
+        tilde_s_mask,
+        simd::min(sqrt(one_minus_safety_factor_for_momentum_density_ *
+                       upper_bound_for_s_tilde_squared(excess_lorentz_factor) /
+                       (s_tilde_squared + 1.e-16 * square(d_tilde))),
+                  SimdType{1.}),
+        SimdType{1.});
+    if (UNLIKELY(simd::any(rescaling_factor < 1.))) {
+      needed_fixing = true;
+      *s_tilde_rescaling_factor = rescaling_factor;
+    }
+  }
+  return needed_fixing;
+}
+
 bool FixConservatives::operator()(
     const gsl::not_null<Scalar<DataVector>*> tilde_d,
     const gsl::not_null<Scalar<DataVector>*> tilde_ye,
@@ -232,14 +515,7 @@ bool FixConservatives::operator()(
   dot_product(make_not_null(&tilde_s_squared), *tilde_s, *tilde_s,
               inv_spatial_metric);
 
-  const bool non_zero_mag =
-      magnetic_field_treatment_ == hydro::MagneticFieldTreatment::AssumeNonZero;
-  if (magnetic_field_treatment_ == hydro::MagneticFieldTreatment::CheckIfZero) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-    const_cast<bool&>(non_zero_mag) =
-        (max(max(abs(get<0>(tilde_b)), abs(get<1>(tilde_b)),
-                 abs(get<2>(tilde_b)))) > 0.0);
-  }
+  const bool non_zero_mag = assume_non_zero_magnetic_field(tilde_b);
 
   Scalar<DataVector>& tilde_b_squared = get<::Tags::TempScalar<1>>(temp_buffer);
   Scalar<DataVector>& tilde_s_dot_tilde_b =
@@ -251,15 +527,10 @@ bool FixConservatives::operator()(
     dot_product(make_not_null(&tilde_s_dot_tilde_b), *tilde_s, tilde_b);
   }
 
-  const double one_over_one_minus_safety_factor_for_magnetic_field =
-      1.0 / one_minus_safety_factor_for_magnetic_field_;
-  const double one_over_safety_factor_for_momentum_density_cutoff_d =
-      1.0 / safety_factor_for_momentum_density_cutoff_d_;
-
-  const auto fix_impl = [&](const size_t grid_index, auto use_simd,
-                            const auto completion_mask,
-                            auto assume_non_zero_magnetic_field_v) {
-    constexpr bool assume_non_zero_magnetic_field =
+  const auto fix_at = [&](const size_t grid_index, auto use_simd,
+                          const auto completion_mask,
+                          auto assume_non_zero_magnetic_field_v) {
+    constexpr bool assume_non_zero_magnetic_field_at_point =
         decltype(assume_non_zero_magnetic_field_v)::value;
     using SimdType =
         tmpl::conditional_t<std::decay_t<decltype(use_simd)>::value,
@@ -272,277 +543,62 @@ bool FixConservatives::operator()(
         return data_vector[grid_index];
       }
     };
+    const auto store = [&grid_index, &use_simd](
+                           const gsl::not_null<DataVector*> data_vector,
+                           const SimdType& value) {
+      (void)use_simd;
+      if constexpr (std::decay_t<decltype(use_simd)>::value) {
+        simd::store_unaligned(&(*data_vector)[grid_index], value);
+      } else {
+        (*data_vector)[grid_index] = value;
+      }
+    };
 
-    auto d_tilde = load(get(*tilde_d));
-    const auto sqrt_det_g = load(get(sqrt_det_spatial_metric));
-    const SimdType one_over_sqrt_det_g = 1.0 / sqrt_det_g;
-    SimdType one_over_d_tilde = 1.0 / d_tilde;
-    SimdType rest_mass_density_times_lorentz_factor =
-        d_tilde * one_over_sqrt_det_g;
-
-    // Increase electron fraction if necessary
-    auto ye_tilde = load(get(*tilde_ye));
-    if (const auto ye_mask = ye_tilde < electron_fraction_cutoff_ * d_tilde;
-        simd::any(ye_mask)) {
-      needed_fixing = true;
-      ye_tilde =
-          simd::select(ye_mask, minimum_electron_fraction_ * d_tilde, ye_tilde);
-    }
-
-    // Increase mass density if necessary
-    if (const auto tilde_d_mask =
-            rest_mass_density_times_lorentz_factor <
-            rest_mass_density_times_lorentz_factor_cutoff_;
-        simd::any(tilde_d_mask)) {
-      needed_fixing = true;
-      d_tilde = simd::select(
-          tilde_d_mask,
-          minimum_rest_mass_density_times_lorentz_factor_ * sqrt_det_g,
-          d_tilde);
-      ye_tilde = d_tilde * one_over_d_tilde * ye_tilde;
-      one_over_d_tilde = 1.0 / d_tilde;
-      rest_mass_density_times_lorentz_factor =
-          simd::select(tilde_d_mask,
-                       static_cast<SimdType>(
-                           minimum_rest_mass_density_times_lorentz_factor_),
-                       rest_mass_density_times_lorentz_factor);
-    }
-
-    // Increase internal energy if necessary
-    auto tau_tilde = load(get(*tilde_tau));
-    auto b_tilde_squared = static_cast<SimdType>(0);
-    if constexpr (assume_non_zero_magnetic_field) {
-      b_tilde_squared = load(get(tilde_b_squared));
-      // Equation B.39 of Foucart
-      if (const auto tilde_tau_mask =
-              b_tilde_squared > one_minus_safety_factor_for_magnetic_field_ *
-                                    2. * tau_tilde * sqrt_det_g;
-          simd::any(tilde_tau_mask)) {
+    SimdType d_tilde = load(get(*tilde_d));
+    SimdType ye_tilde = load(get(*tilde_ye));
+    SimdType tau_tilde = load(get(*tilde_tau));
+    SimdType s_tilde_rescaling_factor{1.0};
+    const auto zeroes = static_cast<SimdType>(0);
+    try {
+      if (fix_impl<assume_non_zero_magnetic_field_at_point>(
+              make_not_null(&d_tilde), make_not_null(&ye_tilde),
+              make_not_null(&tau_tilde),
+              make_not_null(&s_tilde_rescaling_factor),
+              load(get(sqrt_det_spatial_metric)), load(get(tilde_s_squared)),
+              assume_non_zero_magnetic_field_at_point
+                  ? load(get(tilde_b_squared))
+                  : zeroes,
+              assume_non_zero_magnetic_field_at_point
+                  ? load(get(tilde_s_dot_tilde_b))
+                  : zeroes,
+              completion_mask)) {
         needed_fixing = true;
-        tau_tilde = simd::select(
-            tilde_tau_mask,
-            0.5 * b_tilde_squared *
-                one_over_one_minus_safety_factor_for_magnetic_field *
-                one_over_sqrt_det_g,
-            tau_tilde);
       }
+    } catch (std::exception& exception) {
+      // clang-format makes the streamed text hard to read in code...
+      // clang-format off
+      ERROR(
+          "Failed to fix conserved variables because the root finder failed "
+          "to find the lorentz factor.\n"
+          << exception.what()
+          << "\n  tilde_s =\n" << extract_point(*tilde_s, grid_index)
+          << "\n  tilde_b =\n" << extract_point(tilde_b, grid_index)
+          << "\n  spatial_metric =\n"
+          << extract_point(spatial_metric, grid_index)
+          << "\n  inv_spatial_metric =\n"
+          << extract_point(inv_spatial_metric, grid_index));
+      // clang-format on
     }
 
-    else {
-      auto zeroes = static_cast<SimdType>(0);
-      if (const auto tilde_tau_mask = tau_tilde < zeroes;
-          simd::any(tilde_tau_mask)) {
-        needed_fixing = true;
-        tau_tilde = simd::select(tilde_tau_mask, zeroes, tau_tilde);
+    if (UNLIKELY(simd::any(s_tilde_rescaling_factor < 1.))) {
+      for (size_t i = 0; i < 3; i++) {
+        store(make_not_null(&tilde_s->get(i)),
+              load(tilde_s->get(i)) * s_tilde_rescaling_factor);
       }
     }
-
-    // Decrease momentum density if necessary
-    auto s_tilde_squared = load(get(tilde_s_squared));
-    // Equation B.24 of Foucart
-    const SimdType tau_over_d = tau_tilde * one_over_d_tilde;
-    // Equation B.23 of Foucart
-    const SimdType b_squared_over_d =
-        assume_non_zero_magnetic_field
-            ? b_tilde_squared * one_over_sqrt_det_g * one_over_d_tilde
-            : static_cast<SimdType>(0);
-    const auto s_tilde_dot_b_tilde = assume_non_zero_magnetic_field
-                                         ? load(get(tilde_s_dot_tilde_b))
-                                         : static_cast<SimdType>(0);
-
-    // Equation B.27 of Foucart
-    //
-    // We avoid division by zero in the SIMD case using a mask and then set the
-    // result to zero using the same mask.
-    const auto normaled_s_dot_b_mask =
-        (b_tilde_squared > 1.e-16 * d_tilde and
-         s_tilde_squared > 1.e-16 * square(d_tilde));
-    const SimdType normalized_s_dot_b =
-        assume_non_zero_magnetic_field
-            ? simd::select(
-                  normaled_s_dot_b_mask,
-                  s_tilde_dot_b_tilde /
-                      simd::select(normaled_s_dot_b_mask,
-                                   sqrt(b_tilde_squared * s_tilde_squared),
-                                   SimdType{1.0}),
-                  SimdType{0.0})
-            : static_cast<SimdType>(0);
-
-    // Equation B.40 of Foucart
-    const auto lower_bound_of_lorentz_factor_minus_one =
-        simd::max(tau_over_d - b_squared_over_d, SimdType{0.});
-    // Equation B.31 of Foucart
-    const auto upper_bound_for_s_tilde_squared =
-        [&b_squared_over_d, &d_tilde, &lower_bound_of_lorentz_factor_minus_one,
-         &normalized_s_dot_b](const auto local_excess_lorentz_factor) {
-          const auto local_lorentz_factor_minus_one =
-              lower_bound_of_lorentz_factor_minus_one +
-              local_excess_lorentz_factor;
-          if constexpr (assume_non_zero_magnetic_field) {
-            return square(1.0 + local_lorentz_factor_minus_one +
-                          b_squared_over_d) *
-                   local_lorentz_factor_minus_one *
-                   (2.0 + local_lorentz_factor_minus_one) /
-                   (square(1.0 + local_lorentz_factor_minus_one) +
-                    square(normalized_s_dot_b) * b_squared_over_d *
-                        (b_squared_over_d +
-                         2.0 * (1.0 + local_lorentz_factor_minus_one))) *
-                   square(d_tilde);
-          } else {
-            (void)b_squared_over_d;
-            (void)normalized_s_dot_b;
-            return local_lorentz_factor_minus_one *
-                   (2.0 + local_lorentz_factor_minus_one) * square(d_tilde);
-          }
-        };
-    const SimdType simple_upper_bound_for_s_tilde_squared =
-        upper_bound_for_s_tilde_squared(SimdType{0.});
-
-    // If s_tilde_squared is small enough, no fix is needed. Otherwise, we need
-    // to do some real work.
-    const auto one_minus_safety_factor_for_momentum_density_at_density =
-        simd::select(
-            rest_mass_density_times_lorentz_factor >
-                safety_factor_for_momentum_density_cutoff_d_,
-            SimdType{one_minus_safety_factor_for_momentum_density_},
-            one_minus_safety_factor_for_momentum_density_ +
-                safety_factor_for_momentum_density_slope_ *
-                    log10(
-                        rest_mass_density_times_lorentz_factor *
-                        one_over_safety_factor_for_momentum_density_cutoff_d));
-    if (const auto tilde_s_mask =
-            s_tilde_squared >
-                one_minus_safety_factor_for_momentum_density_at_density *
-                    simple_upper_bound_for_s_tilde_squared and
-            not completion_mask;
-        simd::any(tilde_s_mask)) {
-      // Find root of Equation B.34 of Foucart
-      // NOTE:
-      // - This assumes minimum specific enthalpy is 1.
-      // - SpEC implements a more complicated formula (B.32) which is equivalent
-      // - Bounds on root are given by Equation  B.40 of Foucart
-      // - In regions where the solution is just above atmosphere we sometimes
-      //   obtain an upper bound on the Lorentz factor somewhere around ~1e5,
-      //   while the actual Lorentz factor is only 1+1e-6. This leads to
-      //   situations where the solver must perform many (over 50) iterations to
-      //   converge. A simple way of avoiding this is to check that
-      //   [W_{lower_bound}, 10 * W_{lower_bound}] brackets the root and then
-      //   use 10 * W_{lower_bound} as the upper bound. This reduces the number
-      //   of iterations for the TOMS748 algorithm to converge to less than 10.
-      //   Note that the factor 10 is chosen arbitrarily and could probably be
-      //   reduced if required. The reasoning behind 10 is that it is unlikely
-      //   the Lorentz factor will increase by a factor of 10 from one time step
-      //   to the next in a physically meaning situation, and so 10 provides a
-      //   reasonable bound.
-      const auto f_of_lorentz_factor =
-          make_function_of_lorentz_factor<assume_non_zero_magnetic_field>(
-              b_squared_over_d, tau_over_d, normalized_s_dot_b,
-              lower_bound_of_lorentz_factor_minus_one);
-      SimdType upper_bound =
-          simd::select(lower_bound_of_lorentz_factor_minus_one == 0.0,
-                       tau_over_d, b_squared_over_d);
-
-      SimdType excess_lorentz_factor = 0.0;
-      if (const auto upper_not_zero_mask = upper_bound != 0.0;
-          simd::any(upper_not_zero_mask)) {
-        const SimdType f_at_lower = f_of_lorentz_factor(SimdType{0.0});
-        const SimdType candidate_upper_bound =
-            9.0 * (lower_bound_of_lorentz_factor_minus_one + 1.0);
-        // The if-based implementation is here as a reference since it's
-        // likely easier to understand.
-        //
-        // auto f_at_upper = std::numeric_limits<SimdType>::signaling_NaN();
-        // if (upper_bound < candidate_upper_bound) {
-        //   f_at_upper = f_of_lorentz_factor(upper_bound);
-        // } else {
-        //   f_at_upper = f_of_lorentz_factor(candidate_upper_bound);
-        //   if (f_at_upper > 0.0) {
-        //     upper_bound = candidate_upper_bound;
-        //   } else {
-        //     f_at_upper = f_of_lorentz_factor(upper_bound);
-        //   }
-        // }
-        auto f_at_upper = f_of_lorentz_factor(upper_bound);
-        if (const auto not_upper_less_candidate_bound =
-                not(upper_bound < candidate_upper_bound);
-            simd::any(not_upper_less_candidate_bound)) {
-          const SimdType f_at_candidate_upper_bound =
-              f_of_lorentz_factor(candidate_upper_bound);
-          upper_bound = simd::select((f_at_candidate_upper_bound > 0.0) and
-                                         not_upper_less_candidate_bound,
-                                     candidate_upper_bound, upper_bound);
-          f_at_upper = simd::select((f_at_candidate_upper_bound > 0.0) and
-                                        not_upper_less_candidate_bound,
-                                    f_at_candidate_upper_bound, f_at_upper);
-        }
-
-        try {
-          excess_lorentz_factor = RootFinder::toms748<true>(
-              f_of_lorentz_factor, SimdType{0.0}, upper_bound, f_at_lower,
-              f_at_upper, 1.e-14, 1.e-14, 100, not tilde_s_mask);
-        } catch (std::exception& exception) {
-          // clang-format makes the streamed text hard to read in code...
-          // clang-format off
-        ERROR(
-            "Failed to fix conserved variables because the root finder failed "
-            "to find the lorentz factor.\n"
-            "  upper_bound = "
-            << std::scientific << std::setprecision(18)
-            << upper_bound
-            << "\n  lower_bound_of_lorentz_factor_minus_one = "
-            << lower_bound_of_lorentz_factor_minus_one
-            << "\n  s_tilde_squared = " << s_tilde_squared
-            << "\n  d_tilde = " << d_tilde
-            << "\n  sqrt_det_g = " << sqrt_det_g
-            << "\n  tau_tilde = " << tau_tilde
-            << "\n  b_tilde_squared = " << b_tilde_squared
-            << "\n  b_squared_over_d = " << b_squared_over_d
-            << "\n  tau_over_d = " << tau_over_d
-            << "\n  normalized_s_dot_b = " << normalized_s_dot_b
-            << "\n  tilde_s =\n" << extract_point(*tilde_s, grid_index)
-            << "\n  tilde_b =\n" << extract_point(tilde_b, grid_index)
-            << "\n  spatial_metric =\n"
-            << extract_point(spatial_metric, grid_index)
-            << "\n  inv_spatial_metric =\n"
-            << extract_point(inv_spatial_metric, grid_index) << "\n"
-            << "The message of the exception thrown by the root finder "
-               "is:\n"
-            << exception.what());
-          // clang-format on
-        }
-      }
-
-      const auto rescaling_factor = simd::select(
-          tilde_s_mask,
-          simd::min(
-              sqrt(one_minus_safety_factor_for_momentum_density_ *
-                   upper_bound_for_s_tilde_squared(excess_lorentz_factor) /
-                   (s_tilde_squared + 1.e-16 * square(d_tilde))),
-              SimdType{1.}),
-          SimdType{1.});
-      if (UNLIKELY(simd::any(rescaling_factor < 1.))) {
-        needed_fixing = true;
-        for (size_t i = 0; i < 3; i++) {
-          if constexpr (std::decay_t<decltype(use_simd)>::value) {
-            SimdType s_tilde = load(tilde_s->get(i));
-            s_tilde *= rescaling_factor;
-            simd::store_unaligned(&tilde_s->get(i)[grid_index], s_tilde);
-          } else {
-            tilde_s->get(i)[grid_index] *= rescaling_factor;
-          }
-        }
-      }
-    }
-
-    if constexpr (std::decay_t<decltype(use_simd)>::value) {
-      simd::store_unaligned(&get(*tilde_d)[grid_index], d_tilde);
-      simd::store_unaligned(&get(*tilde_ye)[grid_index], ye_tilde);
-      simd::store_unaligned(&get(*tilde_tau)[grid_index], tau_tilde);
-    } else {
-      get(*tilde_d)[grid_index] = d_tilde;
-      get(*tilde_ye)[grid_index] = ye_tilde;
-      get(*tilde_tau)[grid_index] = tau_tilde;
-    }
+    store(make_not_null(&get(*tilde_d)), d_tilde);
+    store(make_not_null(&get(*tilde_ye)), ye_tilde);
+    store(make_not_null(&get(*tilde_tau)), tau_tilde);
   };
 
 #ifdef SPECTRE_USE_XSIMD
@@ -550,55 +606,137 @@ bool FixConservatives::operator()(
   if (size < simd_width) {
     if (non_zero_mag) {
       for (size_t s = 0; s < size; s++) {
-        fix_impl(s, std::false_type{}, false, std::true_type{});
+        fix_at(s, std::false_type{}, false, std::true_type{});
       }
     } else {
       for (size_t s = 0; s < size; s++) {
-        fix_impl(s, std::false_type{}, false, std::false_type{});
+        fix_at(s, std::false_type{}, false, std::false_type{});
       }
     }
   } else {
     const size_t vectorized_size = size - size % simd_width;
     if (non_zero_mag) {
       for (size_t s = 0; s < vectorized_size; s += simd_width) {
-        fix_impl(s, std::true_type{},
-                 simd::mask_type_t<simd::batch<double>>{false},
-                 std::true_type{});
+        fix_at(s, std::true_type{},
+               simd::mask_type_t<simd::batch<double>>{false}, std::true_type{});
       }
       if (const size_t remainder = size - vectorized_size; remainder > 0) {
         const auto complete_mask =
             simd::make_sequence<simd::batch<double>>() <
             (simd_width - static_cast<double>(remainder));
-        fix_impl(size - simd_width, std::true_type{}, complete_mask,
-                 std::true_type{});
+        fix_at(size - simd_width, std::true_type{}, complete_mask,
+               std::true_type{});
       }
     } else {
       for (size_t s = 0; s < vectorized_size; s += simd_width) {
-        fix_impl(s, std::true_type{},
-                 simd::mask_type_t<simd::batch<double>>{false},
-                 std::false_type{});
+        fix_at(s, std::true_type{},
+               simd::mask_type_t<simd::batch<double>>{false},
+               std::false_type{});
       }
       if (const size_t remainder = size - vectorized_size; remainder > 0) {
         const auto complete_mask =
             simd::make_sequence<simd::batch<double>>() <
             (simd_width - static_cast<double>(remainder));
-        fix_impl(size - simd_width, std::true_type{}, complete_mask,
-                 std::false_type{});
+        fix_at(size - simd_width, std::true_type{}, complete_mask,
+               std::false_type{});
       }
     }
   }
 #else
   if (non_zero_mag) {
     for (size_t s = 0; s < size; s++) {
-      fix_impl(s, std::false_type{}, false, std::true_type{});
+      fix_at(s, std::false_type{}, false, std::true_type{});
     }
   } else {
     for (size_t s = 0; s < size; s++) {
-      fix_impl(s, std::false_type{}, false, std::false_type{});
+      fix_at(s, std::false_type{}, false, std::false_type{});
     }
   }
 #endif
   return needed_fixing;
+}
+
+KOKKOS_FUNCTION bool FixConservatives::operator()(
+    const gsl::not_null<Scalar<double>*> tilde_d,
+    const gsl::not_null<Scalar<double>*> tilde_ye,
+    const gsl::not_null<Scalar<double>*> tilde_tau,
+    const gsl::not_null<tnsr::i<double, 3, Frame::Inertial>*> tilde_s,
+    const tnsr::I<double, 3, Frame::Inertial>& tilde_b,
+    const tnsr::ii<double, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::II<double, 3, Frame::Inertial>& inv_spatial_metric,
+    const Scalar<double>& sqrt_det_spatial_metric,
+    const bool assume_non_zero_magnetic_field) const {
+  if (not enable_) {
+    return false;
+  }
+  Scalar<double> tilde_s_squared{};
+  dot_product(make_not_null(&tilde_s_squared), *tilde_s, *tilde_s,
+              inv_spatial_metric);
+  double s_tilde_rescaling_factor = 1.0;
+  const auto fix = [&]() {
+    if (assume_non_zero_magnetic_field) {
+      Scalar<double> tilde_b_squared{};
+      dot_product(make_not_null(&tilde_b_squared), tilde_b, tilde_b,
+                  spatial_metric);
+      Scalar<double> tilde_s_dot_tilde_b{};
+      dot_product(make_not_null(&tilde_s_dot_tilde_b), *tilde_s, tilde_b);
+      return fix_impl<true>(
+          make_not_null(&get(*tilde_d)), make_not_null(&get(*tilde_ye)),
+          make_not_null(&get(*tilde_tau)),
+          make_not_null(&s_tilde_rescaling_factor),
+          get(sqrt_det_spatial_metric), get(tilde_s_squared),
+          get(tilde_b_squared), get(tilde_s_dot_tilde_b), false);
+    }
+    return fix_impl<false>(
+        make_not_null(&get(*tilde_d)), make_not_null(&get(*tilde_ye)),
+        make_not_null(&get(*tilde_tau)),
+        make_not_null(&s_tilde_rescaling_factor), get(sqrt_det_spatial_metric),
+        get(tilde_s_squared), 0.0, 0.0, false);
+  };
+  bool needed_fixing = false;
+  KOKKOS_IF_ON_HOST((
+      try { needed_fixing = fix(); } catch (std::exception& exception) {
+        ERROR(
+            "Failed to fix conserved variables because the root finder failed "
+            "to find the lorentz factor.\n"
+            << exception.what() << "\n  tilde_s =\n"
+            << *tilde_s << "\n  tilde_b =\n"
+            << tilde_b << "\n  spatial_metric =\n"
+            << spatial_metric << "\n  inv_spatial_metric =\n"
+            << inv_spatial_metric);
+      }))
+  KOKKOS_IF_ON_DEVICE((needed_fixing = fix();))
+  if (s_tilde_rescaling_factor < 1.0) {
+    for (size_t i = 0; i < 3; i++) {
+      tilde_s->get(i) *= s_tilde_rescaling_factor;
+    }
+  }
+  return needed_fixing;
+}
+
+KOKKOS_FUNCTION bool FixConservatives::AtGridPoint::apply(
+    const gsl::not_null<Scalar<double>*> tilde_d,
+    const gsl::not_null<Scalar<double>*> tilde_ye,
+    const gsl::not_null<Scalar<double>*> tilde_tau,
+    const gsl::not_null<tnsr::i<double, 3, Frame::Inertial>*> tilde_s,
+    const Scalar<double>& unfixed_tilde_d,
+    const Scalar<double>& unfixed_tilde_ye,
+    const Scalar<double>& unfixed_tilde_tau,
+    const tnsr::i<double, 3, Frame::Inertial>& unfixed_tilde_s,
+    const tnsr::I<double, 3, Frame::Inertial>& tilde_b,
+    const tnsr::ii<double, 3, Frame::Inertial>& spatial_metric,
+    const tnsr::II<double, 3, Frame::Inertial>& inv_spatial_metric,
+    const Scalar<double>& sqrt_det_spatial_metric,
+    const FixConservatives& fix_conservatives,
+    const bool assume_non_zero_magnetic_field) {
+  *tilde_d = unfixed_tilde_d;
+  *tilde_ye = unfixed_tilde_ye;
+  *tilde_tau = unfixed_tilde_tau;
+  *tilde_s = unfixed_tilde_s;
+  return fix_conservatives(tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b,
+                           spatial_metric, inv_spatial_metric,
+                           sqrt_det_spatial_metric,
+                           assume_non_zero_magnetic_field);
 }
 
 bool operator==(const FixConservatives& lhs, const FixConservatives& rhs) {

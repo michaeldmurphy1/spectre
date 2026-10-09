@@ -18,6 +18,11 @@
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
+
+#ifdef SPECTRE_KOKKOS
+#include "DataStructures/ApplyPointwiseOnDevice.hpp"
+#endif  // SPECTRE_KOKKOS
 
 namespace grmhd::ValenciaDivClean::subcell {
 template <typename OrderedListOfRecoverySchemes>
@@ -34,13 +39,29 @@ void FixConservativesAndComputePrims<OrderedListOfRecoverySchemes>::apply(
     const Scalar<DataVector>& sqrt_det_spatial_metric,
     const grmhd::ValenciaDivClean::PrimitiveFromConservativeOptions&
         primitive_from_conservative_options) {
+  const auto& tilde_b = get<Tags::TildeB<Frame::Inertial>>(*conserved_vars_ptr);
+#ifdef SPECTRE_KOKKOS
+  // Fix the conservative variables pointwise in a Kokkos kernel
+  *needed_fixing = copy_and_apply_pointwise_on_device<
+      grmhd::ValenciaDivClean::FixConservatives::AtGridPoint>(
+      conserved_vars_ptr,
+      grmhd::ValenciaDivClean::FixConservatives::AtGridPoint::return_tags{},
+      grmhd::ValenciaDivClean::FixConservatives::AtGridPoint::argument_tags{},
+      get<Tags::TildeD>(*conserved_vars_ptr),
+      get<Tags::TildeYe>(*conserved_vars_ptr),
+      get<Tags::TildeTau>(*conserved_vars_ptr),
+      get<Tags::TildeS<Frame::Inertial>>(*conserved_vars_ptr), tilde_b,
+      spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
+      fix_conservatives,
+      fix_conservatives.assume_non_zero_magnetic_field(tilde_b));
+#else
   *needed_fixing = fix_conservatives(
       make_not_null(&get<Tags::TildeD>(*conserved_vars_ptr)),
       make_not_null(&get<Tags::TildeYe>(*conserved_vars_ptr)),
       make_not_null(&get<Tags::TildeTau>(*conserved_vars_ptr)),
       make_not_null(&get<Tags::TildeS<Frame::Inertial>>(*conserved_vars_ptr)),
-      get<Tags::TildeB<Frame::Inertial>>(*conserved_vars_ptr), spatial_metric,
-      inv_spatial_metric, sqrt_det_spatial_metric);
+      tilde_b, spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric);
+#endif  // SPECTRE_KOKKOS
   grmhd::ValenciaDivClean::
       PrimitiveFromConservative<OrderedListOfRecoverySchemes, true>::apply(
           make_not_null(&get<hydro::Tags::RestMassDensity<DataVector>>(

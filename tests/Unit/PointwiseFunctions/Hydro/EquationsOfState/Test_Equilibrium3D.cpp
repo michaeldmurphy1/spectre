@@ -11,17 +11,25 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Framework/TestCreation.hpp"
 #include "Framework/TestHelpers.hpp"
+#include "Helpers/PointwiseFunctions/Hydro/EquationsOfState/DeviceView.hpp"
 #include "Helpers/PointwiseFunctions/Hydro/EquationsOfState/TestHelpers.hpp"
 #include "Informer/InfoFromBuild.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Equilibrium3D.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Factory.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/IdealFluid.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/Serialization/Serialize.hpp"
 
 SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.Equilibrium3D",
                   "[Unit][EquationsOfState]") {
+#ifdef SPECTRE_KOKKOS
+  TestHelpers::EquationsOfState::check_device_view(
+      EquationsOfState::Equilibrium3D<EquationsOfState::IdealFluid<true>>{
+          EquationsOfState::IdealFluid<true>{5.0 / 3.0, 0.1}},
+      {{{0.1, 2.0}, {0.1, 2.0}, {0.05, 0.5}}});
+#endif  // SPECTRE_KOKKOS
   namespace EoS = EquationsOfState;
 
   const double ideal_adiabatic_index = 2.0;

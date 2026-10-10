@@ -11,16 +11,24 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Framework/TestCreation.hpp"
 #include "Framework/TestHelpers.hpp"
+#include "Helpers/PointwiseFunctions/Hydro/EquationsOfState/DeviceView.hpp"
 #include "Helpers/PointwiseFunctions/Hydro/EquationsOfState/TestHelpers.hpp"
 #include "Informer/InfoFromBuild.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Barotropic3D.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Factory.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/Serialization/Serialize.hpp"
 
 SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.Barotropic3D",
                   "[Unit][EquationsOfState]") {
+#ifdef SPECTRE_KOKKOS
+  TestHelpers::EquationsOfState::check_device_view(
+      EquationsOfState::Barotropic3D<EquationsOfState::PolytropicFluid<true>>{
+          EquationsOfState::PolytropicFluid<true>{100.0, 2.0}},
+      {{{0.1, 2.0}, {0.1, 2.0}, {0.05, 0.5}}});
+#endif  // SPECTRE_KOKKOS
   namespace EoS = EquationsOfState;
   const EoS::PolytropicFluid<true> underlying_eos{100.0, 2.0};
   EoS::Barotropic3D<EoS::PolytropicFluid<true>> eos{underlying_eos};

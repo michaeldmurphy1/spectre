@@ -14,6 +14,7 @@ set(LIBRARY_SOURCES
   Test_PolytropicFluid.cpp
   Test_SpectralEoS.cpp
   Test_Tabulated3D.cpp
+  Test_VisitDeviceView.cpp
   )
 
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")

@@ -20,6 +20,7 @@
 #include "Options/String.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/Units.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -41,6 +42,109 @@ namespace EquationsOfState {
  * temeperature or electron fraction is equivalent to evaluating it at
  * zero temperature and in beta equalibrium.
  */
+namespace detail {
+// The functions of `Barotropic3D` in terms of the functions of the 1D EOS
+// `underlying`, which is either the EOS itself (on the host) or its
+// `DeviceView`. This way the same code implements both.
+template <typename Underlying>
+struct Barotropic3DFunctions {
+  Underlying underlying;
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> pressure_from_density_and_temperature(
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& /*temperature*/,
+      const Scalar<DataType>& /*electron_fraction*/) const {
+    return underlying.pressure_from_density(rest_mass_density);
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> pressure_from_density_and_energy(
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& /*specific_internal_energy*/,
+      const Scalar<DataType>& /*electron_fraction*/) const {
+    return underlying.pressure_from_density(rest_mass_density);
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> temperature_from_density_and_energy(
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& /*specific_internal_energy*/,
+      const Scalar<DataType>& /*electron_fraction*/) const {
+    return zero_like(rest_mass_density);
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> specific_entropy_from_density_and_energy(
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& /*specific_internal_energy*/,
+      const Scalar<DataType>& /*electron_fraction*/) const {
+    return underlying.specific_entropy_from_density(rest_mass_density);
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType>
+  specific_entropy_from_density_and_temperature(
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& /*temperature*/,
+      const Scalar<DataType>& /*electron_fraction*/) const {
+    return underlying.specific_entropy_from_density(rest_mass_density);
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType>
+  specific_internal_energy_from_density_and_temperature(
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& /*temperature*/,
+      const Scalar<DataType>& /*electron_fraction*/) const {
+    return underlying.specific_internal_energy_from_density(rest_mass_density);
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType>
+  sound_speed_squared_from_density_and_temperature(
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& /*temperature*/,
+      const Scalar<DataType>& /*electron_fraction*/) const {
+    // We have to do this to avoid dividing by zero
+    const DataType enthalpy_density =
+        get(underlying.pressure_from_density(rest_mass_density)) +
+        (1.0 + get(underlying.specific_internal_energy_from_density(
+                   rest_mass_density))) *
+            get(rest_mass_density);
+    return Scalar<DataType>{
+        get(rest_mass_density) *
+        get(underlying.chi_from_density(rest_mass_density)) / enthalpy_density};
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> kappa_from_density_and_temperature(
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& /*temperature*/,
+      const Scalar<DataType>& /*electron_fraction*/) const {
+    // Barotropic EOS: p = p(rho), so kappa = dp/deps|_rho = 0.
+    return zero_like(rest_mass_density);
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> zeta_from_density_and_temperature(
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& /*temperature*/,
+      const Scalar<DataType>& /*electron_fraction*/) const {
+    return zero_like(rest_mass_density);
+  }
+};
+}  // namespace detail
+
 template <typename ColdEquilEos>
 class Barotropic3D : public EquationOfState<ColdEquilEos::is_relativistic, 3> {
  public:
@@ -168,8 +272,25 @@ class Barotropic3D : public EquationOfState<ColdEquilEos::is_relativistic, 3> {
   /// The baryon mass for this EoS
   double baryon_mass() const override { return underlying_eos_.baryon_mass(); }
 
+  /// The parameters and functions of this EOS in a trivially copyable type
+  /// that can be passed to Kokkos kernels (see `IdealFluid::DeviceView`).
+  /// Only available if the underlying EOS has a `device_view()`.
+  template <typename T = ColdEquilEos>
+    requires has_device_view_v<T>
+  auto device_view() const {
+    using UnderlyingDeviceView = decltype(underlying_eos_.device_view());
+    return detail::Barotropic3DFunctions<UnderlyingDeviceView>{
+        underlying_eos_.device_view()};
+  }
+
  private:
   EQUATION_OF_STATE_FORWARD_DECLARE_MEMBER_IMPLS(3)
+
+  // The functions of this EOS, implemented with the underlying EOS
+  detail::Barotropic3DFunctions<const ColdEquilEos&> functions() const {
+    return {underlying_eos_};
+  }
+
   ColdEquilEos underlying_eos_;
 };
 /// \cond

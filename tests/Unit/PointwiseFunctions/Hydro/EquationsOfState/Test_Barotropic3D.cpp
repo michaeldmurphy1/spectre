@@ -57,7 +57,7 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.Barotropic3D",
     CHECK(eos.temperature_from_density_and_energy(
               rest_mass_density, specific_internal_energy, electron_fraction) ==
           make_with_value<Scalar<DataVector>>(rest_mass_density, 0.0));
-    DataVector enthalpy_density =
+    const DataVector enthalpy_density =
         get(rest_mass_density) * (1.0 + get(specific_internal_energy)) +
         get(pressure);
     CHECK(eos.sound_speed_squared_from_density_and_temperature(
@@ -88,7 +88,7 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.Barotropic3D",
     CHECK(eos.temperature_from_density_and_energy(
               rest_mass_density, specific_internal_energy, electron_fraction) ==
           make_with_value<Scalar<double>>(rest_mass_density, 0.0));
-    double enthalpy_density =
+    const double enthalpy_density =
         get(rest_mass_density) * (1.0 + get(specific_internal_energy)) +
         get(pressure);
     CHECK(
@@ -108,7 +108,7 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.Barotropic3D",
              "  PolytropicFluid:\n"
              "    PolytropicConstant: 100.0\n"
              "    PolytropicExponent: 2.0"}));
-    const EoS::Barotropic3D<EoS::PolytropicFluid<true>>& deserialized_eos =
+    const auto& deserialized_eos =
         dynamic_cast<const EoS::Barotropic3D<EoS::PolytropicFluid<true>>&>(
             *eos_pointer);
     TestHelpers::EquationsOfState::test_get_clone(deserialized_eos);

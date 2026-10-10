@@ -4,6 +4,7 @@
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  ConservativesOnDevice.cpp
   MonotonicityPreserving5.cpp
   MonotonisedCentral.cpp
   PositivityPreservingAdaptiveOrder.cpp
@@ -17,6 +18,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   BoundaryConditionGhostData.hpp
+  ConservativesOnDevice.hpp
   Factory.hpp
   FiniteDifference.hpp
   MonotonicityPreserving5.hpp

@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -295,8 +296,13 @@ auto apply_pointwise_on_device(
  * arguments at a grid point (the `ArgsTags`, see `device_argument_at_index`).
  * The `args` are copied to the device (see `make_device_arguments`), the kernel
  * is launched with `apply_pointwise_on_device`, and the results are copied
- * back into the `ResultTags` of `results`, which must already have the right
- * number of grid points. Other tags in `results` are left unchanged.
+ * back. The `results` are either
+ * - a `Variables`, in which case the results are written to its `ResultTags`
+ *   and other tags are left unchanged, or
+ * - a `std::tuple` of `gsl::not_null` pointers to the host tensors of the
+ *   `ResultTags`, in order, e.g. if they aren't in a single `Variables`.
+ *
+ * The results must already have the right number of grid points.
  *
  * All copies and the kernel are enqueued on the execution space instance
  * `exec` (the default instance if not given). The instance is fenced before
@@ -309,25 +315,46 @@ auto apply_pointwise_on_device(
  * host, and for tests. Code that keeps its data on the device should call
  * `apply_pointwise_on_device` instead.
  */
-template <typename Function, typename ExecSpace, typename VarsTags,
+template <typename Function, typename ExecSpace, typename... ResultTensors,
           typename... ResultTags, typename... ArgsTags>
   requires Kokkos::is_execution_space_v<ExecSpace>
 auto copy_and_apply_pointwise_on_device(
-    const ExecSpace& exec, const gsl::not_null<Variables<VarsTags>*> results,
+    const ExecSpace& exec,
+    const std::tuple<gsl::not_null<ResultTensors*>...>& results,
     tmpl::list<ResultTags...> result_tags, tmpl::list<ArgsTags...> args_tags,
     const typename ArgsTags::type&... args) {
+  static_assert(
+      (std::is_same_v<ResultTensors, typename ResultTags::type> and ...),
+      "The result tensors must have the types of the ResultTags, in order.");
+  static_assert(sizeof...(ResultTags) > 0, "There must be at least one result");
+  const size_t number_of_grid_points = (*std::get<0>(results))[0].size();
+#ifdef SPECTRE_DEBUG
+  const auto check_size = [number_of_grid_points](const auto& result) {
+    ASSERT((*result)[0].size() == number_of_grid_points,
+           "All results must have the same number of grid points, but one has "
+               << (*result)[0].size() << " instead of "
+               << number_of_grid_points);
+  };
+  std::apply(
+      [&check_size](const auto&... result) { (..., check_size(result)); },
+      results);
+#endif  // SPECTRE_DEBUG
   using DeviceResults =
       Variables<tmpl::list<::Tags::MirrorView<ResultTags>...>>;
   // Every grid point of the results is written by the kernel, so don't
   // initialize the memory
   DeviceResults device_results{typename DeviceResults::storage_type{
       Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "results"),
-      results->number_of_grid_points()}};
+      number_of_grid_points}};
   const auto device_args = make_device_arguments<ArgsTags...>(exec, args...);
   const auto copy_results_and_fence = [&exec, &results, &device_results]() {
-    (..., ApplyPointwiseOnDevice_detail::copy_result_to_host<ResultTags>(
-              exec, make_not_null(&get<ResultTags>(*results)),
-              get<::Tags::MirrorView<ResultTags>>(device_results)));
+    std::apply(
+        [&exec, &device_results](const auto&... result) {
+          (..., ApplyPointwiseOnDevice_detail::copy_result_to_host<ResultTags>(
+                    exec, result,
+                    get<::Tags::MirrorView<ResultTags>>(device_results)));
+        },
+        results);
     // The host arguments, host results and device views must stay alive until
     // all work on `exec` is complete
     exec.fence("copy_and_apply_pointwise_on_device");
@@ -347,12 +374,24 @@ auto copy_and_apply_pointwise_on_device(
   }
 }
 
-template <typename Function, typename VarsTags, typename... ResultTags,
-          typename... ArgsTags>
+template <typename Function, typename ExecSpace, typename VarsTags,
+          typename... ResultTags, typename... ArgsTags>
+  requires Kokkos::is_execution_space_v<ExecSpace>
 auto copy_and_apply_pointwise_on_device(
-    const gsl::not_null<Variables<VarsTags>*> results,
+    const ExecSpace& exec, const gsl::not_null<Variables<VarsTags>*> results,
     tmpl::list<ResultTags...> result_tags, tmpl::list<ArgsTags...> args_tags,
     const typename ArgsTags::type&... args) {
+  return copy_and_apply_pointwise_on_device<Function>(
+      exec, std::tuple{make_not_null(&get<ResultTags>(*results))...},
+      result_tags, args_tags, args...);
+}
+
+template <typename Function, typename ResultsType, typename... ResultTags,
+          typename... ArgsTags>
+  requires(not Kokkos::is_execution_space_v<ResultsType>)
+auto copy_and_apply_pointwise_on_device(
+    const ResultsType& results, tmpl::list<ResultTags...> result_tags,
+    tmpl::list<ArgsTags...> args_tags, const typename ArgsTags::type&... args) {
   return copy_and_apply_pointwise_on_device<Function>(
       Kokkos::DefaultExecutionSpace{}, results, result_tags, args_tags,
       args...);

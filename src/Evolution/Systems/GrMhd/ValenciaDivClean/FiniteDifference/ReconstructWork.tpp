@@ -27,6 +27,7 @@
 #include "Evolution/DgSubcell/GhostData.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ConservativesOnDevice.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
@@ -131,7 +132,10 @@ void compute_conservatives_for_reconstruction(
   const auto& temperature =
       get<hydro::Tags::Temperature<DataVector>>(*vars_on_face);
 
-  // EoS calls based on reconstructed primitives
+  // EoS calls based on reconstructed primitives. With Kokkos, a 3D EOS is
+  // evaluated on the device together with the conserved variables. 1D and 2D
+  // EOSs are still evaluated on the host, followed by the conserved variables
+  // on the device, since ValenciaDivClean evolutions only use 3D EOSs.
   if constexpr (ThermodynamicDim == 1) {
     specific_internal_energy =
         eos.specific_internal_energy_from_density(rest_mass_density);
@@ -143,11 +147,32 @@ void compute_conservatives_for_reconstruction(
     pressure = eos.pressure_from_density_and_energy(rest_mass_density,
                                                     specific_internal_energy);
   } else if constexpr (ThermodynamicDim == 3) {
+#ifdef SPECTRE_KOKKOS
+    // The EOS is evaluated in the same Kokkos kernel as the conserved
+    // variables, so it must have a `DeviceView`
+    compute_conservatives_on_device(
+        Kokkos::DefaultExecutionSpace{},
+        make_not_null(&specific_internal_energy), make_not_null(&pressure),
+        make_not_null(&get<Tags::TildeD>(*vars_on_face)),
+        make_not_null(&get<Tags::TildeYe>(*vars_on_face)),
+        make_not_null(&get<Tags::TildeTau>(*vars_on_face)),
+        make_not_null(&get<Tags::TildeS<>>(*vars_on_face)),
+        make_not_null(&get<Tags::TildeB<>>(*vars_on_face)),
+        make_not_null(&get<Tags::TildePhi>(*vars_on_face)), rest_mass_density,
+        electron_fraction, temperature, spatial_velocity, lorentz_factor,
+        get<hydro::Tags::MagneticField<DataVector, 3>>(*vars_on_face),
+        get<gr::Tags::SqrtDetSpatialMetric<DataVector>>(*vars_on_face),
+        spatial_metric,
+        get<hydro::Tags::DivergenceCleaningField<DataVector>>(*vars_on_face),
+        eos);
+    return;
+#else
     specific_internal_energy =
         eos.specific_internal_energy_from_density_and_temperature(
             rest_mass_density, temperature, electron_fraction);
     pressure = eos.pressure_from_density_and_temperature(
         rest_mass_density, temperature, electron_fraction);
+#endif  // SPECTRE_KOKKOS
   } else {
     ERROR("EOS Must be 1, 2, or 3d");
   }

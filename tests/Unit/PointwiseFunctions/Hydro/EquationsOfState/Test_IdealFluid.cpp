@@ -84,7 +84,7 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.IdealFluid",
   namespace EoS = EquationsOfState;
   register_derived_classes_with_charm<EoS::EquationOfState<true, 2>>();
   register_derived_classes_with_charm<EoS::EquationOfState<false, 2>>();
-  pypp::SetupLocalPythonEnvironment local_python_env{
+  const pypp::SetupLocalPythonEnvironment local_python_env{
       "PointwiseFunctions/Hydro/EquationsOfState/"};
   const double d_for_size = std::numeric_limits<double>::signaling_NaN();
   const DataVector dv_for_size(5);

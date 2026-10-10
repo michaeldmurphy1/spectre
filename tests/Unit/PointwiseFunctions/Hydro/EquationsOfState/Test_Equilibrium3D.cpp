@@ -29,7 +29,8 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.Equilibrium3D",
   const EoS::PolytropicFluid<true> cold_eos{100.0, cold_polytropic_index};
   const EoS::IdealFluid<true> eos_ideal_fluid{ideal_adiabatic_index, 0.0};
 
-  EoS::Equilibrium3D<EoS::IdealFluid<true>> eos_ideal_fluid_3d{eos_ideal_fluid};
+  const EoS::Equilibrium3D<EoS::IdealFluid<true>> eos_ideal_fluid_3d{
+      eos_ideal_fluid};
   const EoS::HybridEos<EoS::PolytropicFluid<true>> underlying_eos{
       cold_eos, ideal_adiabatic_index};
   EoS::Equilibrium3D<EoS::HybridEos<EoS::PolytropicFluid<true>>> eos{
@@ -188,9 +189,9 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.Equilibrium3D",
              "      PolytropicConstant: 100.0\n"
              "      PolytropicExponent: 2.0\n"
              "    MinTemperature: 0.0"}));
-    const EoS::Equilibrium3D<EoS::HybridEos<EoS::PolytropicFluid<true>>>&
-        deserialized_eos = dynamic_cast<const EoS::Equilibrium3D<
-            EoS::HybridEos<EoS::PolytropicFluid<true>>>&>(*eos_pointer);
+    const auto& deserialized_eos = dynamic_cast<
+        const EoS::Equilibrium3D<EoS::HybridEos<EoS::PolytropicFluid<true>>>&>(
+        *eos_pointer);
     TestHelpers::EquationsOfState::test_get_clone(deserialized_eos);
 
     CHECK(eos == deserialized_eos);
@@ -203,7 +204,7 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.Equilibrium3D",
     CHECK(eos !=
           EoS::Equilibrium3D<EoS::HybridEos<EoS::PolytropicFluid<true>>>{
               EoS::HybridEos<EoS::PolytropicFluid<true>>({100.0, 2.0}, 1.5)});
-    EoS::Equilibrium3D<EoS::HybridEos<EoS::Spectral>> eq_spectral{
+    const EoS::Equilibrium3D<EoS::HybridEos<EoS::Spectral>> eq_spectral{
         EoS::HybridEos<EoS::Spectral>{{1e-5, 1e-4, {2.0, 0.0, 0.0, 0.0}, 1e-2},
                                       2.0}};
     CHECK(eq_spectral.is_equal(eq_spectral));

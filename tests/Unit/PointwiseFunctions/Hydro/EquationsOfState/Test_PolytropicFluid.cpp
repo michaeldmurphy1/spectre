@@ -69,7 +69,7 @@ SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.PolytropicFluid",
   namespace EoS = EquationsOfState;
   register_derived_classes_with_charm<EoS::EquationOfState<true, 1>>();
   register_derived_classes_with_charm<EoS::EquationOfState<false, 1>>();
-  pypp::SetupLocalPythonEnvironment local_python_env{
+  const pypp::SetupLocalPythonEnvironment local_python_env{
       "PointwiseFunctions/Hydro/EquationsOfState/"};
   TestHelpers::EquationsOfState::test_get_clone(
       EoS::PolytropicFluid<true>(100.0, 2.0));

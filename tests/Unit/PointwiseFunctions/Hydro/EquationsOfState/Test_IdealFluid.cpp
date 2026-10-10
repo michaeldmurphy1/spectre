@@ -12,12 +12,14 @@
 #include "Framework/SetupLocalPythonEnvironment.hpp"
 #include "Framework/TestCreation.hpp"
 #include "Framework/TestHelpers.hpp"
+#include "Helpers/PointwiseFunctions/Hydro/EquationsOfState/DeviceView.hpp"
 #include "Helpers/PointwiseFunctions/Hydro/EquationsOfState/TestHelpers.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Equilibrium3D.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Factory.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/IdealFluid.hpp"
 #include "PointwiseFunctions/Hydro/Units.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 
 namespace {
@@ -81,6 +83,14 @@ void check_bounds() {
 
 SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.IdealFluid",
                   "[Unit][EquationsOfState]") {
+#ifdef SPECTRE_KOKKOS
+  TestHelpers::EquationsOfState::check_device_view(
+      EquationsOfState::IdealFluid<true>{5.0 / 3.0, 0.1},
+      {{{0.1, 2.0}, {0.1, 2.0}}});
+  TestHelpers::EquationsOfState::check_device_view(
+      EquationsOfState::IdealFluid<false>{1.4, 0.1},
+      {{{0.1, 2.0}, {0.1, 2.0}}});
+#endif  // SPECTRE_KOKKOS
   namespace EoS = EquationsOfState;
   register_derived_classes_with_charm<EoS::EquationOfState<true, 2>>();
   register_derived_classes_with_charm<EoS::EquationOfState<false, 2>>();

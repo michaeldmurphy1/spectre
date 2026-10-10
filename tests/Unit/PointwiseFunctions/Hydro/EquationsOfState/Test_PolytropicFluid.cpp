@@ -12,6 +12,7 @@
 #include "Framework/SetupLocalPythonEnvironment.hpp"
 #include "Framework/TestCreation.hpp"
 #include "Framework/TestHelpers.hpp"
+#include "Helpers/PointwiseFunctions/Hydro/EquationsOfState/DeviceView.hpp"
 #include "Helpers/PointwiseFunctions/Hydro/EquationsOfState/TestHelpers.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Barotropic2D.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Barotropic3D.hpp"
@@ -20,6 +21,7 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/PiecewisePolytropicFluid.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
 #include "PointwiseFunctions/Hydro/Units.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 
 namespace {
@@ -66,6 +68,13 @@ void check_bounds() {
 }  // namespace
 SPECTRE_TEST_CASE("Unit.PointwiseFunctions.EquationsOfState.PolytropicFluid",
                   "[Unit][EquationsOfState]") {
+#ifdef SPECTRE_KOKKOS
+  // Specific enthalpies must be larger than 1 for the relativistic EOS
+  TestHelpers::EquationsOfState::check_device_view(
+      EquationsOfState::PolytropicFluid<true>{100.0, 2.0}, {{{1.1, 2.0}}});
+  TestHelpers::EquationsOfState::check_device_view(
+      EquationsOfState::PolytropicFluid<false>{100.0, 2.0}, {{{0.1, 2.0}}});
+#endif  // SPECTRE_KOKKOS
   namespace EoS = EquationsOfState;
   register_derived_classes_with_charm<EoS::EquationOfState<true, 1>>();
   register_derived_classes_with_charm<EoS::EquationOfState<false, 1>>();

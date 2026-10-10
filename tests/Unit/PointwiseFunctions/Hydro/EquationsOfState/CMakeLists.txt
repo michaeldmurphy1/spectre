@@ -14,10 +14,13 @@ set(LIBRARY_SOURCES
   Test_PolytropicFluid.cpp
   Test_SpectralEoS.cpp
   Test_Tabulated3D.cpp
+  Test_VisitDeviceView.cpp
   )
 
 if(SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
+    Test_Barotropic3DKokkos.cpp
+    Test_Equilibrium3DKokkos.cpp
     Test_IdealFluidKokkos.cpp
     Test_PolytropicFluidKokkos.cpp
     )

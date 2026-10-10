@@ -77,60 +77,9 @@ void PolytropicFluid<IsRelativistic>::pup(PUP::er& p) {
   p | polytropic_exponent_;
 }
 
-template <bool IsRelativistic>
-template <class DataType>
-Scalar<DataType> PolytropicFluid<IsRelativistic>::pressure_from_density_impl(
-    const Scalar<DataType>& rest_mass_density) const {
-  return Scalar<DataType>{polytropic_constant_ *
-                          pow(get(rest_mass_density), polytropic_exponent_)};
-}
-
-template <>
-template <class DataType>
-Scalar<DataType> PolytropicFluid<true>::rest_mass_density_from_enthalpy_impl(
-    const Scalar<DataType>& specific_enthalpy) const {
-  return Scalar<DataType>{pow(((polytropic_exponent_ - 1.0) /
-                               (polytropic_constant_ * polytropic_exponent_)) *
-                                  (get(specific_enthalpy) - 1.0),
-                              1.0 / (polytropic_exponent_ - 1.0))};
-}
-
-template <>
-template <class DataType>
-Scalar<DataType> PolytropicFluid<false>::rest_mass_density_from_enthalpy_impl(
-    const Scalar<DataType>& specific_enthalpy) const {
-  return Scalar<DataType>{pow(((polytropic_exponent_ - 1.0) /
-                               (polytropic_constant_ * polytropic_exponent_)) *
-                                  get(specific_enthalpy),
-                              1.0 / (polytropic_exponent_ - 1.0))};
-}
-
-template <bool IsRelativistic>
-template <class DataType>
-Scalar<DataType>
-PolytropicFluid<IsRelativistic>::specific_internal_energy_from_density_impl(
-    const Scalar<DataType>& rest_mass_density) const {
-  return Scalar<DataType>{
-      polytropic_constant_ / (polytropic_exponent_ - 1.0) *
-      pow(get(rest_mass_density), polytropic_exponent_ - 1.0)};
-}
-
-template <bool IsRelativistic>
-template <class DataType>
-Scalar<DataType> PolytropicFluid<IsRelativistic>::chi_from_density_impl(
-    const Scalar<DataType>& rest_mass_density) const {
-  return Scalar<DataType>{
-      polytropic_constant_ * polytropic_exponent_ *
-      pow(get(rest_mass_density), polytropic_exponent_ - 1.0)};
-}
-
-template <bool IsRelativistic>
-template <class DataType>
-Scalar<DataType> PolytropicFluid<IsRelativistic>::
-    kappa_times_p_over_rho_squared_from_density_impl(
-        const Scalar<DataType>& rest_mass_density) const {
-  return make_with_value<Scalar<DataType>>(get(rest_mass_density), 0.0);
-}
+EQUATION_OF_STATE_DELEGATE_IMPLS(template <bool IsRelativistic>,
+                                 PolytropicFluid<IsRelativistic>, 1,
+                                 device_view())
 
 template <bool IsRelativistic>
 double PolytropicFluid<IsRelativistic>::rest_mass_density_upper_bound() const {

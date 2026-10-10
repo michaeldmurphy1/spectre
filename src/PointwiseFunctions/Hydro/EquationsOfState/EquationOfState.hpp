@@ -9,11 +9,14 @@
 #include <boost/preprocessor/repetition/repeat.hpp>
 #include <boost/preprocessor/tuple/enum.hpp>
 #include <boost/preprocessor/tuple/to_list.hpp>
+#include <type_traits>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "PointwiseFunctions/Hydro/Units.hpp"
 #include "Utilities/CallWithDynamicType.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/MakeWithValue.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
 #include "Utilities/TypeTraits.hpp"
@@ -45,7 +48,32 @@ class Tabulated3D;
 /// Contains all equations of state, including base class
 namespace EquationsOfState {
 
+/// Whether the EOS can be used in Kokkos kernels through its `device_view()`
+template <typename EosType>
+concept HasDeviceView = requires(const EosType& eos) { eos.device_view(); };
+
+/// @{
+/// `HasDeviceView` as a type trait, e.g. for `tmpl::filter`
+template <typename EosType>
+struct has_device_view : std::bool_constant<HasDeviceView<EosType>> {};
+
+template <typename EosType>
+constexpr bool has_device_view_v = HasDeviceView<EosType>;
+/// @}
+
 namespace detail {
+// A `Scalar` of zeros with the size of `like`. Unlike `make_with_value`, it can
+// be used in Kokkos kernels for `double`s.
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <typename DataType>
+KOKKOS_FUNCTION Scalar<DataType> zero_like(const Scalar<DataType>& like) {
+  if constexpr (std::is_same_v<DataType, double>) {
+    return Scalar<double>{0.0};
+  } else {
+    return make_with_value<Scalar<DataType>>(like, 0.0);
+  }
+}
+
 template <bool IsRelativistic, size_t ThermodynamicDim>
 struct DerivedClasses {};
 
@@ -999,6 +1027,41 @@ bool operator!=(const EquationOfState<IsRelLhs, ThermoDimLhs>& lhs,
   BOOST_PP_LIST_FOR_EACH(                                                  \
       EQUATION_OF_STATE_MEMBER_DEFINITIONS_HELPER_2,                       \
       (TEMPLATE, DERIVED, DATA_TYPE, DIM),                                 \
+      BOOST_PP_TUPLE_TO_LIST(BOOST_PP_TUPLE_ELEM(                          \
+          BOOST_PP_SUB(DIM, 1),                                            \
+          (EQUATION_OF_STATE_FUNCTIONS_1D, EQUATION_OF_STATE_FUNCTIONS_2D, \
+           EQUATION_OF_STATE_FUNCTIONS_3D))))
+
+/// \cond
+#define EQUATION_OF_STATE_DELEGATE_IMPLS_HELPER(TEMPLATE, DERIVED, DIM,     \
+                                                OBJECT, FUNCTION_NAME)      \
+  TEMPLATE                                                                  \
+  template <class DataType>                                                 \
+  Scalar<DataType> DERIVED::FUNCTION_NAME##_impl(BOOST_PP_REPEAT(           \
+      DIM, EQUATION_OF_STATE_ARGUMENTS_EXPAND_NAMED, DataType)) const {     \
+    return OBJECT.FUNCTION_NAME(                                            \
+        BOOST_PP_REPEAT(DIM, EQUATION_OF_STATE_FORWARD_ARGUMENTS, UNUSED)); \
+  }
+
+#define EQUATION_OF_STATE_DELEGATE_IMPLS_HELPER_2(r, ARGS, FUNCTION_NAME) \
+  EQUATION_OF_STATE_DELEGATE_IMPLS_HELPER(                                \
+      BOOST_PP_TUPLE_ELEM(0, ARGS), BOOST_PP_TUPLE_ELEM(1, ARGS),         \
+      BOOST_PP_TUPLE_ELEM(2, ARGS), BOOST_PP_TUPLE_ELEM(3, ARGS),         \
+      FUNCTION_NAME)
+/// \endcond
+
+/*!
+ * \ingroup EquationsOfStateGroup
+ * \brief Macro used to define the `_impl` member functions of derived classes
+ * by calling the functions of the same name of `OBJECT`
+ *
+ * `OBJECT` is an expression, e.g. `device_view()` for EOSs that are
+ * implemented by their `DeviceView`.
+ */
+#define EQUATION_OF_STATE_DELEGATE_IMPLS(TEMPLATE, DERIVED, DIM, OBJECT)   \
+  BOOST_PP_LIST_FOR_EACH(                                                  \
+      EQUATION_OF_STATE_DELEGATE_IMPLS_HELPER_2,                           \
+      (TEMPLATE, DERIVED, DIM, OBJECT),                                    \
       BOOST_PP_TUPLE_TO_LIST(BOOST_PP_TUPLE_ELEM(                          \
           BOOST_PP_SUB(DIM, 1),                                            \
           (EQUATION_OF_STATE_FUNCTIONS_1D, EQUATION_OF_STATE_FUNCTIONS_2D, \

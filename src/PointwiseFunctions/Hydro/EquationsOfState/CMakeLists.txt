@@ -34,6 +34,7 @@ spectre_target_headers(
   RegisterDerivedWithCharm.hpp
   Spectral.hpp
   Tabulated3d.hpp
+  VisitDeviceView.hpp
   )
 
 add_subdirectory(Python)

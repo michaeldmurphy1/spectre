@@ -10,13 +10,16 @@
 #include <boost/preprocessor/repetition/for.hpp>
 #include <boost/preprocessor/repetition/repeat.hpp>
 #include <boost/preprocessor/tuple/to_list.hpp>
+#include <cmath>
 #include <limits>
 #include <pup.h>
 
+#include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Options/String.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/Units.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -123,12 +126,90 @@ class PolytropicFluid : public EquationOfState<IsRelativistic, 1> {
     return hydro::units::geometric::default_baryon_mass;
   }
 
+  /// \copydoc IdealFluid::DeviceView
+  struct DeviceView;
+
+  /// The `DeviceView` of this EOS
+  DeviceView device_view() const;
+
  private:
   EQUATION_OF_STATE_FORWARD_DECLARE_MEMBER_IMPLS(1)
 
   double polytropic_constant_ = std::numeric_limits<double>::signaling_NaN();
   double polytropic_exponent_ = std::numeric_limits<double>::signaling_NaN();
 };
+
+template <bool IsRelativistic>
+struct PolytropicFluid<IsRelativistic>::DeviceView {
+  double polytropic_constant;
+  double polytropic_exponent;
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> pressure_from_density(
+      const Scalar<DataType>& rest_mass_density) const {
+    return Scalar<DataType>{polytropic_constant *
+                            pow(get(rest_mass_density), polytropic_exponent)};
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> rest_mass_density_from_enthalpy(
+      const Scalar<DataType>& specific_enthalpy) const {
+    if constexpr (IsRelativistic) {
+      return Scalar<DataType>{
+          pow(((polytropic_exponent - 1.0) /
+               (polytropic_constant * polytropic_exponent)) *
+                  (get(specific_enthalpy) - 1.0),
+              1.0 / (polytropic_exponent - 1.0))};
+    } else {
+      return Scalar<DataType>{
+          pow(((polytropic_exponent - 1.0) /
+               (polytropic_constant * polytropic_exponent)) *
+                  get(specific_enthalpy),
+              1.0 / (polytropic_exponent - 1.0))};
+    }
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> specific_internal_energy_from_density(
+      const Scalar<DataType>& rest_mass_density) const {
+    return Scalar<DataType>{
+        polytropic_constant / (polytropic_exponent - 1.0) *
+        pow(get(rest_mass_density), polytropic_exponent - 1.0)};
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> chi_from_density(
+      const Scalar<DataType>& rest_mass_density) const {
+    return Scalar<DataType>{
+        polytropic_constant * polytropic_exponent *
+        pow(get(rest_mass_density), polytropic_exponent - 1.0)};
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> kappa_times_p_over_rho_squared_from_density(
+      const Scalar<DataType>& rest_mass_density) const {
+    return detail::zero_like(rest_mass_density);
+  }
+
+  /// Like `EquationOfState::specific_entropy_from_density`, which this EOS
+  /// doesn't override
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <class DataType>
+  KOKKOS_FUNCTION Scalar<DataType> specific_entropy_from_density(
+      const Scalar<DataType>& rest_mass_density) const {
+    return detail::zero_like(rest_mass_density);
+  }
+};
+
+template <bool IsRelativistic>
+auto PolytropicFluid<IsRelativistic>::device_view() const -> DeviceView {
+  return DeviceView{polytropic_constant_, polytropic_exponent_};
+}
 
 /// \cond
 template <bool IsRelativistic>

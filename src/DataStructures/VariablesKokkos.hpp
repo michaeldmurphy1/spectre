@@ -4,8 +4,10 @@
 #pragma once
 
 #include <cstddef>
+#include <type_traits>
 #include <utility>
 
+#include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tags/MirrorView.hpp"
 #include "DataStructures/Tensor/AtIndex.hpp"
 #include "DataStructures/Variables.hpp"
@@ -108,17 +110,17 @@ class Variables<tmpl::list<Tags...>> {
  private:
   void set_reference_variable_data() {
     size_t variable_offset = 0;
-    tmpl::for_each<tags_list>([this, &variable_offset](auto tag_v) {
-      using Tag = tmpl::type_from<decltype(tag_v)>;
-      auto& var = tuples::get<Tag>(reference_variable_data_);
-      for (size_t i = 0; i < Tag::type::size(); ++i) {
-        // The subview is contiguous if each tensor component is contiguous in
-        // memory, which is the case for Kokkos::LayoutLeft (SoA). Otherwise,
-        // the subview has a stride.
-        var[i] = Kokkos::subview(storage_, Kokkos::ALL(), variable_offset);
-        ++variable_offset;
-      }
-    });
+    tmpl::for_each<tags_list>(
+        [this, &variable_offset]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+          auto& var = tuples::get<Tag>(reference_variable_data_);
+          for (size_t i = 0; i < Tag::type::size(); ++i) {
+            // The subview is contiguous if each tensor component is contiguous
+            // in memory, which is the case for Kokkos::LayoutLeft (SoA).
+            // Otherwise, the subview has a stride.
+            var[i] = Kokkos::subview(storage_, Kokkos::ALL(), variable_offset);
+            ++variable_offset;
+          }
+        });
   }
 
   storage_type storage_{};
@@ -158,49 +160,54 @@ KOKKOS_FUNCTION void set_at_index(
 /// Copy a `DataVector`-backed `Variables` to device memory.
 template <typename... Tags>
 auto copy_to_device(const Variables<tmpl::list<Tags...>>& vars_host) {
-  using HostVars = Variables<tmpl::list<Tags...>>;
-  using ValueType = typename HostVars::value_type;
-  static constexpr size_t num_components =
-      HostVars::number_of_independent_components;
+  static_assert((std::is_same_v<typename Tags::type::type, DataVector> and ...),
+                "copy_to_device requires a DataVector-backed Variables.");
   const size_t num_points = vars_host.number_of_grid_points();
   Variables<tmpl::list<::Tags::MirrorView<Tags>...>> vars_device{num_points};
-  // View that wraps the host data (DataVector-backed Variables) in a
-  // Kokkos::View without owning it so we can deep-copy the data. Relies on the
-  // memory layout in the DataVector-backed Variables being the same as the
-  // Kokkos view (LayoutLeft).
-  using HostUnmanaged =
-      Kokkos::View<const ValueType* [num_components], Kokkos::LayoutLeft,
-                   Kokkos::HostSpace, Kokkos::MemoryUnmanaged>;
   if constexpr (sizeof...(Tags) > 0) {
-    HostUnmanaged unmanaged_host_view(vars_host.data(), num_points);
+    // View that wraps the host data (DataVector-backed Variables) in a
+    // Kokkos::View without owning it so we can deep-copy the data. Relies on
+    // the memory layout in the DataVector-backed Variables being the same as
+    // the Kokkos view (LayoutLeft).
+    using HostUnmanaged = Kokkos::View<
+        const double *
+            [Variables<tmpl::list<Tags...>>::number_of_independent_components],
+        Kokkos::LayoutLeft, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>;
+    const HostUnmanaged unmanaged_host_view(vars_host.data(), num_points);
     // Copy to device
     Kokkos::deep_copy(vars_device.view(), unmanaged_host_view);
   }
   return vars_device;
 }
 
-/// Copy a `Variables` from device memory to host memory. First copies the data
-/// to a temporary mirror view on the host, then copies to the host `Variables`.
-template <typename HostTags, typename DeviceTags>
-void copy_to_host(const gsl::not_null<Variables<HostTags>*> vars_host,
-                  const Variables<DeviceTags>& vars_device) {
-  using HostVars = Variables<HostTags>;
-  using ValueType = typename HostVars::value_type;
-  static constexpr size_t num_components =
-      HostVars::number_of_independent_components;
-  const size_t num_points = vars_device.number_of_grid_points();
-  // View that wraps the host data (DataVector-backed Variables) in a
-  // Kokkos::View without owning it so we can deep-copy the data. Relies on the
-  // memory layout in the DataVector-backed Variables being the same as the
-  // Kokkos view (LayoutLeft).
-  using HostUnmanaged =
-      Kokkos::View<ValueType* [num_components], Kokkos::LayoutLeft,
-                   Kokkos::HostSpace, Kokkos::MemoryUnmanaged>;
-  if constexpr (tmpl::size<DeviceTags>::value > 0) {
+/// Copy a `Variables` from device memory to a `DataVector`-backed `Variables`
+/// in host memory. The host `Variables` is resized if needed.
+template <typename... HostTags, typename DeviceTags>
+void copy_to_host(
+    const gsl::not_null<Variables<tmpl::list<HostTags...>>*> vars_host,
+    const Variables<DeviceTags>& vars_device) {
+  using HostVars = Variables<tmpl::list<HostTags...>>;
+  static_assert(
+      (std::is_same_v<typename HostTags::type::type, DataVector> and ...),
+      "copy_to_host requires a DataVector-backed host Variables.");
+  static_assert(HostVars::number_of_independent_components ==
+                    Variables<DeviceTags>::number_of_independent_components,
+                "The host and device Variables must have the same number of "
+                "tensor components.");
+  if constexpr (sizeof...(HostTags) > 0) {
+    const size_t num_points = vars_device.number_of_grid_points();
     if (vars_host->number_of_grid_points() != num_points) {
       vars_host->initialize(num_points);
     }
-    HostUnmanaged unmanaged_host_view(vars_host->data(), num_points);
+    // View that wraps the host data (DataVector-backed Variables) in a
+    // Kokkos::View without owning it so we can deep-copy the data. Relies on
+    // the memory layout in the DataVector-backed Variables being the same as
+    // the Kokkos view (LayoutLeft).
+    using HostUnmanaged =
+        Kokkos::View<double * [HostVars::number_of_independent_components],
+                     Kokkos::LayoutLeft, Kokkos::HostSpace,
+                     Kokkos::MemoryUnmanaged>;
+    const HostUnmanaged unmanaged_host_view(vars_host->data(), num_points);
     // Copy to host
     Kokkos::deep_copy(unmanaged_host_view, vars_device.view());
   }

@@ -3,11 +3,19 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <cstddef>
+#include <type_traits>
+
+#include "DataStructures/DataVector.hpp"
+#include "DataStructures/Tensor/Tensor.hpp"
+#include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesKokkos.hpp"
 #include "Helpers/DataStructures/TestTags.hpp"
+#include "Utilities/Gsl.hpp"
+#include "Utilities/TMPL.hpp"
 
-SPECTRE_TEST_CASE("Unit.DataStructures.VariablesKokkos",
-                  "[DataStructures][Unit]") {
+namespace {
+void test_copy_and_compute() {
   const size_t num_points = 5;
   using VectorTag = TestHelpers::Tags::Vector<DataVector>;
   using ScalarTag = TestHelpers::Tags::Scalar<DataVector>;
@@ -42,4 +50,28 @@ SPECTRE_TEST_CASE("Unit.DataStructures.VariablesKokkos",
     }
     CHECK(get(get<ScalarTag>(vars_host))[i] == 3. + static_cast<double>(i));
   }
+
+  // Copying to a host `Variables` of a different size resizes it
+  Variables<tmpl::list<VectorTag, ScalarTag>> resized_vars_host{};
+  copy_to_host(make_not_null(&resized_vars_host), vars_device);
+  CHECK(resized_vars_host == vars_host);
+}
+
+// Variables without tags have nothing to copy
+void test_no_tags() {
+  const Variables<tmpl::list<>> vars_host{};
+  const auto vars_device = copy_to_device(vars_host);
+  static_assert(std::is_same_v<std::decay_t<decltype(vars_device)>,
+                               Variables<tmpl::list<>>>);
+  CHECK(vars_device.number_of_grid_points() == 0);
+  Variables<tmpl::list<>> copied_vars_host{};
+  copy_to_host(make_not_null(&copied_vars_host), vars_device);
+  CHECK(copied_vars_host.number_of_grid_points() == 0);
+}
+}  // namespace
+
+SPECTRE_TEST_CASE("Unit.DataStructures.VariablesKokkos",
+                  "[DataStructures][Unit]") {
+  test_copy_and_compute();
+  test_no_tags();
 }

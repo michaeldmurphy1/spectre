@@ -33,6 +33,7 @@ template <typename Tag,
           typename VectorType = typename Tag::type::type>
 struct MirrorView;
 
+/// \cond
 template <typename Tag, typename Space>
 struct MirrorView<Tag, Space, DataVector> : db::PrefixTag {
   using tag = Tag;
@@ -51,5 +52,6 @@ struct MirrorView<Tag, Space, Kokkos::View<DataType, Properties...>>
                                             Properties...>::view_type,
       typename Tag::type>;
 };
+/// \endcond
 
 }  // namespace Tags

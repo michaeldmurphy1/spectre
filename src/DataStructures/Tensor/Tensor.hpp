@@ -647,10 +647,18 @@ struct SetNumberOfGridPointsImpls::SetNumberOfGridPointsImpl<
 
 #ifdef SPECTRE_KOKKOS
 /// Copy a `Tensor<DataVector>` to device memory.
+///
+/// The result has the same type as `Tags::MirrorView` of the host tensor, i.e.
+/// its views are in the default Kokkos memory space.
 template <typename HostVectorType, typename... Properties>
 auto copy_to_device(const Tensor<HostVectorType, Properties...>& tensor_host) {
   using ValueType = typename HostVectorType::value_type;
-  using DeviceVectorType = Kokkos::View<ValueType*>;
+  // Spell out the memory space so the type matches `Tags::MirrorView`
+  // (`Kokkos::View<ValueType*>` is a different type, though it refers to the
+  // same memory space).
+  using DeviceVectorType =
+      Kokkos::View<ValueType*,
+                   typename Kokkos::DefaultExecutionSpace::memory_space>;
   Tensor<DeviceVectorType, Properties...> tensor_device{
       "Tensor", tensor_host.begin()->size()};
   // View that wraps the host data (DataVector) in a Kokkos::View without owning

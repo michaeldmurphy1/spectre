@@ -48,6 +48,12 @@ set(LIBRARY_SOURCES
   Test_ValenciaDivClean.cpp
   )
 
+if (TARGET Kokkos::kokkos)
+  list(APPEND LIBRARY_SOURCES
+    FiniteDifference/Test_ConservativesOnDevice.cpp
+    )
+endif()
+
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")
 
 target_link_libraries(

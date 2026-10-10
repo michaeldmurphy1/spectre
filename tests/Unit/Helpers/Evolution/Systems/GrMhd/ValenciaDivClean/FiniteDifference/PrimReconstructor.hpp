@@ -39,7 +39,9 @@
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/Barotropic3D.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/Equilibrium3D.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/IdealFluid.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
@@ -272,7 +274,18 @@ void test_prim_reconstructor_impl(
         face_centered_mesh.number_of_grid_points()};
     expected_lower_face_values.assign_subset(
         compute_solution(logical_coords_face_centered));
-    if constexpr (ThermodynamicDim == 2) {
+    if constexpr (ThermodynamicDim == 3) {
+      get<SpecificInternalEnergy>(expected_lower_face_values) =
+          eos.specific_internal_energy_from_density_and_temperature(
+              get<Rho>(expected_lower_face_values),
+              get<Temperature>(expected_lower_face_values),
+              get<ElectronFraction>(expected_lower_face_values));
+      get<Pressure>(expected_lower_face_values) =
+          eos.pressure_from_density_and_temperature(
+              get<Rho>(expected_lower_face_values),
+              get<Temperature>(expected_lower_face_values),
+              get<ElectronFraction>(expected_lower_face_values));
+    } else if constexpr (ThermodynamicDim == 2) {
       get<SpecificInternalEnergy>(expected_lower_face_values) =
           eos.specific_internal_energy_from_density_and_temperature(
               get<Rho>(expected_lower_face_values),
@@ -449,5 +462,17 @@ void test_prim_reconstructor(const size_t points_per_dimension,
   detail::test_prim_reconstructor_impl(
       points_per_dimension, derived_reconstructor,
       EquationsOfState::PolytropicFluid<true>{1.0, 2.0}, fix_to_atmosphere);
+  // 3D EOSs, as used by the evolution. With Kokkos, these are evaluated on the
+  // device if they have a `DeviceView`.
+  detail::test_prim_reconstructor_impl(
+      points_per_dimension, derived_reconstructor,
+      EquationsOfState::Equilibrium3D<EquationsOfState::IdealFluid<true>>{
+          EquationsOfState::IdealFluid<true>{1.4}},
+      fix_to_atmosphere);
+  detail::test_prim_reconstructor_impl(
+      points_per_dimension, derived_reconstructor,
+      EquationsOfState::Barotropic3D<EquationsOfState::PolytropicFluid<true>>{
+          EquationsOfState::PolytropicFluid<true>{1.0, 2.0}},
+      fix_to_atmosphere);
 }
 }  // namespace TestHelpers::grmhd::ValenciaDivClean::fd

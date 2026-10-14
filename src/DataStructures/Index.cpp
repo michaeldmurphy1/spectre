@@ -20,12 +20,18 @@ std::ostream& operator<<(std::ostream& os, const Index<N>& i) {
 }
 
 template <size_t Dim>
-bool operator==(const Index<Dim>& lhs, const Index<Dim>& rhs) {
-  return std::equal(lhs.begin(), lhs.end(), rhs.begin());
+KOKKOS_FUNCTION bool operator==(const Index<Dim>& lhs, const Index<Dim>& rhs) {
+  // Comparisons of `std::array`s aren't supported in Kokkos kernels
+  for (size_t d = 0; d < Dim; ++d) {
+    if (lhs[d] != rhs[d]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 template <size_t Dim>
-bool operator!=(const Index<Dim>& lhs, const Index<Dim>& rhs) {
+KOKKOS_FUNCTION bool operator!=(const Index<Dim>& lhs, const Index<Dim>& rhs) {
   return not(lhs == rhs);
 }
 

@@ -20,7 +20,10 @@ set(LIBRARY_SOURCES
   )
 
 if(SPECTRE_KOKKOS)
-  list(APPEND LIBRARY_SOURCES Test_EagerMathKokkos.cpp)
+  list(APPEND LIBRARY_SOURCES
+    Test_EagerMathKokkos.cpp
+    Test_OuterProductKokkos.cpp
+    )
 endif()
 
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")

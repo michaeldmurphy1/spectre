@@ -153,7 +153,7 @@ class Hll final : public evolution::BoundaryCorrection {
                  hydro::Tags::SpatialVelocity<DataVector, 3>>;
   using dg_package_data_volume_tags =
       tmpl::list<hydro::Tags::GrmhdEquationOfState>;
-    using dg_boundary_terms_volume_tags = tmpl::list<>;
+  using dg_boundary_terms_volume_tags = tmpl::list<>;
 
   double dg_package_data(
       gsl::not_null<Scalar<DataVector>*> packaged_tilde_d,
@@ -261,6 +261,13 @@ class Hll final : public evolution::BoundaryCorrection {
   bool use_hydro_speeds(
       const Scalar<DataVector>& rest_mass_density,
       const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b) const;
+
+  /// The magnetic field magnitude above which `dg_package_data` uses the
+  /// light speed instead of the hydro characteristic speeds (see
+  /// `use_hydro_speeds`)
+  double magnetic_field_magnitude_for_hydro() const {
+    return magnetic_field_magnitude_for_hydro_;
+  }
 
   /// The density below which `dg_package_data` uses the light speed instead
   /// of the hydro characteristic speeds (see `use_hydro_speeds`)

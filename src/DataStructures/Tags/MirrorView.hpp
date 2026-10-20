@@ -53,6 +53,16 @@ struct MirrorView<Tag, typename Kokkos::DefaultExecutionSpace::memory_space,
       TensorMetafunctions::swap_type<Kokkos::View<double*>, typename Tag::type>;
 };
 
+// Specialization for `DataVector` in other memory spaces, e.g. host batches on
+// a GPU build (see `BatchedVariables`) -> mirror to
+// `Kokkos::View<double*, Space>`
+template <typename Tag, typename Space>
+struct MirrorView<Tag, Space, DataVector> : db::PrefixTag, db::SimpleTag {
+  using tag = Tag;
+  using type = TensorMetafunctions::swap_type<Kokkos::View<double*, Space>,
+                                              typename Tag::type>;
+};
+
 template <typename Tag, typename Space, typename DataType,
           typename... Properties>
 struct MirrorView<Tag, Space, Kokkos::View<DataType, Properties...>>

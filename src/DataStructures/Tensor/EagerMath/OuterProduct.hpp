@@ -8,6 +8,7 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
 
 /*!
@@ -38,11 +39,12 @@ using OuterProductResultTensor = Tensor<
  * $B_{i\ldots}$ and $C_{j\ldots}$. Both tensors can have arbitrary indices and
  * symmetries.
  */
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <typename DataTypeLhs, typename SymmLhs, typename IndicesLhs,
           typename DataTypeRhs, typename SymmRhs, typename IndicesRhs,
           typename DataTypeResult = decltype(blaze::evaluate(DataTypeLhs() *
                                                              DataTypeRhs()))>
-void outer_product(
+KOKKOS_FUNCTION void outer_product(
     const gsl::not_null<OuterProductResultTensor<
         DataTypeResult, SymmLhs, IndicesLhs, SymmRhs, IndicesRhs>*>
         result,
@@ -57,12 +59,14 @@ void outer_product(
   }
 }
 
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <typename DataTypeLhs, typename SymmLhs, typename IndicesLhs,
           typename DataTypeRhs, typename SymmRhs, typename IndicesRhs,
           typename DataTypeResult = decltype(blaze::evaluate(DataTypeLhs() *
                                                              DataTypeRhs()))>
-auto outer_product(const Tensor<DataTypeLhs, SymmLhs, IndicesLhs>& lhs,
-                   const Tensor<DataTypeRhs, SymmRhs, IndicesRhs>& rhs)
+KOKKOS_FUNCTION auto outer_product(
+    const Tensor<DataTypeLhs, SymmLhs, IndicesLhs>& lhs,
+    const Tensor<DataTypeRhs, SymmRhs, IndicesRhs>& rhs)
     -> OuterProductResultTensor<DataTypeResult, SymmLhs, IndicesLhs, SymmRhs,
                                 IndicesRhs> {
   OuterProductResultTensor<DataTypeResult, SymmLhs, IndicesLhs, SymmRhs,

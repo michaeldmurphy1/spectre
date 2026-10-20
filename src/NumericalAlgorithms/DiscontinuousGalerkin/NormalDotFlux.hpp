@@ -11,6 +11,7 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -23,13 +24,14 @@
  * Returns \f$n_i F^i_{j\ldots}\f$, where the flux tensor \f$F\f$ must have an
  * upper spatial first index and may have arbitrary extra indices.
  */
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <size_t VolumeDim, typename Fr, typename DataType, typename Symm,
-          typename... RemainingIndices,
+          typename... RemainingIndices, typename NormalDataType = DataVector,
           typename ResultTensor = Tensor<DataType, tmpl::pop_front<Symm>,
                                          index_list<RemainingIndices...>>>
-void normal_dot_flux(
+KOKKOS_FUNCTION void normal_dot_flux(
     const gsl::not_null<ResultTensor*> normal_dot_flux,
-    const tnsr::i<DataVector, VolumeDim, Fr>& normal,
+    const tnsr::i<NormalDataType, VolumeDim, Fr>& normal,
     const Tensor<DataType, Symm,
                  index_list<SpatialIndex<VolumeDim, UpLo::Up, Fr>,
                             RemainingIndices...>>& flux_tensor) {
@@ -84,13 +86,14 @@ auto normal_dot_flux(
  * This makes this quantity useful for optimizations of DG formulations for
  * "sparse" (i.e., Kronecker delta) fluxes.
  */
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <size_t VolumeDim, typename Fr, typename DataType, typename Symm,
-          typename Indices>
-void normal_times_flux(
+          typename Indices, typename NormalDataType = DataVector>
+KOKKOS_FUNCTION void normal_times_flux(
     const gsl::not_null<TensorMetafunctions::prepend_spatial_index<
         Tensor<DataType, Symm, Indices>, VolumeDim, UpLo::Lo, Fr>*>
         normal_times_flux,
-    const tnsr::i<DataVector, VolumeDim, Fr>& normal,
+    const tnsr::i<NormalDataType, VolumeDim, Fr>& normal,
     const Tensor<DataType, Symm, Indices>& rhs) {
   outer_product(normal_times_flux, normal, rhs);
 }

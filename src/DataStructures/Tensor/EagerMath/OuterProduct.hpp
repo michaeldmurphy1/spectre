@@ -8,7 +8,9 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 /*!
  * \brief The `Tensor` type resulting from the outer product of two tensors
@@ -28,6 +30,29 @@ using OuterProductResultTensor = Tensor<
         SymmRhs>,
     tmpl::append<IndicesLhs, IndicesRhs>>;
 
+namespace OuterProduct_detail {
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <typename DataTypeLhs, typename SymmLhs, typename IndicesLhs,
+          typename DataTypeRhs, typename SymmRhs, typename IndicesRhs,
+          typename DataTypeResult = decltype(blaze::evaluate(DataTypeLhs() *
+                                                             DataTypeRhs()))>
+KOKKOS_FUNCTION void outer_product_impl(
+    const gsl::not_null<OuterProductResultTensor<
+        DataTypeResult, SymmLhs, IndicesLhs, SymmRhs, IndicesRhs>*>
+        result,
+    const Tensor<DataTypeLhs, SymmLhs, IndicesLhs>& lhs,
+    const Tensor<DataTypeRhs, SymmRhs, IndicesRhs>& rhs) {
+  ASSERT_DEVICE_CAPABLE(DataTypeLhs, DataTypeRhs, DataTypeResult);
+  for (auto it_lhs = lhs.begin(); it_lhs != lhs.end(); ++it_lhs) {
+    for (auto it_rhs = rhs.begin(); it_rhs != rhs.end(); ++it_rhs) {
+      const auto result_indices = concatenate(lhs.get_tensor_index(it_lhs),
+                                              rhs.get_tensor_index(it_rhs));
+      result->get(result_indices) = *it_lhs * *it_rhs;
+    }
+  }
+}
+}  // namespace OuterProduct_detail
+
 /// @{
 /*!
  * \ingroup TensorGroup
@@ -42,25 +67,52 @@ template <typename DataTypeLhs, typename SymmLhs, typename IndicesLhs,
           typename DataTypeRhs, typename SymmRhs, typename IndicesRhs,
           typename DataTypeResult = decltype(blaze::evaluate(DataTypeLhs() *
                                                              DataTypeRhs()))>
-void outer_product(
+  requires tt::is_device_capable_v<DataTypeLhs, DataTypeRhs>
+KOKKOS_FUNCTION void outer_product(
     const gsl::not_null<OuterProductResultTensor<
         DataTypeResult, SymmLhs, IndicesLhs, SymmRhs, IndicesRhs>*>
         result,
     const Tensor<DataTypeLhs, SymmLhs, IndicesLhs>& lhs,
     const Tensor<DataTypeRhs, SymmRhs, IndicesRhs>& rhs) {
-  for (auto it_lhs = lhs.begin(); it_lhs != lhs.end(); ++it_lhs) {
-    for (auto it_rhs = rhs.begin(); it_rhs != rhs.end(); ++it_rhs) {
-      const auto result_indices = concatenate(lhs.get_tensor_index(it_lhs),
-                                              rhs.get_tensor_index(it_rhs));
-      result->get(result_indices) = *it_lhs * *it_rhs;
-    }
-  }
+  OuterProduct_detail::outer_product_impl(result, lhs, rhs);
 }
 
 template <typename DataTypeLhs, typename SymmLhs, typename IndicesLhs,
           typename DataTypeRhs, typename SymmRhs, typename IndicesRhs,
           typename DataTypeResult = decltype(blaze::evaluate(DataTypeLhs() *
                                                              DataTypeRhs()))>
+  requires(not tt::is_device_capable_v<DataTypeLhs, DataTypeRhs>)
+void outer_product(
+    const gsl::not_null<OuterProductResultTensor<
+        DataTypeResult, SymmLhs, IndicesLhs, SymmRhs, IndicesRhs>*>
+        result,
+    const Tensor<DataTypeLhs, SymmLhs, IndicesLhs>& lhs,
+    const Tensor<DataTypeRhs, SymmRhs, IndicesRhs>& rhs) {
+  OuterProduct_detail::outer_product_impl(result, lhs, rhs);
+}
+
+template <typename DataTypeLhs, typename SymmLhs, typename IndicesLhs,
+          typename DataTypeRhs, typename SymmRhs, typename IndicesRhs,
+          typename DataTypeResult = decltype(blaze::evaluate(DataTypeLhs() *
+                                                             DataTypeRhs()))>
+  requires tt::is_device_capable_v<DataTypeLhs, DataTypeRhs>
+KOKKOS_FUNCTION auto outer_product(
+    const Tensor<DataTypeLhs, SymmLhs, IndicesLhs>& lhs,
+    const Tensor<DataTypeRhs, SymmRhs, IndicesRhs>& rhs)
+    -> OuterProductResultTensor<DataTypeResult, SymmLhs, IndicesLhs, SymmRhs,
+                                IndicesRhs> {
+  OuterProductResultTensor<DataTypeResult, SymmLhs, IndicesLhs, SymmRhs,
+                           IndicesRhs>
+      result{};
+  ::outer_product(make_not_null(&result), lhs, rhs);
+  return result;
+}
+
+template <typename DataTypeLhs, typename SymmLhs, typename IndicesLhs,
+          typename DataTypeRhs, typename SymmRhs, typename IndicesRhs,
+          typename DataTypeResult = decltype(blaze::evaluate(DataTypeLhs() *
+                                                             DataTypeRhs()))>
+  requires(not tt::is_device_capable_v<DataTypeLhs, DataTypeRhs>)
 auto outer_product(const Tensor<DataTypeLhs, SymmLhs, IndicesLhs>& lhs,
                    const Tensor<DataTypeRhs, SymmRhs, IndicesRhs>& rhs)
     -> OuterProductResultTensor<DataTypeResult, SymmLhs, IndicesLhs, SymmRhs,

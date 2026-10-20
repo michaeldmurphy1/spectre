@@ -11,8 +11,32 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
+
+namespace NormalDotFlux_detail {
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <size_t VolumeDim, typename Fr, typename DataType, typename Symm,
+          typename... RemainingIndices, typename NormalDataType,
+          typename ResultTensor>
+KOKKOS_FUNCTION void normal_dot_flux_impl(
+    const gsl::not_null<ResultTensor*> normal_dot_flux,
+    const tnsr::i<NormalDataType, VolumeDim, Fr>& normal,
+    const Tensor<DataType, Symm,
+                 index_list<SpatialIndex<VolumeDim, UpLo::Up, Fr>,
+                            RemainingIndices...>>& flux_tensor) {
+  ASSERT_DEVICE_CAPABLE(DataType, NormalDataType);
+  for (auto it = normal_dot_flux->begin(); it != normal_dot_flux->end(); it++) {
+    const auto result_indices = normal_dot_flux->get_tensor_index(it);
+    *it = get<0>(normal) * flux_tensor.get(prepend(result_indices, size_t{0}));
+    for (size_t d = 1; d < VolumeDim; d++) {
+      *it += normal.get(d) * flux_tensor.get(prepend(result_indices, d));
+    }
+  }
+}
+}  // namespace NormalDotFlux_detail
 
 /// @{
 /*!
@@ -24,22 +48,33 @@
  * upper spatial first index and may have arbitrary extra indices.
  */
 template <size_t VolumeDim, typename Fr, typename DataType, typename Symm,
-          typename... RemainingIndices,
+          typename... RemainingIndices, typename NormalDataType = DataVector,
           typename ResultTensor = Tensor<DataType, tmpl::pop_front<Symm>,
                                          index_list<RemainingIndices...>>>
-void normal_dot_flux(
+  requires tt::is_device_capable_v<DataType, NormalDataType>
+KOKKOS_FUNCTION void normal_dot_flux(
     const gsl::not_null<ResultTensor*> normal_dot_flux,
-    const tnsr::i<DataVector, VolumeDim, Fr>& normal,
+    const tnsr::i<NormalDataType, VolumeDim, Fr>& normal,
     const Tensor<DataType, Symm,
                  index_list<SpatialIndex<VolumeDim, UpLo::Up, Fr>,
                             RemainingIndices...>>& flux_tensor) {
-  for (auto it = normal_dot_flux->begin(); it != normal_dot_flux->end(); it++) {
-    const auto result_indices = normal_dot_flux->get_tensor_index(it);
-    *it = get<0>(normal) * flux_tensor.get(prepend(result_indices, size_t{0}));
-    for (size_t d = 1; d < VolumeDim; d++) {
-      *it += normal.get(d) * flux_tensor.get(prepend(result_indices, d));
-    }
-  }
+  NormalDotFlux_detail::normal_dot_flux_impl(normal_dot_flux, normal,
+                                             flux_tensor);
+}
+
+template <size_t VolumeDim, typename Fr, typename DataType, typename Symm,
+          typename... RemainingIndices, typename NormalDataType = DataVector,
+          typename ResultTensor = Tensor<DataType, tmpl::pop_front<Symm>,
+                                         index_list<RemainingIndices...>>>
+  requires(not tt::is_device_capable_v<DataType, NormalDataType>)
+void normal_dot_flux(
+    const gsl::not_null<ResultTensor*> normal_dot_flux,
+    const tnsr::i<NormalDataType, VolumeDim, Fr>& normal,
+    const Tensor<DataType, Symm,
+                 index_list<SpatialIndex<VolumeDim, UpLo::Up, Fr>,
+                            RemainingIndices...>>& flux_tensor) {
+  NormalDotFlux_detail::normal_dot_flux_impl(normal_dot_flux, normal,
+                                             flux_tensor);
 }
 
 template <typename... ReturnTags, typename... FluxTags, size_t VolumeDim,
@@ -85,12 +120,25 @@ auto normal_dot_flux(
  * "sparse" (i.e., Kronecker delta) fluxes.
  */
 template <size_t VolumeDim, typename Fr, typename DataType, typename Symm,
-          typename Indices>
+          typename Indices, typename NormalDataType = DataVector>
+  requires tt::is_device_capable_v<DataType, NormalDataType>
+KOKKOS_FUNCTION void normal_times_flux(
+    const gsl::not_null<TensorMetafunctions::prepend_spatial_index<
+        Tensor<DataType, Symm, Indices>, VolumeDim, UpLo::Lo, Fr>*>
+        normal_times_flux,
+    const tnsr::i<NormalDataType, VolumeDim, Fr>& normal,
+    const Tensor<DataType, Symm, Indices>& rhs) {
+  outer_product(normal_times_flux, normal, rhs);
+}
+
+template <size_t VolumeDim, typename Fr, typename DataType, typename Symm,
+          typename Indices, typename NormalDataType = DataVector>
+  requires(not tt::is_device_capable_v<DataType, NormalDataType>)
 void normal_times_flux(
     const gsl::not_null<TensorMetafunctions::prepend_spatial_index<
         Tensor<DataType, Symm, Indices>, VolumeDim, UpLo::Lo, Fr>*>
         normal_times_flux,
-    const tnsr::i<DataVector, VolumeDim, Fr>& normal,
+    const tnsr::i<NormalDataType, VolumeDim, Fr>& normal,
     const Tensor<DataType, Symm, Indices>& rhs) {
   outer_product(normal_times_flux, normal, rhs);
 }

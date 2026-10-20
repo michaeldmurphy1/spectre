@@ -11,6 +11,8 @@
 
 #ifdef SPECTRE_KOKKOS
 #include "DataStructures/ApplyPointwiseOnDevice.hpp"
+#include "DataStructures/BatchedVariables.hpp"
+#include "DataStructures/DeviceArguments.hpp"
 #endif  // SPECTRE_KOKKOS
 
 namespace grmhd::ValenciaDivClean::subcell {
@@ -29,6 +31,29 @@ void compute_fluxes_impl(const gsl::not_null<Variables<TagsList>*> vars,
       make_not_null(&get<ReturnTags>(*vars))..., get<ArgumentTags>(*vars)...);
 #endif  // SPECTRE_KOKKOS
 }
+
+#ifdef SPECTRE_KOKKOS
+template <typename TagsList, typename... ReturnTags, typename... ArgumentTags>
+void compute_fluxes_impl(
+    const gsl::not_null<BatchedVariables<TagsList, Kokkos::HostSpace>*>
+        host_batch,
+    tmpl::list<ReturnTags...> return_tags,
+    tmpl::list<ArgumentTags...> argument_tags) {
+  const Kokkos::DefaultExecutionSpace exec{};
+  BatchedVariables<TagsList> device_batch{exec,
+                                          host_batch->number_of_grid_points(),
+                                          host_batch->number_of_elements()};
+  deep_copy(exec, make_not_null(&device_batch), *host_batch);
+  apply_pointwise_on_device<grmhd::ValenciaDivClean::ComputeFluxes>(
+      exec, make_not_null(&device_batch), return_tags, argument_tags,
+      make_device_arguments<ArgumentTags...>(
+          exec, get<::Tags::BatchView<ArgumentTags>>(device_batch)...));
+  deep_copy(exec, host_batch, device_batch);
+  // The host and device batches must stay alive until all work on `exec` is
+  // complete
+  exec.fence("compute_fluxes");
+}
+#endif  // SPECTRE_KOKKOS
 }  // namespace detail
 
 /*!
@@ -43,4 +68,20 @@ void compute_fluxes(const gsl::not_null<Variables<TagsList>*> vars) {
       vars, typename grmhd::ValenciaDivClean::ComputeFluxes::return_tags{},
       typename grmhd::ValenciaDivClean::ComputeFluxes::argument_tags{});
 }
+
+#ifdef SPECTRE_KOKKOS
+/*!
+ * \brief Calls `ComputeFluxes` at every grid point of every element of the
+ * host batch `vars` in a single Kokkos kernel.
+ *
+ * The whole batch is copied to the device and back in one go each.
+ */
+template <typename TagsList>
+void compute_fluxes(
+    const gsl::not_null<BatchedVariables<TagsList, Kokkos::HostSpace>*> vars) {
+  detail::compute_fluxes_impl(
+      vars, typename grmhd::ValenciaDivClean::ComputeFluxes::return_tags{},
+      typename grmhd::ValenciaDivClean::ComputeFluxes::argument_tags{});
+}
+#endif  // SPECTRE_KOKKOS
 }  // namespace grmhd::ValenciaDivClean::subcell

@@ -62,6 +62,7 @@
 
 #ifdef SPECTRE_KOKKOS
 #include "DataStructures/ApplyPointwiseOnDevice.hpp"
+#include "DataStructures/BatchedVariables.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/OnDevice.hpp"
 #endif  // SPECTRE_KOKKOS
 
@@ -70,9 +71,9 @@ namespace grmhd::ValenciaDivClean::subcell {
  * \brief Compute the time derivative on the subcell grid using FD
  * reconstruction.
  *
- * With Kokkos, the sources and the packaged data and boundary terms of the
- * boundary correction (see `BoundaryCorrections::OnDevice`) are computed in
- * Kokkos kernels.
+ * With Kokkos, the fluxes on the faces (all faces in one batch), the sources,
+ * and the packaged data and boundary terms of the boundary correction (see
+ * `BoundaryCorrections::OnDevice`) are computed in Kokkos kernels.
  */
 struct TimeDerivative {
   template <typename DbTagsList>
@@ -216,12 +217,39 @@ struct TimeDerivative {
                   gr::Tags::SqrtDetSpatialMetric<DataVector>,
                   gr::Tags::InverseSpatialMetric<DataVector, 3>,
                   evolution::dg::Actions::detail::NormalVector<3>>>>;
+#ifdef SPECTRE_KOKKOS
+          // Computed prims and cons on face via reconstruction. The faces in
+          // all directions are in one batch, so that their fluxes are computed
+          // in a single kernel.
+          BatchedVariables<dg_package_data_argument_tags, Kokkos::HostSpace>
+              face_batch{reconstructed_num_pts, 2 * comp_dim};
+          std::array<Variables<dg_package_data_argument_tags>, 3>
+              package_data_argvars_lower_face{};
+          std::array<Variables<dg_package_data_argument_tags>, 3>
+              package_data_argvars_upper_face{};
+          for (size_t d = 0; d < 3; ++d) {
+            if (d < comp_dim) {
+              set_data_ref_to_element(
+                  make_not_null(&gsl::at(package_data_argvars_lower_face, d)),
+                  face_batch, 2 * d);
+              set_data_ref_to_element(
+                  make_not_null(&gsl::at(package_data_argvars_upper_face, d)),
+                  face_batch, 2 * d + 1);
+            } else {
+              gsl::at(package_data_argvars_lower_face, d)
+                  .initialize(reconstructed_num_pts);
+              gsl::at(package_data_argvars_upper_face, d)
+                  .initialize(reconstructed_num_pts);
+            }
+          }
+#else
           // Computed prims and cons on face via reconstruction
           auto package_data_argvars_lower_face = make_array<3>(
               Variables<dg_package_data_argument_tags>(reconstructed_num_pts));
           auto package_data_argvars_upper_face = make_array<3>(
               Variables<dg_package_data_argument_tags>(reconstructed_num_pts));
-          // Copy over the face values of the metric quantities.
+#endif  // SPECTRE_KOKKOS
+        // Copy over the face values of the metric quantities.
           using spacetime_vars_to_copy =
               tmpl::list<gr::Tags::Lapse<DataVector>,
                          gr::Tags::Shift<DataVector, 3>,
@@ -281,7 +309,13 @@ struct TimeDerivative {
           Variables<dg_package_field_tags> lower_packaged_data{
               reconstructed_num_pts};
 
-          // Compute fluxes on faces
+#ifdef SPECTRE_KOKKOS
+          // Compute fluxes on all faces
+          grmhd::ValenciaDivClean::subcell::compute_fluxes(
+              make_not_null(&face_batch));
+#endif  // SPECTRE_KOKKOS
+
+          // Compute fluxes on faces (without Kokkos) and the corrections
           for (size_t i = 0; i < comp_dim; ++i) {
             // Build extents of mesh shifted by half a grid cell in direction i
             const unsigned long& num_subcells_1d = subcell_mesh.extents(0);
@@ -290,10 +324,12 @@ struct TimeDerivative {
 
             auto& vars_upper_face = gsl::at(package_data_argvars_upper_face, i);
             auto& vars_lower_face = gsl::at(package_data_argvars_lower_face, i);
+#ifndef SPECTRE_KOKKOS
             grmhd::ValenciaDivClean::subcell::compute_fluxes(
                 make_not_null(&vars_upper_face));
             grmhd::ValenciaDivClean::subcell::compute_fluxes(
                 make_not_null(&vars_lower_face));
+#endif  // SPECTRE_KOKKOS
 
             // Add moving mesh corrections to the fluxes, if needed
             std::optional<tnsr::I<DataVector, 3, Frame::Inertial>>

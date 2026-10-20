@@ -37,3 +37,13 @@ target_link_libraries(
   TestKernel
   SpectreKokkos
   )
+
+# Temporary experiment, not to be merged: which parts of the standard library
+# work in Kokkos kernels (see Test_StdOnDevice.cpp)
+add_test_library(Test_StdOnDevice "Test_StdOnDevice.cpp")
+target_link_libraries(
+  Test_StdOnDevice
+  PRIVATE
+  SpectreKokkos
+  Utilities
+  )

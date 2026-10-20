@@ -57,6 +57,7 @@ endif()
 
 if (TARGET Kokkos::kokkos)
   list(APPEND LIBRARY_SOURCES
+    Test_BatchedVariables.cpp
     Test_IndexKokkos.cpp
     Test_VariablesKokkos.cpp
     )

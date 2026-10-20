@@ -17,6 +17,7 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -243,6 +244,123 @@ class Hll final : public evolution::BoundaryCorrection {
       const Scalar<DataVector>& normal_dot_flux_tilde_phi_ext,
       const Scalar<DataVector>& largest_outgoing_char_speed_ext,
       const Scalar<DataVector>& largest_ingoing_char_speed_ext,
+      dg::Formulation dg_formulation);
+
+  /*!
+   * \brief Whether `dg_package_data` uses the hydro characteristic speeds
+   * (where the density is above the `LightSpeedDensityCutoff`) instead of
+   * the light speed on the whole face.
+   *
+   * This is the case if the magnetic field is below the
+   * `MagneticFieldMagnitudeForHydro` and the density is above the
+   * `LightSpeedDensityCutoff` somewhere on the face.
+   *
+   * This is host-only, because it reduces over the whole face rather than
+   * being computed pointwise.
+   */
+  bool use_hydro_speeds(
+      const Scalar<DataVector>& rest_mass_density,
+      const tnsr::I<DataVector, 3, Frame::Inertial>& tilde_b) const;
+
+  /// The density below which `dg_package_data` uses the light speed instead
+  /// of the hydro characteristic speeds (see `use_hydro_speeds`)
+  double light_speed_density_cutoff() const {
+    return light_speed_density_cutoff_;
+  }
+
+  /*!
+   * \brief The computations done by `dg_package_data`.
+   *
+   * `normal_dot_mesh_velocity` is `nullptr` if the mesh isn't moving, and
+   * `use_hydro_speeds` is the result of `Hll::use_hydro_speeds` for the whole
+   * face. The `equation_of_state` can be an `EquationOfState` or its
+   * `DeviceView` (see `EquationsOfState::visit_device_view`).
+   */
+  template <typename DataType, typename EquationOfStateType>
+  KOKKOS_FUNCTION static void dg_package_data_impl(
+      gsl::not_null<Scalar<DataType>*> packaged_tilde_d,
+      gsl::not_null<Scalar<DataType>*> packaged_tilde_ye,
+      gsl::not_null<Scalar<DataType>*> packaged_tilde_tau,
+      gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*> packaged_tilde_s,
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> packaged_tilde_b,
+      gsl::not_null<Scalar<DataType>*> packaged_tilde_phi,
+      gsl::not_null<Scalar<DataType>*> packaged_normal_dot_flux_tilde_d,
+      gsl::not_null<Scalar<DataType>*> packaged_normal_dot_flux_tilde_ye,
+      gsl::not_null<Scalar<DataType>*> packaged_normal_dot_flux_tilde_tau,
+      gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*>
+          packaged_normal_dot_flux_tilde_s,
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*>
+          packaged_normal_dot_flux_tilde_b,
+      gsl::not_null<Scalar<DataType>*> packaged_normal_dot_flux_tilde_phi,
+      gsl::not_null<Scalar<DataType>*> packaged_largest_outgoing_char_speed,
+      gsl::not_null<Scalar<DataType>*> packaged_largest_ingoing_char_speed,
+
+      const Scalar<DataType>& tilde_d, const Scalar<DataType>& tilde_ye,
+      const Scalar<DataType>& tilde_tau,
+      const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s,
+      const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b,
+      const Scalar<DataType>& tilde_phi,
+
+      const tnsr::I<DataType, 3, Frame::Inertial>& flux_tilde_d,
+      const tnsr::I<DataType, 3, Frame::Inertial>& flux_tilde_ye,
+      const tnsr::I<DataType, 3, Frame::Inertial>& flux_tilde_tau,
+      const tnsr::Ij<DataType, 3, Frame::Inertial>& flux_tilde_s,
+      const tnsr::IJ<DataType, 3, Frame::Inertial>& flux_tilde_b,
+      const tnsr::I<DataType, 3, Frame::Inertial>& flux_tilde_phi,
+
+      const Scalar<DataType>& lapse,
+      const tnsr::I<DataType, 3, Frame::Inertial>& shift,
+      const tnsr::i<DataType, 3, Frame::Inertial>& spatial_velocity_one_form,
+
+      const Scalar<DataType>& rest_mass_density,
+      const Scalar<DataType>& electron_fraction,
+      const Scalar<DataType>& temperature,
+      const tnsr::I<DataType, 3, Frame::Inertial>& spatial_velocity,
+
+      const tnsr::i<DataType, 3, Frame::Inertial>& normal_covector,
+      const Scalar<DataType>* normal_dot_mesh_velocity,
+      const EquationOfStateType& equation_of_state, bool use_hydro_speeds,
+      double light_speed_density_cutoff);
+
+  /*!
+   * \brief The computations done by `dg_boundary_terms`.
+   */
+  template <typename DataType>
+  KOKKOS_FUNCTION static void dg_boundary_terms_impl(
+      gsl::not_null<Scalar<DataType>*> boundary_correction_tilde_d,
+      gsl::not_null<Scalar<DataType>*> boundary_correction_tilde_ye,
+      gsl::not_null<Scalar<DataType>*> boundary_correction_tilde_tau,
+      gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*>
+          boundary_correction_tilde_s,
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*>
+          boundary_correction_tilde_b,
+      gsl::not_null<Scalar<DataType>*> boundary_correction_tilde_phi,
+      const Scalar<DataType>& tilde_d_int, const Scalar<DataType>& tilde_ye_int,
+      const Scalar<DataType>& tilde_tau_int,
+      const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s_int,
+      const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b_int,
+      const Scalar<DataType>& tilde_phi_int,
+      const Scalar<DataType>& normal_dot_flux_tilde_d_int,
+      const Scalar<DataType>& normal_dot_flux_tilde_ye_int,
+      const Scalar<DataType>& normal_dot_flux_tilde_tau_int,
+      const tnsr::i<DataType, 3, Frame::Inertial>& normal_dot_flux_tilde_s_int,
+      const tnsr::I<DataType, 3, Frame::Inertial>& normal_dot_flux_tilde_b_int,
+      const Scalar<DataType>& normal_dot_flux_tilde_phi_int,
+      const Scalar<DataType>& largest_outgoing_char_speed_int,
+      const Scalar<DataType>& largest_ingoing_char_speed_int,
+      const Scalar<DataType>& tilde_d_ext, const Scalar<DataType>& tilde_ye_ext,
+      const Scalar<DataType>& tilde_tau_ext,
+      const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s_ext,
+      const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b_ext,
+      const Scalar<DataType>& tilde_phi_ext,
+      const Scalar<DataType>& normal_dot_flux_tilde_d_ext,
+      const Scalar<DataType>& normal_dot_flux_tilde_ye_ext,
+      const Scalar<DataType>& normal_dot_flux_tilde_tau_ext,
+      const tnsr::i<DataType, 3, Frame::Inertial>& normal_dot_flux_tilde_s_ext,
+      const tnsr::I<DataType, 3, Frame::Inertial>& normal_dot_flux_tilde_b_ext,
+      const Scalar<DataType>& normal_dot_flux_tilde_phi_ext,
+      const Scalar<DataType>& largest_outgoing_char_speed_ext,
+      const Scalar<DataType>& largest_ingoing_char_speed_ext,
       dg::Formulation dg_formulation);
 
  private:

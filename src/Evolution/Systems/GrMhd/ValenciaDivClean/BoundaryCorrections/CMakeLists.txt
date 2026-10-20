@@ -15,6 +15,7 @@ spectre_target_headers(
   HEADERS
   Factory.hpp
   Hll.hpp
+  Hll.tpp
   NamespaceDocs.hpp
   Rusanov.hpp
   )

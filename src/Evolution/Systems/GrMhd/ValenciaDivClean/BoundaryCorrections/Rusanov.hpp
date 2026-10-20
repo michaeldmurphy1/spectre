@@ -15,6 +15,7 @@
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -68,12 +69,11 @@ namespace grmhd::ValenciaDivClean::BoundaryCorrections {
  * those variables.
  */
 class Rusanov final : public evolution::BoundaryCorrection {
- private:
+ public:
   struct AbsCharSpeed : db::SimpleTag {
     using type = Scalar<DataVector>;
   };
 
- public:
   using options = tmpl::list<>;
   static constexpr Options::String help = {
       "Computes the Rusanov or local Lax-Friedrichs boundary correction term "
@@ -203,6 +203,86 @@ class Rusanov final : public evolution::BoundaryCorrection {
           normal_dot_flux_tilde_b_ext,
       const Scalar<DataVector>& normal_dot_flux_tilde_phi_ext,
       const Scalar<DataVector>& abs_char_speed_ext,
+      dg::Formulation dg_formulation);
+
+  /*!
+   * \brief The computations done by `dg_package_data`.
+   *
+   * `normal_dot_mesh_velocity` is `nullptr` if the mesh isn't moving.
+   */
+  template <typename DataType>
+  KOKKOS_FUNCTION static void dg_package_data_impl(
+      gsl::not_null<Scalar<DataType>*> packaged_tilde_d,
+      gsl::not_null<Scalar<DataType>*> packaged_tilde_ye,
+      gsl::not_null<Scalar<DataType>*> packaged_tilde_tau,
+      gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*> packaged_tilde_s,
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*> packaged_tilde_b,
+      gsl::not_null<Scalar<DataType>*> packaged_tilde_phi,
+      gsl::not_null<Scalar<DataType>*> packaged_normal_dot_flux_tilde_d,
+      gsl::not_null<Scalar<DataType>*> packaged_normal_dot_flux_tilde_ye,
+      gsl::not_null<Scalar<DataType>*> packaged_normal_dot_flux_tilde_tau,
+      gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*>
+          packaged_normal_dot_flux_tilde_s,
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*>
+          packaged_normal_dot_flux_tilde_b,
+      gsl::not_null<Scalar<DataType>*> packaged_normal_dot_flux_tilde_phi,
+      gsl::not_null<Scalar<DataType>*> packaged_abs_char_speed,
+
+      const Scalar<DataType>& tilde_d, const Scalar<DataType>& tilde_ye,
+      const Scalar<DataType>& tilde_tau,
+      const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s,
+      const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b,
+      const Scalar<DataType>& tilde_phi,
+
+      const tnsr::I<DataType, 3, Frame::Inertial>& flux_tilde_d,
+      const tnsr::I<DataType, 3, Frame::Inertial>& flux_tilde_ye,
+      const tnsr::I<DataType, 3, Frame::Inertial>& flux_tilde_tau,
+      const tnsr::Ij<DataType, 3, Frame::Inertial>& flux_tilde_s,
+      const tnsr::IJ<DataType, 3, Frame::Inertial>& flux_tilde_b,
+      const tnsr::I<DataType, 3, Frame::Inertial>& flux_tilde_phi,
+
+      const Scalar<DataType>& lapse,
+      const tnsr::I<DataType, 3, Frame::Inertial>& shift,
+      const tnsr::i<DataType, 3, Frame::Inertial>& normal_covector,
+      const Scalar<DataType>* normal_dot_mesh_velocity);
+
+  /*!
+   * \brief The computations done by `dg_boundary_terms`.
+   */
+  template <typename DataType>
+  KOKKOS_FUNCTION static void dg_boundary_terms_impl(
+      gsl::not_null<Scalar<DataType>*> boundary_correction_tilde_d,
+      gsl::not_null<Scalar<DataType>*> boundary_correction_tilde_ye,
+      gsl::not_null<Scalar<DataType>*> boundary_correction_tilde_tau,
+      gsl::not_null<tnsr::i<DataType, 3, Frame::Inertial>*>
+          boundary_correction_tilde_s,
+      gsl::not_null<tnsr::I<DataType, 3, Frame::Inertial>*>
+          boundary_correction_tilde_b,
+      gsl::not_null<Scalar<DataType>*> boundary_correction_tilde_phi,
+      const Scalar<DataType>& tilde_d_int, const Scalar<DataType>& tilde_ye_int,
+      const Scalar<DataType>& tilde_tau_int,
+      const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s_int,
+      const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b_int,
+      const Scalar<DataType>& tilde_phi_int,
+      const Scalar<DataType>& normal_dot_flux_tilde_d_int,
+      const Scalar<DataType>& normal_dot_flux_tilde_ye_int,
+      const Scalar<DataType>& normal_dot_flux_tilde_tau_int,
+      const tnsr::i<DataType, 3, Frame::Inertial>& normal_dot_flux_tilde_s_int,
+      const tnsr::I<DataType, 3, Frame::Inertial>& normal_dot_flux_tilde_b_int,
+      const Scalar<DataType>& normal_dot_flux_tilde_phi_int,
+      const Scalar<DataType>& abs_char_speed_int,
+      const Scalar<DataType>& tilde_d_ext, const Scalar<DataType>& tilde_ye_ext,
+      const Scalar<DataType>& tilde_tau_ext,
+      const tnsr::i<DataType, 3, Frame::Inertial>& tilde_s_ext,
+      const tnsr::I<DataType, 3, Frame::Inertial>& tilde_b_ext,
+      const Scalar<DataType>& tilde_phi_ext,
+      const Scalar<DataType>& normal_dot_flux_tilde_d_ext,
+      const Scalar<DataType>& normal_dot_flux_tilde_ye_ext,
+      const Scalar<DataType>& normal_dot_flux_tilde_tau_ext,
+      const tnsr::i<DataType, 3, Frame::Inertial>& normal_dot_flux_tilde_s_ext,
+      const tnsr::I<DataType, 3, Frame::Inertial>& normal_dot_flux_tilde_b_ext,
+      const Scalar<DataType>& normal_dot_flux_tilde_phi_ext,
+      const Scalar<DataType>& abs_char_speed_ext,
       dg::Formulation dg_formulation);
 };
 

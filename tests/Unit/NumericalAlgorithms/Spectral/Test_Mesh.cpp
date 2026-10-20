@@ -3,6 +3,7 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <functional>
@@ -524,3 +525,46 @@ SPECTRE_TEST_CASE("Unit.NumericalAlgorithms.Spectral.Mesh",
       Catch::Matchers::ContainsSubstring(
           "Failed to convert \"invalidQuadrature\" to Spectral::Quadrature."));
 }
+
+#ifdef SPECTRE_KOKKOS
+// Temporary experiment, not to be merged: do host standard library
+// algorithms and `std::array` comparisons give correct results in Kokkos
+// kernels?
+namespace {
+void check_std_algorithms_on_device() {
+  constexpr size_t number_of_values = 6;
+  const Kokkos::View<size_t*> device_values("device_values", number_of_values);
+  Kokkos::parallel_for(
+      "std_algorithms_on_device", Kokkos::RangePolicy<>(0, 1),
+      KOKKOS_LAMBDA(const int /*unused*/) {
+        std::array<size_t, 2> two_values{{2, 0}};
+        std::sort(two_values.begin(), two_values.end());
+        device_values(0) = two_values[0];
+        device_values(1) = two_values[1];
+        device_values(2) = static_cast<size_t>(
+            std::unique(two_values.begin(), two_values.end()) ==
+            two_values.end());
+        std::array<size_t, 3> three_values{{1, 2, 0}};
+        std::sort(three_values.begin(), three_values.end());
+        device_values(3) = three_values[0];
+        device_values(4) = three_values[2];
+        const std::array<size_t, 2> lhs{{0, 2}};
+        const std::array<size_t, 2> rhs{{0, 2}};
+        device_values(5) = static_cast<size_t>(lhs == rhs);
+        // ranges, transform, for_each, do nothing and return
+      });
+  const auto host_values =
+      Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, device_values);
+  const std::array<size_t, number_of_values> expected_values{
+      {0, 2, 1, 0, 2, 1}};
+  for (size_t i = 0; i < number_of_values; ++i) {
+    CAPTURE(i);
+    CHECK(host_values(i) == gsl::at(expected_values, i));
+  }
+}
+}  // namespace
+
+SPECTRE_TEST_CASE("Unit.Scratch.StdAlgorithmsOnDevice", "[Unit]") {
+  check_std_algorithms_on_device();
+}
+#endif  // SPECTRE_KOKKOS

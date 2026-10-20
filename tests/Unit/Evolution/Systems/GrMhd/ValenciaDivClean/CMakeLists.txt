@@ -50,6 +50,7 @@ set(LIBRARY_SOURCES
 
 if (SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
+    BoundaryCorrections/Test_OnDeviceKokkos.cpp
     FiniteDifference/Test_ConservativesOnDeviceKokkos.cpp
     Test_ConservativeFromPrimitiveKokkos.cpp
     Test_FixConservativesKokkos.cpp

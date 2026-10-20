@@ -62,12 +62,17 @@
 
 #ifdef SPECTRE_KOKKOS
 #include "DataStructures/ApplyPointwiseOnDevice.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/OnDevice.hpp"
 #endif  // SPECTRE_KOKKOS
 
 namespace grmhd::ValenciaDivClean::subcell {
 /*!
  * \brief Compute the time derivative on the subcell grid using FD
  * reconstruction.
+ *
+ * With Kokkos, the sources and the packaged data and boundary terms of the
+ * boundary correction (see `BoundaryCorrections::OnDevice`) are computed in
+ * Kokkos kernels.
  */
 struct TimeDerivative {
   template <typename DbTagsList>
@@ -194,6 +199,13 @@ struct TimeDerivative {
     call_with_dynamic_type<void, derived_boundary_corrections>(
         &boundary_correction, [&](const auto* derived_correction) {
           using DerivedCorrection = std::decay_t<decltype(*derived_correction)>;
+#ifdef SPECTRE_KOKKOS
+          // Compute the packaged data and boundary terms in Kokkos kernels
+          const BoundaryCorrections::OnDevice<DerivedCorrection> correction{
+              *derived_correction};
+#else
+          const DerivedCorrection& correction = *derived_correction;
+#endif  // SPECTRE_KOKKOS
           using dg_package_data_temporary_tags =
               typename DerivedCorrection::dg_package_data_temporary_tags;
           using dg_package_data_argument_tags = tmpl::append<
@@ -433,14 +445,14 @@ struct TimeDerivative {
                 evolved_vars_tags, fluxes_tags, dg_package_data_temporary_tags,
                 typename DerivedCorrection::dg_package_data_primitive_tags>;
             evolution::dg::Actions::detail::dg_package_data<System>(
-                make_not_null(&upper_packaged_data), *derived_correction,
+                make_not_null(&upper_packaged_data), correction,
                 vars_upper_face, upper_outward_conormal_face,
                 mesh_velocity_on_face, *box,
                 typename DerivedCorrection::dg_package_data_volume_tags{},
                 dg_package_data_projected_tags{});
 
             evolution::dg::Actions::detail::dg_package_data<System>(
-                make_not_null(&lower_packaged_data), *derived_correction,
+                make_not_null(&lower_packaged_data), correction,
                 vars_lower_face, lower_outward_conormal_face,
                 mesh_velocity_on_face, *box,
                 typename DerivedCorrection::dg_package_data_volume_tags{},
@@ -463,9 +475,8 @@ struct TimeDerivative {
             // vectors then
             gsl::at(boundary_corrections, i).initialize(reconstructed_num_pts);
             evolution::dg::subcell::compute_boundary_terms(
-                make_not_null(&gsl::at(boundary_corrections, i)),
-                *derived_correction, upper_packaged_data, lower_packaged_data,
-                db::as_access(*box),
+                make_not_null(&gsl::at(boundary_corrections, i)), correction,
+                upper_packaged_data, lower_packaged_data, db::as_access(*box),
                 typename DerivedCorrection::dg_boundary_terms_volume_tags{});
             // We need to multiply by the normal vector normalization
             gsl::at(boundary_corrections, i) *= get(normalization);

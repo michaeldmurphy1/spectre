@@ -21,6 +21,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   ComputeFluxes.hpp
+  ComputeFluxesKokkos.hpp
   FixConservativesAndComputePrims.hpp
   NeighborPackagedData.hpp
   PrimitiveGhostData.hpp

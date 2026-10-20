@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <numeric>
+#include <random>
 #include <string>
 
 #include "DataStructures/ComplexDataVector.hpp"
@@ -18,7 +19,9 @@
 #include "Domain/FaceNormal.hpp"
 #include "Framework/CheckWithRandomValues.hpp"
 #include "Framework/SetupLocalPythonEnvironment.hpp"
+#include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/DataBox/TestHelpers.hpp"
+#include "Helpers/DataStructures/MakeWithRandomValues.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/NormalDotFlux.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/Gsl.hpp"
@@ -172,6 +175,31 @@ void test_with_variables() {
   CHECK_ITERABLE_APPROX(get<Tags::NormalDotFlux<Var1>>(result), expected1);
   CHECK_ITERABLE_APPROX((get<Tags::NormalDotFlux<Var2<Dim, Fr>>>(result)),
                         expected2);
+}
+
+void test_double_normal() {
+  MAKE_GENERATOR(generator);
+  std::uniform_real_distribution<> distribution(-1.0, 1.0);
+  const auto normal = make_with_random_values<tnsr::i<double, 3>>(
+      make_not_null(&generator), make_not_null(&distribution), 0.0);
+  const auto flux = make_with_random_values<tnsr::Ij<double, 3>>(
+      make_not_null(&generator), make_not_null(&distribution), 0.0);
+  const auto vector = make_with_random_values<tnsr::I<double, 3>>(
+      make_not_null(&generator), make_not_null(&distribution), 0.0);
+
+  tnsr::i<double, 3> normal_dot_flux_result{};
+  normal_dot_flux(make_not_null(&normal_dot_flux_result), normal, flux);
+  tnsr::iJ<double, 3> normal_times_flux_result{};
+  normal_times_flux(make_not_null(&normal_times_flux_result), normal, vector);
+  for (size_t j = 0; j < 3; ++j) {
+    double expected = 0.0;
+    for (size_t i = 0; i < 3; ++i) {
+      expected += normal.get(i) * flux.get(i, j);
+      CHECK(normal_times_flux_result.get(i, j) ==
+            approx(normal.get(i) * vector.get(j)));
+    }
+    CHECK(normal_dot_flux_result.get(j) == approx(expected));
+  }
 }
 }  // namespace
 
@@ -345,5 +373,9 @@ SPECTRE_TEST_CASE("Unit.DiscontinuousGalerkin.NormalDotFlux",
     test_with_variables<1>();
     test_with_variables<2>();
     test_with_variables<3>();
+  }
+  {
+    INFO("double normal");
+    test_double_normal();
   }
 }

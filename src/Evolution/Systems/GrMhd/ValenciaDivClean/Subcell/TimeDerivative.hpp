@@ -62,12 +62,23 @@
 
 #ifdef SPECTRE_KOKKOS
 #include "DataStructures/ApplyPointwiseOnDevice.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/OnDevice.hpp"
 #endif  // SPECTRE_KOKKOS
 
 namespace grmhd::ValenciaDivClean::subcell {
 /*!
  * \brief Compute the time derivative on the subcell grid using FD
  * reconstruction.
+ *
+ * With Kokkos, the sources and the packaged data and boundary terms of the
+ * boundary correction (see `BoundaryCorrections::OnDevice`) are computed in
+ * Kokkos kernels.
+ *
+ * \warning With Kokkos, the equation of state must have a `DeviceView` (see
+ * `EquationsOfState::visit_device_view`). This is only checked when the EOS is
+ * first used on the device, so a run with an EOS without a `DeviceView` errors
+ * at its first step on the FD grid, which may be long after it started on the
+ * DG grid.
  */
 struct TimeDerivative {
   template <typename DbTagsList>
@@ -191,9 +202,22 @@ struct TimeDerivative {
       }
     }
 
+#ifdef SPECTRE_KOKKOS
+    // All work on the device is enqueued on this instance. The FD
+    // reconstruction (`compute_conservatives_for_reconstruction`) still uses
+    // its own instance, until the reconstructors take one.
+    const Kokkos::DefaultExecutionSpace exec{};
+#endif  // SPECTRE_KOKKOS
     call_with_dynamic_type<void, derived_boundary_corrections>(
         &boundary_correction, [&](const auto* derived_correction) {
           using DerivedCorrection = std::decay_t<decltype(*derived_correction)>;
+#ifdef SPECTRE_KOKKOS
+          // Compute the packaged data and boundary terms in Kokkos kernels
+          const BoundaryCorrections::OnDevice<DerivedCorrection> correction{
+              exec, *derived_correction};
+#else
+          const DerivedCorrection& correction = *derived_correction;
+#endif  // SPECTRE_KOKKOS
           using dg_package_data_temporary_tags =
               typename DerivedCorrection::dg_package_data_temporary_tags;
           using dg_package_data_argument_tags = tmpl::append<
@@ -433,14 +457,14 @@ struct TimeDerivative {
                 evolved_vars_tags, fluxes_tags, dg_package_data_temporary_tags,
                 typename DerivedCorrection::dg_package_data_primitive_tags>;
             evolution::dg::Actions::detail::dg_package_data<System>(
-                make_not_null(&upper_packaged_data), *derived_correction,
+                make_not_null(&upper_packaged_data), correction,
                 vars_upper_face, upper_outward_conormal_face,
                 mesh_velocity_on_face, *box,
                 typename DerivedCorrection::dg_package_data_volume_tags{},
                 dg_package_data_projected_tags{});
 
             evolution::dg::Actions::detail::dg_package_data<System>(
-                make_not_null(&lower_packaged_data), *derived_correction,
+                make_not_null(&lower_packaged_data), correction,
                 vars_lower_face, lower_outward_conormal_face,
                 mesh_velocity_on_face, *box,
                 typename DerivedCorrection::dg_package_data_volume_tags{},
@@ -463,9 +487,8 @@ struct TimeDerivative {
             // vectors then
             gsl::at(boundary_corrections, i).initialize(reconstructed_num_pts);
             evolution::dg::subcell::compute_boundary_terms(
-                make_not_null(&gsl::at(boundary_corrections, i)),
-                *derived_correction, upper_packaged_data, lower_packaged_data,
-                db::as_access(*box),
+                make_not_null(&gsl::at(boundary_corrections, i)), correction,
+                upper_packaged_data, lower_packaged_data, db::as_access(*box),
                 typename DerivedCorrection::dg_boundary_terms_volume_tags{});
             // We need to multiply by the normal vector normalization
             gsl::at(boundary_corrections, i) *= get(normalization);
@@ -488,6 +511,9 @@ struct TimeDerivative {
         tmpl::transform<ValenciaDivClean::ComputeSources::return_tags,
                         tmpl::bind<db::remove_tag_prefix, tmpl::_1>>;
     sources_impl(
+#ifdef SPECTRE_KOKKOS
+        exec,
+#endif  // SPECTRE_KOKKOS
         dt_vars_ptr, *box, grmhd_source_tags{},
         typename grmhd::ValenciaDivClean::ComputeSources::argument_tags{});
 
@@ -591,12 +617,15 @@ struct TimeDerivative {
   template <typename DtVarsList, typename DbTagsList, typename... SourcedTags,
             typename... ArgsTags>
   static void sources_impl(
+#ifdef SPECTRE_KOKKOS
+      const Kokkos::DefaultExecutionSpace& exec,
+#endif  // SPECTRE_KOKKOS
       const gsl::not_null<Variables<DtVarsList>*> dt_vars_ptr,
       const db::DataBox<DbTagsList>& box, tmpl::list<SourcedTags...> /*meta*/,
       tmpl::list<ArgsTags...> /*meta*/) {
 #ifdef SPECTRE_KOKKOS
     copy_and_apply_pointwise_on_device<ValenciaDivClean::ComputeSources>(
-        dt_vars_ptr, tmpl::list<::Tags::dt<SourcedTags>...>{},
+        exec, dt_vars_ptr, tmpl::list<::Tags::dt<SourcedTags>...>{},
         tmpl::list<ArgsTags...>{}, get<ArgsTags>(box)...);
 #else
     grmhd::ValenciaDivClean::ComputeSources::apply(

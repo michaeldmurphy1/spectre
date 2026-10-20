@@ -6,6 +6,7 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   Hll.cpp
+  OnDeviceKokkos.cpp
   Rusanov.cpp
   )
 
@@ -17,5 +18,6 @@ spectre_target_headers(
   Hll.hpp
   Hll.tpp
   NamespaceDocs.hpp
+  OnDeviceKokkos.hpp
   Rusanov.hpp
   )

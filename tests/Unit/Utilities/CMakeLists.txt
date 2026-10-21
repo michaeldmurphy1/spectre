@@ -57,6 +57,7 @@ set(LIBRARY_SOURCES
 
 if(SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
+    Test_AlgorithmKokkos.cpp
     Test_ExpectedKokkos.cpp
     )
 endif()

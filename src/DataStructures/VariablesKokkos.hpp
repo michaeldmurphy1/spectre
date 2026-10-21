@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
 #include <type_traits>
 #include <utility>
 
@@ -12,10 +13,22 @@
 #include "DataStructures/Tensor/AtIndex.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
-#include "Utilities/MakeSignalingNan.hpp"
 #include "Utilities/TMPL.hpp"
 
 #ifdef SPECTRE_KOKKOS
+
+namespace VariablesKokkos_detail {
+// Sets the data to signaling NaNs in a kernel. `Kokkos::deep_copy` with a value
+// can't be used for this, because it compares the value to zero on the host,
+// which raises a floating-point exception for a signaling NaN.
+template <typename ValueType>
+struct FillWithSignalingNaN {
+  KOKKOS_FUNCTION void operator()(const size_t i) const {
+    data[i] = std::numeric_limits<ValueType>::signaling_NaN();
+  }
+  ValueType* data;
+};
+}  // namespace VariablesKokkos_detail
 
 /*!
  * \brief Variables specialization that is backed by a Kokkos::View, meaning
@@ -90,7 +103,15 @@ class Variables<tmpl::list<Tags...>> {
         Kokkos::view_alloc(Kokkos::WithoutInitializing, "Variables", space),
         number_of_grid_points);
 #if defined(SPECTRE_NAN_INIT)
-    Kokkos::deep_copy(storage_, make_signaling_NaN<value_type>());
+    using ExecSpace = typename memory_space::execution_space;
+    const ExecSpace exec{};
+    Kokkos::parallel_for(
+        "Variables::nan_init",
+        Kokkos::RangePolicy<ExecSpace, Kokkos::IndexType<size_t>>(
+            exec, 0, storage_.size()),
+        VariablesKokkos_detail::FillWithSignalingNaN<value_type>{
+            storage_.data()});
+    exec.fence("Variables::nan_init");
 #endif  // SPECTRE_NAN_INIT
     set_reference_variable_data();
   }

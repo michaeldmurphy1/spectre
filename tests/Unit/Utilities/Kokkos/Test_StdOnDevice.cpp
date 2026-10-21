@@ -1140,3 +1140,161 @@ SPECTRE_TEST_CASE("Unit.Scratch.StdOnDevice.TupleTieWithIgnore", "[Unit]") {
   check_probe<TupleTieWithIgnore>();
 }
 #endif  // not(defined(KOKKOS_ENABLE_CUDA) or defined(KOKKOS_ENABLE_HIP))
+
+// ---------------------------------------------------------------------------
+// The probes that failed above, with CUDA's own standard library (libcu++,
+// `cuda::std`) instead of the host one. Only built where the libcu++ headers
+// are available (CUDA builds); elsewhere these test cases report "No tests
+// ran". There are no sorting probes because libcu++ in CUDA 13 doesn't
+// provide `cuda::std::sort` (it is behind `_CCCL_HAS_SORTING_ALGORITHMS`,
+// which nothing defines).
+// ---------------------------------------------------------------------------
+#if __has_include(<cuda/std/algorithm>)
+#include <cuda/std/algorithm>
+#include <cuda/std/array>
+#include <cuda/std/complex>
+#include <cuda/std/functional>
+#include <cuda/std/numeric>
+
+namespace {
+// Compare `StdArrayCompare`
+struct CudaStdArrayCompare {
+  KOKKOS_FUNCTION static Values<6> compute() {
+    const cuda::std::array<size_t, 2> a{{0, 2}};
+    const cuda::std::array<size_t, 2> b{{0, 2}};
+    const cuda::std::array<size_t, 2> c{{1, 2}};
+    return {{as_double(a == b), as_double(a != c), as_double(a < c),
+             as_double(a == c), as_double(c > a), as_double(a <= b)}};
+  }
+};
+
+// Compare `EqualAndLexicographicalCompare`, on `std::array`s
+struct CudaStdEqualAndLexicographicalCompare {
+  KOKKOS_FUNCTION static Values<4> compute() {
+    const std::array<int, 3> a{{1, 2, 3}};
+    const std::array<int, 3> b{{1, 2, 3}};
+    const std::array<int, 3> c{{1, 3, 0}};
+    return {{as_double(cuda::std::equal(a.begin(), a.end(), b.begin())),
+             as_double(cuda::std::equal(a.begin(), a.end(), c.begin())),
+             as_double(cuda::std::lexicographical_compare(a.begin(), a.end(),
+                                                          c.begin(), c.end())),
+             static_cast<double>(
+                 cuda::std::mismatch(a.begin(), a.end(), c.begin()).first -
+                 a.begin())}};
+  }
+};
+
+// Compare `FillAndCopy`
+struct CudaStdFillAndCopy {
+  KOKKOS_FUNCTION static Values<8> compute() {
+    std::array<double, 4> a{};
+    cuda::std::fill(a.begin(), a.end(), 2.0);
+    std::array<double, 4> b{};
+    cuda::std::copy(a.begin(), a.end(), b.begin());
+    b[1] = 5.0;
+    std::array<double, 4> c{};
+    cuda::std::fill_n(c.begin(), 2, 7.0);
+    cuda::std::copy_n(b.begin(), 2, c.begin() + 2);
+    return {{b[0], b[1], b[2], b[3], c[0], c[1], c[2], c[3]}};
+  }
+};
+
+// Compare `ReverseAndRotate`
+struct CudaStdReverseAndRotate {
+  KOKKOS_FUNCTION static Values<8> compute() {
+    std::array<double, 4> a{{1.0, 2.0, 3.0, 4.0}};
+    cuda::std::reverse(a.begin(), a.end());
+    std::array<double, 4> b{{1.0, 2.0, 3.0, 4.0}};
+    cuda::std::rotate(b.begin(), b.begin() + 1, b.end());
+    return {{a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]}};
+  }
+};
+
+// Compare `SortedSearch`
+struct CudaStdSortedSearch {
+  KOKKOS_FUNCTION static Values<6> compute() {
+    const std::array<int, 6> a{{1, 3, 3, 5, 7, 9}};
+    return {{as_double(cuda::std::is_sorted(a.begin(), a.end())),
+             as_double(cuda::std::binary_search(a.begin(), a.end(), 5)),
+             as_double(cuda::std::binary_search(a.begin(), a.end(), 4)),
+             static_cast<double>(cuda::std::lower_bound(a.begin(), a.end(), 3) -
+                                 a.begin()),
+             static_cast<double>(cuda::std::upper_bound(a.begin(), a.end(), 3) -
+                                 a.begin()),
+             static_cast<double>(
+                 cuda::std::partition_point(a.begin(), a.end(),
+                                            [](const int x) { return x < 6; }) -
+                 a.begin())}};
+  }
+};
+
+// Compare `Numeric`
+struct CudaStdNumeric {
+  KOKKOS_FUNCTION static Values<4> compute() {
+    std::array<double, 4> a{};
+    cuda::std::iota(a.begin(), a.end(), 1.0);
+    return {{cuda::std::accumulate(a.begin(), a.end(), 0.0),
+             cuda::std::inner_product(a.begin(), a.end(), a.begin(), 0.0),
+             static_cast<double>(cuda::std::gcd(12, 18)),
+             static_cast<double>(cuda::std::lcm(4, 6))}};
+  }
+};
+
+// Compare `Complex`
+struct CudaStdComplex {
+  KOKKOS_FUNCTION static Values<6> compute() {
+    const cuda::std::complex<double> z{1.0, 2.0};
+    const cuda::std::complex<double> w = z * z + 1.0;
+    return {
+        {w.real() + 10.0, w.imag(), cuda::std::abs(z),
+         cuda::std::conj(z).imag() + 10.0, cuda::std::norm(z),
+         cuda::std::real(cuda::std::exp(cuda::std::complex<double>{0.0, 1.0})) +
+             10.0}};
+  }
+};
+
+// Compare `ThreadsArrayEqual`
+struct CudaStdThreadsArrayEqual {
+  static constexpr size_t number_of_threads = 64;
+  KOKKOS_FUNCTION static Values<2> compute(const size_t t) {
+    const cuda::std::array<size_t, 2> a{{t, t + 1}};
+    const cuda::std::array<size_t, 2> b{{t, t + (t % 2)}};
+    const std::array<size_t, 2> c{{t, t + 1}};
+    const std::array<size_t, 2> d{{t, t + (t % 2)}};
+    return {{as_double(a == b),
+             as_double(cuda::std::equal(c.begin(), c.end(), d.begin()))}};
+  }
+};
+}  // namespace
+#endif  // __has_include(<cuda/std/algorithm>)
+
+#if __has_include(<cuda/std/algorithm>)
+SPECTRE_TEST_CASE("Unit.Scratch.StdOnDevice.CudaStdArrayCompare", "[Unit]") {
+  check_probe<CudaStdArrayCompare>();
+}
+SPECTRE_TEST_CASE(
+    "Unit.Scratch.StdOnDevice.CudaStdEqualAndLexicographicalCompare",
+    "[Unit]") {
+  check_probe<CudaStdEqualAndLexicographicalCompare>();
+}
+SPECTRE_TEST_CASE("Unit.Scratch.StdOnDevice.CudaStdFillAndCopy", "[Unit]") {
+  check_probe<CudaStdFillAndCopy>();
+}
+SPECTRE_TEST_CASE("Unit.Scratch.StdOnDevice.CudaStdReverseAndRotate",
+                  "[Unit]") {
+  check_probe<CudaStdReverseAndRotate>();
+}
+SPECTRE_TEST_CASE("Unit.Scratch.StdOnDevice.CudaStdSortedSearch", "[Unit]") {
+  check_probe<CudaStdSortedSearch>();
+}
+SPECTRE_TEST_CASE("Unit.Scratch.StdOnDevice.CudaStdNumeric", "[Unit]") {
+  check_probe<CudaStdNumeric>();
+}
+SPECTRE_TEST_CASE("Unit.Scratch.StdOnDevice.CudaStdComplex", "[Unit]") {
+  check_probe<CudaStdComplex>();
+}
+SPECTRE_TEST_CASE("Unit.Scratch.StdOnDevice.CudaStdThreadsArrayEqual",
+                  "[Unit]") {
+  check_threads_probe<CudaStdThreadsArrayEqual>();
+}
+#endif  // __has_include(<cuda/std/algorithm>)

@@ -78,8 +78,10 @@ following configuration options:
   copy (e.g. a host-accessible view), before measuring time, or to synchronize
   several execution space instances. In the latter case fence only the instance
   that needs it, e.g. `exec.fence()`.
-- Test device code by comparing against its host counterpart. The tests run on
-  the host backend in CI, which has no GPUs.
+- Test device code by comparing against its host counterpart, e.g. with
+  `TestHelpers::check_on_device`. Calling a return-by-value overload also tests
+  the `gsl::not_null` overload it calls. The tests run on the host backend in
+  CI, which has no GPUs.
 - `ASSERT` and `ERROR` work in device code. On the device the message is
   streamed into a `DeviceMessage` (`Utilities/ErrorHandling/DeviceMessage.hpp`)
   and printed with `Kokkos::printf` before the program aborts. It supports

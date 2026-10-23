@@ -29,7 +29,10 @@ set(LIBRARY_SOURCES
   )
 
 if(SPECTRE_KOKKOS)
-  list(APPEND LIBRARY_SOURCES Test_ChristoffelKokkos.cpp)
+  list(APPEND LIBRARY_SOURCES
+    Test_ChristoffelKokkos.cpp
+    Test_GeneralRelativityKokkos.cpp
+    )
 endif()
 
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")

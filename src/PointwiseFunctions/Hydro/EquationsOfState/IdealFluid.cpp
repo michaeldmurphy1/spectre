@@ -4,7 +4,6 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/IdealFluid.hpp"
 
 #include <cmath>
-#include <limits>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
@@ -69,18 +68,6 @@ void IdealFluid<IsRelativistic>::pup(PUP::er& p) {
 
 EQUATION_OF_STATE_DELEGATE_IMPLS(template <bool IsRelativistic>,
                                  IdealFluid<IsRelativistic>, 2, device_view())
-
-template <bool IsRelativistic>
-double IdealFluid<IsRelativistic>::specific_internal_energy_upper_bound(
-    const double /* rest_mass_density */) const {
-  // this bound comes from the dominant energy condition which implies
-  // that the pressure is bounded by the total energy density,
-  // i.e. p < e = rho * (1 + eps)
-  if (IsRelativistic and adiabatic_index_ > 2.0) {
-    return 1.0 / (adiabatic_index_ - 2.0);
-  }
-  return std::numeric_limits<double>::max();
-}
 
 }  // namespace EquationsOfState
 

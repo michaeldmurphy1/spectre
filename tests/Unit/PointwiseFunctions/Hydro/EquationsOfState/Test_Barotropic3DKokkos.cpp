@@ -15,4 +15,8 @@ SPECTRE_TEST_CASE(
       EquationsOfState::Barotropic3D<EquationsOfState::PolytropicFluid<true>>{
           EquationsOfState::PolytropicFluid<true>{100.0, 2.0}},
       {{{0.1, 2.0}, {0.1, 2.0}, {0.05, 0.5}}});
+  TestHelpers::EquationsOfState::check_device_view_bounds(
+      EquationsOfState::Barotropic3D<EquationsOfState::PolytropicFluid<true>>{
+          EquationsOfState::PolytropicFluid<true>{100.0, 2.5}},
+      {{{0.1, 2.0}, {0.1, 2.0}, {0.05, 0.5}}});
 }

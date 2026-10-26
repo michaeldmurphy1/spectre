@@ -4,7 +4,6 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
 
 #include <cmath>
-#include <limits>
 #include <memory>
 
 #include "DataStructures/DataVector.hpp"
@@ -80,31 +79,6 @@ void PolytropicFluid<IsRelativistic>::pup(PUP::er& p) {
 EQUATION_OF_STATE_DELEGATE_IMPLS(template <bool IsRelativistic>,
                                  PolytropicFluid<IsRelativistic>, 1,
                                  device_view())
-
-template <bool IsRelativistic>
-double PolytropicFluid<IsRelativistic>::rest_mass_density_upper_bound() const {
-  // this bound comes from the dominant energy condition which implies
-  // that the pressure is bounded by the total energy density,
-  // i.e. p < e = rho * (1 + eps)
-  if (IsRelativistic and polytropic_exponent_ > 2.0) {
-    return pow((polytropic_exponent_ - 1.0) /
-                   (polytropic_constant_ * (polytropic_exponent_ - 2.0)),
-               1.0 / (polytropic_exponent_ - 1.0));
-  }
-  return std::numeric_limits<double>::max();
-}
-
-template <bool IsRelativistic>
-double PolytropicFluid<IsRelativistic>::specific_internal_energy_upper_bound()
-    const {
-  // this bound comes from the dominant energy condition which implies
-  // that the pressure is bounded by the total energy density,
-  // i.e. p < e = rho * (1 + eps)
-  if (IsRelativistic and polytropic_exponent_ > 2.0) {
-    return 1.0 / (polytropic_exponent_ - 2.0);
-  }
-  return std::numeric_limits<double>::max();
-}
 }  // namespace EquationsOfState
 
 template class EquationsOfState::PolytropicFluid<true>;

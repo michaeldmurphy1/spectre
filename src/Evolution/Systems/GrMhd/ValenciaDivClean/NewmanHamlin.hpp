@@ -8,6 +8,7 @@
 #include <string>
 
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveRecoveryData.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 /// \cond
 namespace EquationsOfState {
@@ -52,7 +53,7 @@ namespace grmhd::ValenciaDivClean::PrimitiveRecoverySchemes {
 class NewmanHamlin {
  public:
   template <bool EnforcePhysicality, typename EosType>
-  static std::optional<PrimitiveRecoveryData> apply(
+  KOKKOS_FUNCTION static std::optional<PrimitiveRecoveryData> apply(
       double initial_guess_for_pressure, double tau,
       double momentum_density_squared,
       double momentum_density_dot_magnetic_field, double magnetic_field_squared,

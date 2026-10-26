@@ -16,6 +16,7 @@ spectre_target_sources(
   Flattener.cpp
   Fluxes.cpp
   PrimitiveFromConservative.cpp
+  PrimitiveFromConservativeOnDevice.cpp
   PrimitiveFromConservativeOptions.cpp
   SetVariablesNeededFixingToFalse.cpp
   Sources.cpp
@@ -46,6 +47,8 @@ spectre_target_headers(
   PalenzuelaEtAl.hpp
   PalenzuelaEtAl.tpp
   PrimitiveFromConservative.hpp
+  PrimitiveFromConservative.tpp
+  PrimitiveFromConservativeOnDevice.hpp
   PrimitiveFromConservativeOptions.hpp
   PrimitiveRecoveryData.hpp
   QuadrupoleFormula.hpp

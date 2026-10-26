@@ -55,6 +55,7 @@ if (SPECTRE_KOKKOS)
     Test_ConservativeFromPrimitiveKokkos.cpp
     Test_FixConservativesKokkos.cpp
     Test_FluxesKokkos.cpp
+    Test_PrimitiveFromConservativeKokkos.cpp
     Test_SourcesKokkos.cpp
     )
 endif()

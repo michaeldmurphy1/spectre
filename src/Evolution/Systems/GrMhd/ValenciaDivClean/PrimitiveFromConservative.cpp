@@ -23,6 +23,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/NewmanHamlin.tpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PalenzuelaEtAl.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PalenzuelaEtAl.tpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveFromConservative.tpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveRecoveryData.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
@@ -191,102 +192,46 @@ bool PrimitiveFromConservative<OrderedListOfPrimitiveRecoverySchemes,
       get(tilde_d) / get(sqrt_det_spatial_metric);
 
   for (size_t s = 0; s < number_of_points; ++s) {
-    get(*electron_fraction)[s] =
-        std::min(equation_of_state.electron_fraction_upper_bound(),
-            std::max(get(tilde_ye)[s] / get(tilde_d)[s],
-                equation_of_state.electron_fraction_lower_bound()));
-
-    std::optional<PrimitiveRecoverySchemes::PrimitiveRecoveryData>
-        primitive_data = std::nullopt;
-    // Quick exit from inversion in low-density regions where we will
-    // apply atmosphere corrections anyways.
-    if (rest_mass_density_times_lorentz_factor[s] < cutoffD) {
-      double specific_energy_at_point =
-          equation_of_state.specific_internal_energy_lower_bound(
-              floorD, get(*electron_fraction)[s]);
-      if constexpr (eos_is_barotropic) {
-        specific_energy_at_point =
-            get(equation_of_state
-                    .specific_internal_energy_from_density_and_temperature(
-                        Scalar<double>{floorD}, Scalar<double>{0.0},
-                        Scalar<double>{0.1}));
-      }
-      const double pressure_at_point =
-          get(equation_of_state.pressure_from_density_and_energy(
-              Scalar<double>{floorD}, Scalar<double>{specific_energy_at_point},
-              Scalar<double>{get(*electron_fraction)[s]}));
-      const double enthalpy_density_at_point =
-          floorD + specific_energy_at_point * floorD + pressure_at_point;
-      primitive_data = PrimitiveRecoverySchemes::PrimitiveRecoveryData{
-          floorD,
-          1.0,
-          pressure_at_point,
-          specific_energy_at_point,
-          enthalpy_density_at_point,
-          get(*electron_fraction)[s]};
-    } else {
-      // not in atmosphere.
-      auto apply_scheme = [&pressure, &primitive_data, &tau,
-                           &momentum_density_squared,
-                           &momentum_density_dot_magnetic_field,
-                           &magnetic_field_squared,
-                           &rest_mass_density_times_lorentz_factor,
-                           &equation_of_state, &s, &electron_fraction,
-                           &primitive_from_conservative_options](auto scheme) {
-        using primitive_recovery_scheme = tmpl::type_from<decltype(scheme)>;
-        if (not primitive_data.has_value()) {
-          primitive_data =
-              primitive_recovery_scheme::template apply<EnforcePhysicality>(
-                  get(*pressure)[s], tau[s], get(momentum_density_squared)[s],
-                  get(momentum_density_dot_magnetic_field)[s],
-                  get(magnetic_field_squared)[s],
-                  rest_mass_density_times_lorentz_factor[s],
-                  get(*electron_fraction)[s], equation_of_state,
-                  primitive_from_conservative_options);
-        }
-      };
-      // Check consistency
-      if (use_hydro_optimization and
-          (get(magnetic_field_squared)[s] <
-           100.0 * std::numeric_limits<double>::epsilon() * tau[s])) {
-        tmpl::for_each<
-            tmpl::list<grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::
-                           KastaunEtAlHydro>>(apply_scheme);
-      } else {
-        tmpl::for_each<OrderedListOfPrimitiveRecoverySchemes>(apply_scheme);
-      }
+    double rest_mass_density_at_point = get(*rest_mass_density)[s];
+    double electron_fraction_at_point = get(*electron_fraction)[s];
+    double specific_internal_energy_at_point =
+        get(*specific_internal_energy)[s];
+    tnsr::I<double, 3, Frame::Inertial> spatial_velocity_at_point{};
+    tnsr::I<double, 3, Frame::Inertial> magnetic_field_at_point{};
+    tnsr::I<double, 3, Frame::Inertial> tilde_s_upper_at_point{};
+    for (size_t i = 0; i < 3; ++i) {
+      spatial_velocity_at_point.get(i) = spatial_velocity->get(i)[s];
+      magnetic_field_at_point.get(i) = magnetic_field->get(i)[s];
+      tilde_s_upper_at_point.get(i) = tilde_s_upper.get(i)[s];
     }
+    double lorentz_factor_at_point = get(*lorentz_factor)[s];
+    double pressure_at_point = get(*pressure)[s];
+    const bool recovered = PrimitiveFromConservative_detail::recover_at_point<
+        OrderedListOfPrimitiveRecoverySchemes, EnforcePhysicality,
+        use_hydro_optimization>(
+        make_not_null(&rest_mass_density_at_point),
+        make_not_null(&electron_fraction_at_point),
+        make_not_null(&specific_internal_energy_at_point),
+        make_not_null(&spatial_velocity_at_point),
+        make_not_null(&lorentz_factor_at_point),
+        make_not_null(&pressure_at_point), get(tilde_d)[s], get(tilde_ye)[s],
+        tau[s], get(momentum_density_squared)[s],
+        get(momentum_density_dot_magnetic_field)[s],
+        get(magnetic_field_squared)[s],
+        rest_mass_density_times_lorentz_factor[s],
+        get(sqrt_det_spatial_metric)[s], magnetic_field_at_point,
+        tilde_s_upper_at_point, equation_of_state,
+        primitive_from_conservative_options);
+    get(*electron_fraction)[s] = electron_fraction_at_point;
 
-    if (primitive_data.has_value()) {
-      get(*rest_mass_density)[s] = primitive_data.value().rest_mass_density;
-      // if we set the Lorentz factor to 1.0 in atmosphere, then
-      // we also need to set the spatial_velocity accordingly.
-      if (primitive_data.value().lorentz_factor == 1.0) {
-        for (size_t i = 0; i < 3; ++i) {
-          spatial_velocity->get(i)[s] = 0.0;
-        }
-      } else {
-        const double coefficient_of_b =
-            get(momentum_density_dot_magnetic_field)[s] /
-            (primitive_data.value().rho_h_w_squared *
-             (primitive_data.value().rho_h_w_squared +
-              get(magnetic_field_squared)[s]));
-        const double coefficient_of_s =
-            1.0 / (get(sqrt_det_spatial_metric)[s] *
-                   (primitive_data.value().rho_h_w_squared +
-                    get(magnetic_field_squared)[s]));
-        for (size_t i = 0; i < 3; ++i) {
-          spatial_velocity->get(i)[s] =
-              coefficient_of_b * magnetic_field->get(i)[s] +
-              coefficient_of_s * tilde_s_upper.get(i)[s];
-        }
+    if (recovered) {
+      get(*rest_mass_density)[s] = rest_mass_density_at_point;
+      for (size_t i = 0; i < 3; ++i) {
+        spatial_velocity->get(i)[s] = spatial_velocity_at_point.get(i);
       }
-      get(*lorentz_factor)[s] = primitive_data.value().lorentz_factor;
-      get(*pressure)[s] = primitive_data.value().pressure;
-      if constexpr (not eos_is_barotropic) {
-        get(*specific_internal_energy)[s] =
-            primitive_data.value().specific_internal_energy;
-      }
+      get(*lorentz_factor)[s] = lorentz_factor_at_point;
+      get(*pressure)[s] = pressure_at_point;
+      get(*specific_internal_energy)[s] = specific_internal_energy_at_point;
     } else {
       if constexpr (ErrorOnFailure) {
         ERROR("All primitive inversion schemes failed at s = "

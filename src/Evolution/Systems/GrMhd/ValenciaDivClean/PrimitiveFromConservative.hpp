@@ -96,6 +96,9 @@ struct PrimitiveFromConservative {
       hydro::Tags::GrmhdEquationOfState,
       grmhd::ValenciaDivClean::Tags::PrimitiveFromConservativeOptions>;
 
+  // Use Kastaun hydro inversion if B is dynamically unimportant
+  static constexpr bool use_hydro_optimization = true;
+
   template <bool EnforcePhysicality = true>
   static bool apply(
       gsl::not_null<Scalar<DataVector>*> rest_mass_density,
@@ -142,9 +145,6 @@ struct PrimitiveFromConservative {
       const EosType& equation_of_state,
       const grmhd::ValenciaDivClean::PrimitiveFromConservativeOptions&
           primitive_from_conservative_options);
-
-  // Use Kastaun hydro inversion if B is dynamically unimportant
-  static constexpr bool use_hydro_optimization = true;
 };
 }  // namespace ValenciaDivClean
 }  // namespace grmhd

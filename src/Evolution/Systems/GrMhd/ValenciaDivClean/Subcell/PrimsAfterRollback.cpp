@@ -13,10 +13,12 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/NewmanHamlin.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PalenzuelaEtAl.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveFromConservative.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveFromConservativeOnDevice.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace grmhd::ValenciaDivClean::subcell {
@@ -50,29 +52,27 @@ void PrimsAfterRollback<OrderedListOfRecoverySchemes>::apply(
         get(dg_pressure), dg_mesh, subcell_mesh.extents(),
         Spectral::Parity::Even);
 
-    grmhd::ValenciaDivClean::
-        PrimitiveFromConservative<OrderedListOfRecoverySchemes, true>::apply(
-            make_not_null(
-                &get<hydro::Tags::RestMassDensity<DataVector>>(*prim_vars)),
-            make_not_null(
-                &get<hydro::Tags::ElectronFraction<DataVector>>(*prim_vars)),
-            make_not_null(&get<hydro::Tags::SpecificInternalEnergy<DataVector>>(
-                *prim_vars)),
-            make_not_null(
-                &get<hydro::Tags::SpatialVelocity<DataVector, 3>>(*prim_vars)),
-            make_not_null(
-                &get<hydro::Tags::MagneticField<DataVector, 3>>(*prim_vars)),
-            make_not_null(
-                &get<hydro::Tags::DivergenceCleaningField<DataVector>>(
-                    *prim_vars)),
-            make_not_null(
-                &get<hydro::Tags::LorentzFactor<DataVector>>(*prim_vars)),
-            make_not_null(&get<hydro::Tags::Pressure<DataVector>>(*prim_vars)),
-            make_not_null(
-                &get<hydro::Tags::Temperature<DataVector>>(*prim_vars)),
-            tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi,
-            spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric, eos,
-            primitive_from_conservative_options);
+    // With Kokkos, the primitive variables are recovered in a Kokkos kernel
+    grmhd::ValenciaDivClean::primitive_from_conservative_on_host_or_device<
+        OrderedListOfRecoverySchemes, true>(
+        make_not_null(
+            &get<hydro::Tags::RestMassDensity<DataVector>>(*prim_vars)),
+        make_not_null(
+            &get<hydro::Tags::ElectronFraction<DataVector>>(*prim_vars)),
+        make_not_null(
+            &get<hydro::Tags::SpecificInternalEnergy<DataVector>>(*prim_vars)),
+        make_not_null(
+            &get<hydro::Tags::SpatialVelocity<DataVector, 3>>(*prim_vars)),
+        make_not_null(
+            &get<hydro::Tags::MagneticField<DataVector, 3>>(*prim_vars)),
+        make_not_null(
+            &get<hydro::Tags::DivergenceCleaningField<DataVector>>(*prim_vars)),
+        make_not_null(&get<hydro::Tags::LorentzFactor<DataVector>>(*prim_vars)),
+        make_not_null(&get<hydro::Tags::Pressure<DataVector>>(*prim_vars)),
+        make_not_null(&get<hydro::Tags::Temperature<DataVector>>(*prim_vars)),
+        tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi,
+        spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric, eos,
+        primitive_from_conservative_options);
   }
 }
 

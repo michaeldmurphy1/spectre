@@ -6,6 +6,7 @@
 #include <cstddef>
 
 #include "DataStructures/Tensor/TypeAliases.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveFromConservative.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
 /// \cond
@@ -71,3 +72,27 @@ bool primitive_from_conservative_on_device(
         primitive_from_conservative_options);
 }  // namespace grmhd::ValenciaDivClean
 #endif  // SPECTRE_KOKKOS
+
+namespace grmhd::ValenciaDivClean {
+/*!
+ * \brief Recovers the primitive variables with
+ * `primitive_from_conservative_on_device` in Kokkos builds and with
+ * `PrimitiveFromConservative` otherwise.
+ *
+ * Takes the same arguments as `PrimitiveFromConservative::apply`. With Kokkos,
+ * the kernel runs on the default execution space instance and this function
+ * blocks until the primitive variables are copied back.
+ */
+template <typename OrderedListOfPrimitiveRecoverySchemes, bool ErrorOnFailure,
+          typename... Args>
+bool primitive_from_conservative_on_host_or_device(const Args&... args) {
+#ifdef SPECTRE_KOKKOS
+  return primitive_from_conservative_on_device<
+      OrderedListOfPrimitiveRecoverySchemes, ErrorOnFailure>(
+      Kokkos::DefaultExecutionSpace{}, args...);
+#else
+  return PrimitiveFromConservative<OrderedListOfPrimitiveRecoverySchemes,
+                                   ErrorOnFailure>::apply(args...);
+#endif  // SPECTRE_KOKKOS
+}
+}  // namespace grmhd::ValenciaDivClean

@@ -3,6 +3,8 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <array>
+#include <cfenv>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -27,6 +29,8 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/HybridEos.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/IdealFluid.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
+#include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/PrettyType.hpp"
@@ -472,6 +476,67 @@ void test_failure(const double magnetic_field) {
                           0.0, 0.0, 1.0e4)));
 }
 
+// With a negative total energy density the minimum pressure of NewmanHamlin is
+// positive, and at the minimum pressure the argument of `acos` is 1 up to
+// roundoff. Roundoff must not make it larger than 1, which would give NaN and
+// raise a floating-point exception. The exception is checked through the
+// floating-point flags, because the recovery schemes treat exceptions as
+// failures.
+void test_newman_hamlin_at_minimum_pressure(
+    const gsl::not_null<std::mt19937*> generator) {
+  const EquationsOfState::Equilibrium3D ideal_fluid{
+      EquationsOfState::IdealFluid<true>(4.0 / 3.0)};
+  const grmhd::ValenciaDivClean::PrimitiveFromConservativeOptions options(
+      0.0, 0.0, 1.0e4);
+  std::uniform_real_distribution<> distribution(-1.0, 1.0);
+  const double tau = -10.0;
+  const double rest_mass_density_times_lorentz_factor = 1.0;
+  size_t number_of_roundoff_cases = 0;
+  for (size_t i = 0; i < 1000; ++i) {
+    std::array<double, 3> momentum_density{};
+    std::array<double, 3> magnetic_field{};
+    for (size_t d = 0; d < 3; ++d) {
+      gsl::at(momentum_density, d) = distribution(*generator);
+      gsl::at(magnetic_field, d) = distribution(*generator);
+    }
+    double momentum_density_squared = 0.0;
+    double magnetic_field_squared = 0.0;
+    double momentum_density_dot_magnetic_field = 0.0;
+    for (size_t d = 0; d < 3; ++d) {
+      momentum_density_squared += square(gsl::at(momentum_density, d));
+      magnetic_field_squared += square(gsl::at(magnetic_field, d));
+      momentum_density_dot_magnetic_field +=
+          gsl::at(momentum_density, d) * gsl::at(magnetic_field, d);
+    }
+    // Same as in `NewmanHamlin`, to check that this case is tested
+    const double d_in_cubic =
+        0.5 * (momentum_density_squared * magnetic_field_squared -
+               square(momentum_density_dot_magnetic_field));
+    const double minimum_pressure =
+        cbrt(6.75 * d_in_cubic) -
+        (tau + rest_mass_density_times_lorentz_factor) -
+        0.5 * magnetic_field_squared;
+    const double a_in_cubic = tau + rest_mass_density_times_lorentz_factor +
+                              minimum_pressure + 0.5 * magnetic_field_squared;
+    if (sqrt(6.75 * d_in_cubic / cube(a_in_cubic)) > 1.0) {
+      ++number_of_roundoff_cases;
+    }
+    // The state is unphysical, so the recovery fails, but it must not raise a
+    // floating-point exception
+    const ScopedFpeState disable_fpes(false);
+    std::feclearexcept(FE_ALL_EXCEPT);
+    CHECK_FALSE(
+        grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::NewmanHamlin::apply<
+            false>(0.0, tau, momentum_density_squared,
+                   momentum_density_dot_magnetic_field, magnetic_field_squared,
+                   rest_mass_density_times_lorentz_factor, 0.1, ideal_fluid,
+                   options)
+            .has_value());
+    CHECK(std::fetestexcept(FE_INVALID) == 0);
+  }
+  CHECK(number_of_roundoff_cases > 0);
+}
+
 // The Kastaun schemes recover physical primitives from these conservatives if
 // `EnforcePhysicality` is true
 template <typename Scheme, bool RecoversIfEnforcingPhysicality>
@@ -488,6 +553,7 @@ void test_failures() {
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.PrimitiveFromConservative",
                   "[Unit][GrMhd]") {
   MAKE_GENERATOR(generator);
+  test_newman_hamlin_at_minimum_pressure(make_not_null(&generator));
 
   EquationsOfState::Barotropic3D wrapped_3d_polytrope(
       EquationsOfState::PolytropicFluid<true>(100.0, 2.0));

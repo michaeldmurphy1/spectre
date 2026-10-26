@@ -33,8 +33,13 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
 
+// The recovery schemes are `KOKKOS_FUNCTION` templates, and here they are
+// instantiated with the EOS on the host, which can't be used on the device. So
+// this file is only compiled in the host pass of GPU builds.
+#ifndef SPECTRE_KOKKOS_DEVICE_PASS
 namespace grmhd::ValenciaDivClean {
 template <typename OrderedListOfPrimitiveRecoverySchemes, bool ErrorOnFailure>
 template <bool EnforcePhysicality>
@@ -401,3 +406,4 @@ GENERATE_INSTANTIATIONS(
 #undef THERMODIM
 #undef PHYSICALITY
 #undef RECOVERY
+#endif  // SPECTRE_KOKKOS_DEVICE_PASS

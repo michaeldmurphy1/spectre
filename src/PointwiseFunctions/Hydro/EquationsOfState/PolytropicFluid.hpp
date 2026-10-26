@@ -11,6 +11,7 @@
 #include <boost/preprocessor/repetition/repeat.hpp>
 #include <boost/preprocessor/tuple/to_list.hpp>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <pup.h>
 
@@ -105,21 +106,29 @@ class PolytropicFluid : public EquationOfState<IsRelativistic, 1> {
       SINGLE_ARG(EquationOfState<IsRelativistic, 1>), PolytropicFluid);
 
   /// The lower bound of the rest mass density that is valid for this EOS
-  double rest_mass_density_lower_bound() const override { return 0.0; }
+  double rest_mass_density_lower_bound() const override {
+    return device_view().rest_mass_density_lower_bound();
+  }
 
   /// The upper bound of the rest mass density that is valid for this EOS
-  double rest_mass_density_upper_bound() const override;
+  double rest_mass_density_upper_bound() const override {
+    return device_view().rest_mass_density_upper_bound();
+  }
 
   /// The lower bound of the specific enthalpy that is valid for this EOS
   double specific_enthalpy_lower_bound() const override {
-    return IsRelativistic ? 1.0 : 0.0;
+    return device_view().specific_enthalpy_lower_bound();
   }
 
   /// The lower bound of the specific internal energy that is valid for this EOS
-  double specific_internal_energy_lower_bound() const override { return 0.0; }
+  double specific_internal_energy_lower_bound() const override {
+    return device_view().specific_internal_energy_lower_bound();
+  }
 
   /// The upper bound of the specific internal energy that is valid for this EOS
-  double specific_internal_energy_upper_bound() const override;
+  double specific_internal_energy_upper_bound() const override {
+    return device_view().specific_internal_energy_upper_bound();
+  }
 
   /// The vacuum baryon mass for this EoS
   double baryon_mass() const override {
@@ -141,8 +150,43 @@ class PolytropicFluid : public EquationOfState<IsRelativistic, 1> {
 
 template <bool IsRelativistic>
 struct PolytropicFluid<IsRelativistic>::DeviceView {
+  static constexpr size_t thermodynamic_dim = 1;
+  static constexpr bool is_relativistic = IsRelativistic;
+
   double polytropic_constant;
   double polytropic_exponent;
+
+  KOKKOS_FUNCTION double rest_mass_density_lower_bound() const { return 0.0; }
+
+  KOKKOS_FUNCTION double rest_mass_density_upper_bound() const {
+    // this bound comes from the dominant energy condition which implies
+    // that the pressure is bounded by the total energy density,
+    // i.e. p < e = rho * (1 + eps)
+    if (IsRelativistic and polytropic_exponent > 2.0) {
+      return pow((polytropic_exponent - 1.0) /
+                     (polytropic_constant * (polytropic_exponent - 2.0)),
+                 1.0 / (polytropic_exponent - 1.0));
+    }
+    return std::numeric_limits<double>::max();
+  }
+
+  KOKKOS_FUNCTION double specific_enthalpy_lower_bound() const {
+    return IsRelativistic ? 1.0 : 0.0;
+  }
+
+  KOKKOS_FUNCTION double specific_internal_energy_lower_bound() const {
+    return 0.0;
+  }
+
+  KOKKOS_FUNCTION double specific_internal_energy_upper_bound() const {
+    // this bound comes from the dominant energy condition which implies
+    // that the pressure is bounded by the total energy density,
+    // i.e. p < e = rho * (1 + eps)
+    if (IsRelativistic and polytropic_exponent > 2.0) {
+      return 1.0 / (polytropic_exponent - 2.0);
+    }
+    return std::numeric_limits<double>::max();
+  }
 
   SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
   template <class DataType>

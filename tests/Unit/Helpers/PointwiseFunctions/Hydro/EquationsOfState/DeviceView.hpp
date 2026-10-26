@@ -71,6 +71,36 @@ KOKKOS_FUNCTION Kokkos::Array<double, number_of_functions<Dim>> evaluate_all(
   return results;
 }
 
+// Evaluates the bounds of an EOS (the EOS on the host or its `DeviceView`) at
+// the thermodynamic arguments `args`, of which only the rest mass density (in
+// 2D and 3D) and the electron fraction (in 3D) are used. Not all `DeviceView`s
+// have a temperature bound yet.
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <size_t Dim, bool WithTemperature, typename Eos>
+KOKKOS_FUNCTION Kokkos::Array<double, 8> evaluate_bounds(
+    const Eos& eos, const Kokkos::Array<double, Dim>& args) {
+  Kokkos::Array<double, 8> results{};
+  results[0] = eos.rest_mass_density_lower_bound();
+  results[1] = eos.rest_mass_density_upper_bound();
+  results[2] = eos.specific_enthalpy_lower_bound();
+  if constexpr (Dim == 1) {
+    results[3] = eos.specific_internal_energy_lower_bound();
+    results[4] = eos.specific_internal_energy_upper_bound();
+  } else if constexpr (Dim == 2) {
+    results[3] = eos.specific_internal_energy_lower_bound(args[0]);
+    results[4] = eos.specific_internal_energy_upper_bound(args[0]);
+  } else {
+    results[3] = eos.specific_internal_energy_lower_bound(args[0], args[2]);
+    results[4] = eos.specific_internal_energy_upper_bound(args[0], args[2]);
+    results[5] = eos.electron_fraction_lower_bound();
+    results[6] = eos.electron_fraction_upper_bound();
+  }
+  if constexpr (WithTemperature) {
+    results[7] = eos.temperature_lower_bound();
+  }
+  return results;
+}
+
 #undef SPECTRE_EOS_DEVICE_VIEW_EVALUATE_ALL
 #undef SPECTRE_EOS_DEVICE_VIEW_EVALUATE
 #undef SPECTRE_EOS_DEVICE_VIEW_ARGS_3
@@ -143,6 +173,50 @@ void check_device_view(const EosType& eos,
       CAPTURE(i);
       CHECK(host_results(p, i) == custom_approx(expected[i]));
     }
+  }
+}
+
+/*!
+ * \brief Check that the bounds of `eos.device_view()` are the same in a Kokkos
+ * kernel as those of the EOS on the host.
+ *
+ * The thermodynamic arguments are random values in the `ranges`, like for
+ * `check_device_view`.
+ */
+template <typename EosType>
+void check_device_view_bounds(
+    const EosType& eos,
+    const std::array<std::pair<double, double>, EosType::thermodynamic_dim>&
+        ranges) {
+  constexpr size_t dim = EosType::thermodynamic_dim;
+  const auto device_view = eos.device_view();
+  constexpr bool with_temperature =
+      requires { device_view.temperature_lower_bound(); };
+  MAKE_GENERATOR(generator);
+  Kokkos::Array<double, dim> args{};
+  for (size_t d = 0; d < dim; ++d) {
+    std::uniform_real_distribution<> distribution(gsl::at(ranges, d).first,
+                                                  gsl::at(ranges, d).second);
+    args[d] = distribution(generator);
+  }
+  const Kokkos::View<double*> results("bounds", 8);
+  Kokkos::parallel_for(
+      "check_device_view_bounds", Kokkos::RangePolicy<>(0, 1),
+      KOKKOS_LAMBDA(const int /*unused*/) {
+        const auto bounds =
+            DeviceView_detail::evaluate_bounds<dim, with_temperature>(
+                device_view, args);
+        for (size_t i = 0; i < 8; ++i) {
+          results(i) = bounds[i];
+        }
+      });
+  const auto host_results =
+      Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, results);
+  const auto expected =
+      DeviceView_detail::evaluate_bounds<dim, with_temperature>(eos, args);
+  for (size_t i = 0; i < 8; ++i) {
+    CAPTURE(i);
+    CHECK(host_results(i) == approx(expected[i]));
   }
 }
 }  // namespace TestHelpers::EquationsOfState

@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <pup.h>
+#include <type_traits>
 
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
@@ -48,6 +49,10 @@ namespace detail {
 // `DeviceView`. This way the same code implements both.
 template <typename Underlying>
 struct Barotropic3DFunctions {
+  static constexpr size_t thermodynamic_dim = 3;
+  static constexpr bool is_relativistic =
+      std::remove_cvref_t<Underlying>::is_relativistic;
+
   Underlying underlying;
 
   SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
@@ -142,6 +147,39 @@ struct Barotropic3DFunctions {
       const Scalar<DataType>& /*electron_fraction*/) const {
     return zero_like(rest_mass_density);
   }
+
+  KOKKOS_FUNCTION double electron_fraction_lower_bound() const { return 0.0; }
+
+  KOKKOS_FUNCTION double electron_fraction_upper_bound() const { return 1.0; }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  KOKKOS_FUNCTION double rest_mass_density_lower_bound() const {
+    return underlying.rest_mass_density_lower_bound();
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  KOKKOS_FUNCTION double rest_mass_density_upper_bound() const {
+    return underlying.rest_mass_density_upper_bound();
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  KOKKOS_FUNCTION double specific_internal_energy_lower_bound(
+      const double /*rest_mass_density*/,
+      const double /*electron_fraction*/) const {
+    return underlying.specific_internal_energy_lower_bound();
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  KOKKOS_FUNCTION double specific_internal_energy_upper_bound(
+      const double /*rest_mass_density*/,
+      const double /*electron_fraction*/) const {
+    return underlying.specific_internal_energy_upper_bound();
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  KOKKOS_FUNCTION double specific_enthalpy_lower_bound() const {
+    return underlying.specific_enthalpy_lower_bound();
+  }
 };
 }  // namespace detail
 
@@ -225,19 +263,23 @@ class Barotropic3D : public EquationOfState<ColdEquilEos::is_relativistic, 3> {
       Barotropic3D);
 
   /// The lower bound of the electron fraction that is valid for this EOS
-  double electron_fraction_lower_bound() const override { return 0.0; }
+  double electron_fraction_lower_bound() const override {
+    return functions().electron_fraction_lower_bound();
+  }
 
   /// The upper bound of the electron fraction that is valid for this EOS
-  double electron_fraction_upper_bound() const override { return 1.0; }
+  double electron_fraction_upper_bound() const override {
+    return functions().electron_fraction_upper_bound();
+  }
 
   /// The lower bound of the rest mass density that is valid for this EOS
   double rest_mass_density_lower_bound() const override {
-    return underlying_eos_.rest_mass_density_lower_bound();
+    return functions().rest_mass_density_lower_bound();
   }
 
   /// The upper bound of the rest mass density that is valid for this EOS
   double rest_mass_density_upper_bound() const override {
-    return underlying_eos_.rest_mass_density_upper_bound();
+    return functions().rest_mass_density_upper_bound();
   }
 
   /// The lower bound of the temperature that is valid for this EOS
@@ -251,22 +293,24 @@ class Barotropic3D : public EquationOfState<ColdEquilEos::is_relativistic, 3> {
   /// The lower bound of the specific internal energy that is valid for this EOS
   /// at the given rest mass density \f$\rho\f$ and electron fraction \f$Y_e\f$
   double specific_internal_energy_lower_bound(
-      const double /*rest_mass_density*/,
-      const double /*electron_fraction*/) const override {
-    return underlying_eos_.specific_internal_energy_lower_bound();
+      const double rest_mass_density,
+      const double electron_fraction) const override {
+    return functions().specific_internal_energy_lower_bound(rest_mass_density,
+                                                            electron_fraction);
   }
 
   /// The upper bound of the specific internal energy that is valid for this EOS
   /// at the given rest mass density \f$\rho\f$
   double specific_internal_energy_upper_bound(
-      const double /*rest_mass_density*/,
-      const double /*electron_fraction*/) const override {
-    return underlying_eos_.specific_internal_energy_upper_bound();
+      const double rest_mass_density,
+      const double electron_fraction) const override {
+    return functions().specific_internal_energy_upper_bound(rest_mass_density,
+                                                            electron_fraction);
   }
 
   /// The lower bound of the specific enthalpy that is valid for this EOS
   double specific_enthalpy_lower_bound() const override {
-    return underlying_eos_.specific_enthalpy_lower_bound();
+    return functions().specific_enthalpy_lower_bound();
   }
 
   /// The baryon mass for this EoS

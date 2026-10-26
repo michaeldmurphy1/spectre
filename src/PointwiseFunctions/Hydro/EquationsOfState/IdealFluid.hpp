@@ -111,11 +111,13 @@ class IdealFluid : public EquationOfState<IsRelativistic, 2> {
       SINGLE_ARG(EquationOfState<IsRelativistic, 2>), IdealFluid);
 
   /// The lower bound of the rest mass density that is valid for this EOS
-  double rest_mass_density_lower_bound() const override { return 0.0; }
+  double rest_mass_density_lower_bound() const override {
+    return device_view().rest_mass_density_lower_bound();
+  }
 
   /// The upper bound of the rest mass density that is valid for this EOS
   double rest_mass_density_upper_bound() const override {
-    return std::numeric_limits<double>::max();
+    return device_view().rest_mass_density_upper_bound();
   }
 
   /// The lower bound of the specific internal energy that is valid for this EOS
@@ -123,29 +125,32 @@ class IdealFluid : public EquationOfState<IsRelativistic, 2> {
   /// If non-zero lower bound for temperature is provided, then the lower bound
   /// for specific internal energy is also non-zero accordingly.
   double specific_internal_energy_lower_bound(
-      const double /* rest_mass_density */) const override {
-    return (min_temperature_) / (adiabatic_index_ - 1.0);
+      const double rest_mass_density) const override {
+    return device_view().specific_internal_energy_lower_bound(
+        rest_mass_density);
   }
 
   /// The upper bound of the specific internal energy that is valid for this EOS
   /// at the given rest mass density \f$\rho\f$
   double specific_internal_energy_upper_bound(
-      double rest_mass_density) const override;
+      const double rest_mass_density) const override {
+    return device_view().specific_internal_energy_upper_bound(
+        rest_mass_density);
+  }
 
   /// The lower bound of the specific enthalpy that is valid for this EOS
   /// If non-zero lower bound for temperature is provided, then the lower bound
   /// for specific internal enthalpy is also non-zero accordingly.
   double specific_enthalpy_lower_bound() const override {
-    return IsRelativistic ? 1.0 + (adiabatic_index_ * min_temperature_) /
-                                      (adiabatic_index_ - 1.0)
-                          : (adiabatic_index_ * min_temperature_) /
-                                (adiabatic_index_ - 1.0);
+    return device_view().specific_enthalpy_lower_bound();
   }
 
   /// The lower bound of the temperature that is valid for this EOS.
   /// Non-zero lower bound could be set to impose floor on the specific
   /// internal energy.
-  double temperature_lower_bound() const override { return min_temperature_; }
+  double temperature_lower_bound() const override {
+    return device_view().temperature_lower_bound();
+  }
 
   /// The vacuum baryon mass for this EoS
   double baryon_mass() const override {
@@ -173,6 +178,9 @@ class IdealFluid : public EquationOfState<IsRelativistic, 2> {
 
 template <bool IsRelativistic>
 struct IdealFluid<IsRelativistic>::DeviceView {
+  static constexpr size_t thermodynamic_dim = 2;
+  static constexpr bool is_relativistic = IsRelativistic;
+
   double adiabatic_index;
   double min_temperature;
 
@@ -278,9 +286,37 @@ struct IdealFluid<IsRelativistic>::DeviceView {
                             get(specific_internal_energy)};
   }
 
-  /// The lower bound of the specific internal energy
-  KOKKOS_FUNCTION double specific_internal_energy_lower_bound() const {
+  KOKKOS_FUNCTION double rest_mass_density_lower_bound() const { return 0.0; }
+
+  KOKKOS_FUNCTION double rest_mass_density_upper_bound() const {
+    return std::numeric_limits<double>::max();
+  }
+
+  KOKKOS_FUNCTION double specific_internal_energy_lower_bound(
+      const double /*rest_mass_density*/) const {
     return min_temperature / (adiabatic_index - 1.0);
+  }
+
+  KOKKOS_FUNCTION double specific_internal_energy_upper_bound(
+      const double /*rest_mass_density*/) const {
+    // this bound comes from the dominant energy condition which implies
+    // that the pressure is bounded by the total energy density,
+    // i.e. p < e = rho * (1 + eps)
+    if (IsRelativistic and adiabatic_index > 2.0) {
+      return 1.0 / (adiabatic_index - 2.0);
+    }
+    return std::numeric_limits<double>::max();
+  }
+
+  KOKKOS_FUNCTION double specific_enthalpy_lower_bound() const {
+    return IsRelativistic
+               ? 1.0 + (adiabatic_index * min_temperature) /
+                           (adiabatic_index - 1.0)
+               : (adiabatic_index * min_temperature) / (adiabatic_index - 1.0);
+  }
+
+  KOKKOS_FUNCTION double temperature_lower_bound() const {
+    return min_temperature;
   }
 
  private:
@@ -289,7 +325,8 @@ struct IdealFluid<IsRelativistic>::DeviceView {
       const double specific_internal_energy) const {
     using std::max;
     const double floored_specific_internal_energy =
-        max(specific_internal_energy_lower_bound(), specific_internal_energy);
+        max(specific_internal_energy_lower_bound(rest_mass_density),
+            specific_internal_energy);
     ASSERT(
         floored_specific_internal_energy > 0.0,
         "The entropy is only well defined for positive nonzero temperatures. "

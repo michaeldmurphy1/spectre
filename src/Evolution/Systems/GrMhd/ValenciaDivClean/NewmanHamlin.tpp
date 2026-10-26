@@ -81,7 +81,10 @@ std::optional<PrimitiveRecoveryData> NewmanHamlin::apply(
     }
 
     // NH Eq. (5.10): d = (4/27) a^3 cos^2(phi)
-    const double phi = acos(sqrt(6.75 * d_in_cubic / cube(a_in_cubic)));
+    // The bound on the pressure guarantees that the argument is at most 1, up
+    // to roundoff that would make `acos` return NaN
+    const double phi =
+        acos(std::min(1.0, sqrt(6.75 * d_in_cubic / cube(a_in_cubic))));
     // NH Eq. (5.11) with l=1 is desired positive root
     const double root_of_cubic =
         (a_in_cubic / 3.0) * (1.0 - 2.0 * cos((2.0 / 3.0) * (M_PI + phi)));

@@ -6,16 +6,17 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/KastaunEtAlHydro.hpp"
 
 #include <cmath>
-#include <exception>
 #include <limits>
 #include <optional>
 #include <utility>
 
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/DefaultIfThrows.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveFromConservativeOptions.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveRecoveryData.hpp"
 #include "NumericalAlgorithms/RootFinding/TOMS748.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 namespace grmhd::ValenciaDivClean::PrimitiveRecoverySchemes {
 
@@ -28,15 +29,17 @@ struct Primitives {
   const double specific_internal_energy;
 };
 
+// The functions are called with the EOS on the host or its `DeviceView`
 template <typename EosType, bool EnforcePhysicality>
 class FunctionOfZ {
  public:
-  FunctionOfZ(const double tau, const double momentum_density_squared,
-              const double /* momentum_density_dot_magnetic_field */,
-              const double /* magnetic_field_squared */,
-              const double rest_mass_density_times_lorentz_factor,
-              const double electron_fraction, const EosType& equation_of_state,
-              const double lorentz_max)
+  KOKKOS_FUNCTION FunctionOfZ(
+      const double tau, const double momentum_density_squared,
+      const double /* momentum_density_dot_magnetic_field */,
+      const double /* magnetic_field_squared */,
+      const double rest_mass_density_times_lorentz_factor,
+      const double electron_fraction, const EosType& equation_of_state,
+      const double lorentz_max)
       : q_(tau / rest_mass_density_times_lorentz_factor),
         r_(std::sqrt(momentum_density_squared /
                      square(rest_mass_density_times_lorentz_factor))),
@@ -73,13 +76,13 @@ class FunctionOfZ {
     }
   }
 
-  std::optional<std::pair<double, double>> root_bracket() const;
+  KOKKOS_FUNCTION std::optional<std::pair<double, double>> root_bracket() const;
 
-  Primitives primitives(double z) const;
+  KOKKOS_FUNCTION Primitives primitives(double z) const;
 
-  double operator()(double z) const;
+  KOKKOS_FUNCTION double operator()(double z) const;
 
-  bool has_no_root() const { return state_is_unphysical_; }
+  KOKKOS_FUNCTION bool has_no_root() const { return state_is_unphysical_; }
 
  private:
   double q_;
@@ -91,7 +94,7 @@ class FunctionOfZ {
 };
 
 template <typename EosType, bool EnforcePhysicality>
-std::optional<std::pair<double, double>>
+KOKKOS_FUNCTION std::optional<std::pair<double, double>>
 FunctionOfZ<EosType, EnforcePhysicality>::root_bracket() const {
   const auto k = r_ / (q_ + 1.);
 
@@ -114,8 +117,8 @@ FunctionOfZ<EosType, EnforcePhysicality>::root_bracket() const {
 }
 
 template <typename EosType, bool EnforcePhysicality>
-Primitives FunctionOfZ<EosType, EnforcePhysicality>::primitives(
-    const double z) const {
+KOKKOS_FUNCTION Primitives
+FunctionOfZ<EosType, EnforcePhysicality>::primitives(const double z) const {
   // Compute Lorentz factor, note that z = lorentz * v
   const double w_hat = std::sqrt(1. + z * z);
 
@@ -168,7 +171,7 @@ Primitives FunctionOfZ<EosType, EnforcePhysicality>::primitives(
 }
 
 template <typename EosType, bool EnforcePhysicality>
-double FunctionOfZ<EosType, EnforcePhysicality>::operator()(
+KOKKOS_FUNCTION double FunctionOfZ<EosType, EnforcePhysicality>::operator()(
     const double z) const {
   const auto [rho_hat, w_hat, p_hat, epsilon_hat] = primitives(z);
   // Equation (C5)
@@ -181,7 +184,7 @@ double FunctionOfZ<EosType, EnforcePhysicality>::operator()(
 }  // namespace KastaunEtAlHydro_detail
 
 template <bool EnforcePhysicality, typename EosType>
-std::optional<PrimitiveRecoveryData> KastaunEtAlHydro::apply(
+KOKKOS_FUNCTION std::optional<PrimitiveRecoveryData> KastaunEtAlHydro::apply(
     const double /*initial_guess_pressure*/, const double tau,
     const double momentum_density_squared,
     const double momentum_density_dot_magnetic_field,
@@ -213,25 +216,24 @@ std::optional<PrimitiveRecoveryData> KastaunEtAlHydro::apply(
   }
 
   // z is W * v  (Lorentz factor * velocity)
-  double z = std::numeric_limits<double>::signaling_NaN();
-  try {
-    // Try to recover primitves
-    const auto root =
+  // Try to recover primitves
+  const std::optional<double> z = DefaultIfThrows_detail::default_if_throws(
+      [&f_of_z, &bracket]() -> std::optional<double> {
         // NOLINTNEXTLINE(clang-analyzer-core)
-        RootFinder::toms748(f_of_z, bracket->first, bracket->second,
-                            absolute_tolerance_, relative_tolerance_,
-                            max_iterations_);
-    if (not root.has_value()) {
-      return std::nullopt;
-    }
-    z = root.value();
-  } catch (std::exception& exception) {
-    // The EOS can throw, e.g. if a root find inside it fails
+        const auto result = RootFinder::toms748(
+            f_of_z, bracket->first, bracket->second, absolute_tolerance_,
+            relative_tolerance_, max_iterations_);
+        if (not result.has_value()) {
+          return std::nullopt;
+        }
+        return result.value();
+      });
+  if (not z.has_value()) {
     return std::nullopt;
   }
 
   const auto [rest_mass_density, lorentz_factor, pressure,
-              specific_internal_energy] = f_of_z.primitives(z);
+              specific_internal_energy] = f_of_z.primitives(*z);
 
   return PrimitiveRecoveryData{
       rest_mass_density,

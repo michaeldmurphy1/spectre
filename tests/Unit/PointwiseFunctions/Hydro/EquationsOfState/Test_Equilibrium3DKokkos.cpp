@@ -15,4 +15,8 @@ SPECTRE_TEST_CASE(
       EquationsOfState::Equilibrium3D<EquationsOfState::IdealFluid<true>>{
           EquationsOfState::IdealFluid<true>{5.0 / 3.0, 0.1}},
       {{{0.1, 2.0}, {0.1, 2.0}, {0.05, 0.5}}});
+  TestHelpers::EquationsOfState::check_device_view_bounds(
+      EquationsOfState::Equilibrium3D<EquationsOfState::IdealFluid<true>>{
+          EquationsOfState::IdealFluid<true>{2.5, 0.1}},
+      {{{0.1, 2.0}, {0.1, 2.0}, {0.05, 0.5}}});
 }

@@ -32,6 +32,7 @@ spectre_target_headers(
   ComovingMagneticFieldMagnitude.hpp
   ComputeFluxesFromPrimitives.hpp
   ConservativeFromPrimitive.hpp
+  DefaultIfThrows.hpp
   FixConservatives.hpp
   FixConservativesOnDevice.hpp
   Flattener.hpp

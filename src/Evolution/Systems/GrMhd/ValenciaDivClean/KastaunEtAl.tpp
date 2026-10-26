@@ -6,43 +6,40 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/KastaunEtAl.hpp"
 
 #include <cmath>
-#include <exception>
 #include <limits>
 #include <optional>
 #include <utility>
 
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/DefaultIfThrows.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveFromConservativeOptions.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveRecoveryData.hpp"
 #include "NumericalAlgorithms/RootFinding/TOMS748.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 namespace grmhd::ValenciaDivClean::PrimitiveRecoverySchemes {
 
 namespace KastaunEtAl_detail {
-// GCC warns without forward decls
-double compute_x(double mu, double b_squared);
-double compute_r_bar_squared(double mu, double x, double r_squared,
-                             double r_dot_b_squared);
-double compute_v_0_squared(double r_squared, double h_0, double lorentz_max);
-
 // Equation (26)
-double compute_x(const double mu, const double b_squared) {
+KOKKOS_INLINE_FUNCTION double compute_x(const double mu,
+                                        const double b_squared) {
   return 1.0 / (1.0 + mu * b_squared);
 }
 
 // Equation (38)
-double compute_r_bar_squared(const double mu, const double x,
-                             const double r_squared,
-                             const double r_dot_b_squared) {
+KOKKOS_INLINE_FUNCTION double compute_r_bar_squared(
+    const double mu, const double x, const double r_squared,
+    const double r_dot_b_squared) {
   return x * (r_squared * x + mu * (1.0 + x) * r_dot_b_squared);
 }
 
 // Equations (33) and (32)
-double compute_v_0_squared(const double r_squared, const double h_0,
-                           const double lorentz_max) {
+KOKKOS_INLINE_FUNCTION double compute_v_0_squared(const double r_squared,
+                                                  const double h_0,
+                                                  const double lorentz_max) {
   const double z_0_squared = r_squared / square(h_0);
   const double velocity_squared_upper_bound =
       1.0 - 1.0 / (lorentz_max * lorentz_max);
@@ -64,14 +61,16 @@ struct Primitives {
 // valid range of the EOS
 class CornerCaseFunction {
  public:
-  CornerCaseFunction(const double w_target, const double r_squared,
-                     const double b_squared, const double r_dot_b_squared)
+  KOKKOS_FUNCTION CornerCaseFunction(const double w_target,
+                                     const double r_squared,
+                                     const double b_squared,
+                                     const double r_dot_b_squared)
       : v_squared_target_(1.0 - 1.0 / square(w_target)),
         r_squared_(r_squared),
         b_squared_(b_squared),
         r_dot_b_squared_(r_dot_b_squared) {}
 
-  double operator()(const double mu) const {
+  KOKKOS_FUNCTION double operator()(const double mu) const {
     const double x = compute_x(mu, b_squared_);
     const double r_bar_squared =
         compute_r_bar_squared(mu, x, r_squared_, r_dot_b_squared_);
@@ -90,14 +89,15 @@ class CornerCaseFunction {
 // Function whose root is upper bracket of master function, see Sec. II.F
 class AuxiliaryFunction {
  public:
-  AuxiliaryFunction(const double h_0, const double r_squared,
-                    const double b_squared, const double r_dot_b_squared)
+  KOKKOS_FUNCTION AuxiliaryFunction(const double h_0, const double r_squared,
+                                    const double b_squared,
+                                    const double r_dot_b_squared)
       : h_0_(h_0),
         r_squared_(r_squared),
         b_squared_(b_squared),
         r_dot_b_squared_(r_dot_b_squared) {}
 
-  double operator()(double mu) const {
+  KOKKOS_FUNCTION double operator()(double mu) const {
     const double x = compute_x(mu, b_squared_);
     const double r_bar_squared =
         compute_r_bar_squared(mu, x, r_squared_, r_dot_b_squared_);
@@ -113,15 +113,18 @@ class AuxiliaryFunction {
 };
 
 // Master function, see Equation (44) in Sec. II.E
+// The functions are called with the EOS on the host or its `DeviceView`
 template <bool EnforcePhysicality, typename EosType>
 class FunctionOfMu {
  public:
-  FunctionOfMu(const double tau, const double momentum_density_squared,
-               const double momentum_density_dot_magnetic_field,
-               const double magnetic_field_squared,
-               const double rest_mass_density_times_lorentz_factor,
-               const double electron_fraction, const EosType& equation_of_state,
-               const double lorentz_max)
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  KOKKOS_FUNCTION FunctionOfMu(
+      const double tau, const double momentum_density_squared,
+      const double momentum_density_dot_magnetic_field,
+      const double magnetic_field_squared,
+      const double rest_mass_density_times_lorentz_factor,
+      const double electron_fraction, const EosType& equation_of_state,
+      const double lorentz_max)
       : r_squared_(momentum_density_squared /
                    square(rest_mass_density_times_lorentz_factor)),
         b_squared_(magnetic_field_squared /
@@ -164,15 +167,17 @@ class FunctionOfMu {
     }
   }
 
-  std::optional<std::pair<double, double>> root_bracket(
+  KOKKOS_FUNCTION std::optional<std::pair<double, double>> root_bracket(
       double rest_mass_density_times_lorentz_factor, double absolute_tolerance,
       double relative_tolerance, size_t max_iterations) const;
 
-  Primitives primitives(double mu) const;
+  KOKKOS_FUNCTION Primitives primitives(double mu) const;
 
-  double operator()(double mu) const;
+  KOKKOS_FUNCTION double operator()(double mu) const;
 
-  bool state_is_unphysical() const { return state_is_unphysical_; }
+  KOKKOS_FUNCTION bool state_is_unphysical() const {
+    return state_is_unphysical_;
+  }
 
  private:
   double q_;
@@ -187,8 +192,9 @@ class FunctionOfMu {
   bool state_is_unphysical_ = false;
 };
 
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool EnforcePhysicality, typename EosType>
-std::optional<std::pair<double, double>>
+KOKKOS_FUNCTION std::optional<std::pair<double, double>>
 FunctionOfMu<EnforcePhysicality, EosType>::root_bracket(
     const double rest_mass_density_times_lorentz_factor,
     const double absolute_tolerance, const double relative_tolerance,
@@ -273,9 +279,10 @@ FunctionOfMu<EnforcePhysicality, EosType>::root_bracket(
   return std::pair{lower_bound, upper_bound};
 }
 
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool EnforcePhysicality, typename EosType>
-Primitives FunctionOfMu<EnforcePhysicality, EosType>::primitives(
-    const double mu) const {
+KOKKOS_FUNCTION Primitives
+FunctionOfMu<EnforcePhysicality, EosType>::primitives(const double mu) const {
   // Equation (26)
   const double x = compute_x(mu, b_squared_);
   // Equations(38)
@@ -336,8 +343,9 @@ Primitives FunctionOfMu<EnforcePhysicality, EosType>::primitives(
   return Primitives{rho_hat, w_hat, p_hat, epsilon_hat, q_bar, r_bar_squared};
 }
 
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool EnforcePhysicality, typename EosType>
-double FunctionOfMu<EnforcePhysicality, EosType>::operator()(
+KOKKOS_FUNCTION double FunctionOfMu<EnforcePhysicality, EosType>::operator()(
     const double mu) const {
   const auto [rho_hat, w_hat, p_hat, epsilon_hat, q_bar, r_bar_squared] =
       primitives(mu);
@@ -352,8 +360,9 @@ double FunctionOfMu<EnforcePhysicality, EosType>::operator()(
 }
 }  // namespace KastaunEtAl_detail
 
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool EnforcePhysicality, typename EosType>
-std::optional<PrimitiveRecoveryData> KastaunEtAl::apply(
+KOKKOS_FUNCTION std::optional<PrimitiveRecoveryData> KastaunEtAl::apply(
     const double /*initial_guess_pressure*/, const double tau,
     const double momentum_density_squared,
     const double momentum_density_dot_magnetic_field,
@@ -386,18 +395,14 @@ std::optional<PrimitiveRecoveryData> KastaunEtAl::apply(
   }
 
   // mu is 1 / (h W) see Equation (26)
-  std::optional<double> one_over_specific_enthalpy_times_lorentz_factor{};
-  try {
-    // Try to recover primitves
-    one_over_specific_enthalpy_times_lorentz_factor =
+  // Try to recover primitves
+  const std::optional<double> one_over_specific_enthalpy_times_lorentz_factor =
+      DefaultIfThrows_detail::default_if_throws([&f_of_mu, &bracket]() {
         // NOLINTNEXTLINE(clang-analyzer-core)
-        RootFinder::try_toms748(f_of_mu, bracket->first, bracket->second,
-                                absolute_tolerance_, relative_tolerance_,
-                                max_iterations_);
-  } catch (std::exception& exception) {
-    // The EOS can throw, e.g. if a root find inside it fails
-    return std::nullopt;
-  }
+        return RootFinder::try_toms748(f_of_mu, bracket->first, bracket->second,
+                                       absolute_tolerance_, relative_tolerance_,
+                                       max_iterations_);
+      });
   if (not one_over_specific_enthalpy_times_lorentz_factor.has_value()) {
     return std::nullopt;
   }

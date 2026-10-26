@@ -15,13 +15,14 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/Gsl.hpp"
-
-
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 namespace grmhd::ValenciaDivClean::PrimitiveRecoverySchemes {
 
+// Called with the EOS on the host or its `DeviceView`
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool EnforcePhysicality, typename EosType>
-std::optional<PrimitiveRecoveryData> NewmanHamlin::apply(
+KOKKOS_FUNCTION std::optional<PrimitiveRecoveryData> NewmanHamlin::apply(
     const double initial_guess_for_pressure, const double tau,
     const double momentum_density_squared,
     const double momentum_density_dot_magnetic_field,

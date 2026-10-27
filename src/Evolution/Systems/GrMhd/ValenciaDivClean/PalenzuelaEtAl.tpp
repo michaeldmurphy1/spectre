@@ -8,6 +8,7 @@
 #include <cmath>
 #include <exception>
 #include <limits>
+#include <optional>
 
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveRecoveryData.hpp"
@@ -122,17 +123,21 @@ std::optional<PrimitiveRecoveryData> PalenzuelaEtAl::apply(
       rest_mass_density_times_lorentz_factor,
       electron_fraction,
       equation_of_state};
-  double specific_enthalpy_times_lorentz_factor =
-      std::numeric_limits<double>::signaling_NaN();
+  std::optional<double> root{};
   try {
-    specific_enthalpy_times_lorentz_factor =
+    root =
         // NOLINTNEXTLINE(clang-analyzer-core)
-        RootFinder::toms748(f_of_x, lower_bound, upper_bound,
-                            absolute_tolerance_, relative_tolerance_,
-                            max_iterations_);
+        RootFinder::try_toms748(f_of_x, lower_bound, upper_bound,
+                                absolute_tolerance_, relative_tolerance_,
+                                max_iterations_);
   } catch (std::exception& exception) {
+    // The EOS can throw, e.g. if a root find inside it fails
     return std::nullopt;
   }
+  if (not root.has_value()) {
+    return std::nullopt;
+  }
+  const double specific_enthalpy_times_lorentz_factor = *root;
   const double lorentz_factor =
       f_of_x.lorentz_factor(specific_enthalpy_times_lorentz_factor);
   const double rest_mass_density =

@@ -242,33 +242,15 @@ T select(const bool cond, const T true_branch, const T false_branch) {
 }
 
 inline std::pair<float, float> sincos(const float val) {
-  // The nvcc compiler's built-in __sincos is for GPU code, not CPU code. In
-  // the case that we are running on a GPU (__CUDA_ARCH__ is defined) or we
-  // are not using nvcc then use the builtin, otherwise call sin and cos
-  // separately.
-#if (defined(__CUDACC__) && defined(__CUDA_ARCH__)) or (not defined(__CUDACC__))
-  float result_sin{};
-  float result_cos{};
-  __sincosf(val, &result_sin, &result_cos);
-  return std::pair{result_sin, result_cos};
-#else
-  return std::pair{sin(val), cos(val)};
-#endif
+  // The `__sincosf` and `__sincos` builtins aren't available everywhere: glibc
+  // doesn't export them, and CUDA has no `__sincos`. Compilers combine these
+  // calls into one where possible.
+  return std::pair{std::sin(val), std::cos(val)};
 }
 
 inline std::pair<double, double> sincos(const double val) {
-  // The nvcc compiler's built-in __sincos is for GPU code, not CPU code. In
-  // the case that we are running on a GPU (__CUDA_ARCH__ is defined) or we
-  // are not using nvcc then use the builtin, otherwise call sin and cos
-  // separately.
-#if (defined(__CUDACC__) && defined(__CUDA_ARCH__)) or (not defined(__CUDACC__))
-  double result_sin{};
-  double result_cos{};
-  __sincos(val, &result_sin, &result_cos);
-  return std::pair{result_sin, result_cos};
-#else
-  return std::pair{sin(val), cos(val)};
-#endif
+  // See the `float` overload
+  return std::pair{std::sin(val), std::cos(val)};
 }
 
 template <typename T, Requires<std::is_integral_v<T>> = nullptr>

@@ -49,10 +49,6 @@ set(LIBRARY_SOURCES
   Test_VectorImplTestHelper.cpp
   )
 
-if(SPECTRE_KOKKOS)
-  list(APPEND LIBRARY_SOURCES Test_IndexKokkos.cpp)
-endif()
-
 # The following test is disabled for nvcc because nvcc can't handle it
 # (it fails to compile templates, can probably be fixed).
 if(NOT ${KOKKOS_CXX_COMPILER_ID} STREQUAL "NVIDIA")
@@ -60,7 +56,10 @@ if(NOT ${KOKKOS_CXX_COMPILER_ID} STREQUAL "NVIDIA")
 endif()
 
 if (TARGET Kokkos::kokkos)
-  list(APPEND LIBRARY_SOURCES Test_VariablesKokkos.cpp)
+  list(APPEND LIBRARY_SOURCES
+    Test_IndexKokkos.cpp
+    Test_VariablesKokkos.cpp
+    )
 endif()
 
 add_subdirectory(DataBox)

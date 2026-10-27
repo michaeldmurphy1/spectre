@@ -105,14 +105,14 @@ KOKKOS_FUNCTION constexpr bool next_permutation(BidirectionalIterator first,
                                                 BidirectionalIterator last,
                                                 Compare comp) {
   BidirectionalIterator i = last;
-  if (first == last || first == --i) {
+  if (first == last or first == --i) {
     return false;
   }
   while (true) {
     BidirectionalIterator ip1 = i;
     if (comp(*--i, *ip1)) {
       BidirectionalIterator j = last;
-      while (!comp(*i, *--j)) {
+      while (not comp(*i, *--j)) {
       }
       cpp20::swap(*i, *j);
       cpp20::reverse(ip1, last);
@@ -211,7 +211,7 @@ template <class InputIt, class UnaryPredicate>
 KOKKOS_FUNCTION constexpr InputIt find_if_not(InputIt first, InputIt last,
                                               UnaryPredicate q) {
   for (; first != last; ++first) {
-    if (!q(*first)) {
+    if (not q(*first)) {
       return first;
     }
   }
@@ -222,7 +222,7 @@ KOKKOS_FUNCTION constexpr InputIt find_if_not(InputIt first, InputIt last,
 template <class InputIt, class UnaryPredicate>
 constexpr InputIt find_if_not(InputIt first, InputIt last, UnaryPredicate q) {
   for (; first != last; ++first) {
-    if (!q(*first)) {
+    if (not q(*first)) {
       return first;
     }
   }

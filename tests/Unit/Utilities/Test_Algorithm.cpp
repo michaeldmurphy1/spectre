@@ -425,15 +425,25 @@ void test_same_as_std_on_random_data() {
   }
 }
 
-// The other tests use containers with contiguous iterators, for which the
-// functions are the device-callable loops. Other containers use the host-only
-// overloads.
+// Containers with contiguous iterators whose type is device-capable, such as
+// `std::array`, use the device-callable loops, which Test_AlgorithmKokkos.cpp
+// tests in a kernel. Other containers, including `std::vector`, use the
+// host-only overloads.
 static_assert(Algorithm_detail::device_iterable<std::array<int, 3>>);
-static_assert(Algorithm_detail::device_iterable<std::vector<int>>);
+static_assert(not Algorithm_detail::device_iterable<std::vector<int>>);
 static_assert(not Algorithm_detail::device_iterable<std::list<int>>);
 static_assert(
     not Algorithm_detail::device_iterable<std::unordered_map<int, int>>);
 static_assert(not Algorithm_detail::device_iterable<DataVector>);
+static_assert(not Algorithm_detail::device_iterable<std::array<DataVector, 2>>);
+static_assert(Algorithm_detail::device_iterator<int*>);
+static_assert(Algorithm_detail::device_iterator<std::array<int, 3>::iterator>);
+// Only the element type is checked, not where the elements are, like for
+// pointers
+static_assert(Algorithm_detail::device_iterator<std::vector<int>::iterator>);
+static_assert(
+    not Algorithm_detail::device_iterator<std::vector<DataVector>::iterator>);
+static_assert(not Algorithm_detail::device_iterator<std::list<int>::iterator>);
 
 void test_non_contiguous_containers() {
   const std::list<int> a{3, 1, 4, 1, 5, 9};

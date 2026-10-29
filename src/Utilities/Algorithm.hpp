@@ -10,16 +10,40 @@
 
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosMacros.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
+
+namespace Algorithm_detail {
+using std::begin;
+// The containers that the device-callable `alg` functions loop over: those
+// with contiguous iterators whose type can be used on the device. Other
+// containers, such as the standard library's node-based containers,
+// `std::vector` and `DataVector`, use host-only overloads (see the GPU support
+// documentation).
+//
+// Like the standard library algorithms, the loops call a copy of the function
+// objects passed to them, so the caller's function objects aren't modified.
+template <typename Container>
+concept device_iterable = std::contiguous_iterator<decltype(begin(
+                              std::declval<const Container&>()))> and
+                          tt::is_device_capable_v<Container>;
+
+// The iterators that the device-callable `cpp20` functions accept: contiguous
+// iterators over elements that can be used on the device.
+template <typename Iterator>
+concept device_iterator = std::contiguous_iterator<Iterator> and
+                          tt::is_device_capable_v<std::iter_value_t<Iterator>>;
+}  // namespace Algorithm_detail
 
 namespace cpp20 {
+/// @{
 /*!
  * \ingroup UtilitiesGroup
  * Reimplementation of std::swap that is constexpr;
  * taken from the LLVM source at
  * https://github.com/llvm-mirror/libcxx/blob/master/include/type_traits
  */
-SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class T>
+  requires tt::is_device_capable_v<T>
 KOKKOS_FUNCTION constexpr void swap(T& a, T& b) noexcept(
     std::is_nothrow_move_constructible_v<T> and
     std::is_nothrow_move_assignable_v<T>) {
@@ -28,17 +52,38 @@ KOKKOS_FUNCTION constexpr void swap(T& a, T& b) noexcept(
   b = std::move(c);
 }
 
+template <class T>
+  requires(not tt::is_device_capable_v<T>)
+constexpr void swap(T& a,
+                    T& b) noexcept(std::is_nothrow_move_constructible_v<T> and
+                                   std::is_nothrow_move_assignable_v<T>) {
+  T c(std::move(a));
+  a = std::move(b);
+  b = std::move(c);
+}
+/// @}
+
+/// @{
 /*!
  * \ingroup UtilitiesGroup
  * Reimplementation of std::iter_swap that is constexpr;
  * taken from the LLVM source at
  * https://github.com/llvm-mirror/libcxx/blob/master/include/type_traits
  */
-SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class ForwardIt1, class ForwardIt2>
+  requires Algorithm_detail::device_iterator<ForwardIt1> and
+           Algorithm_detail::device_iterator<ForwardIt2>
 KOKKOS_FUNCTION constexpr void iter_swap(ForwardIt1 a, ForwardIt2 b) {
   cpp20::swap(*a, *b);
 }
+
+template <class ForwardIt1, class ForwardIt2>
+  requires(not(Algorithm_detail::device_iterator<ForwardIt1> and
+               Algorithm_detail::device_iterator<ForwardIt2>))
+constexpr void iter_swap(ForwardIt1 a, ForwardIt2 b) {
+  cpp20::swap(*a, *b);
+}
+/// @}
 
 namespace detail {
 /*!
@@ -51,6 +96,7 @@ SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class BidirIt>
 KOKKOS_FUNCTION constexpr void reverse(
     BidirIt first, BidirIt last, std::bidirectional_iterator_tag /* unused */) {
+  ASSERT_DEVICE_CAPABLE(std::iter_value_t<BidirIt>);
   while (first != last) {
     if (first == --last) {
       break;
@@ -71,6 +117,7 @@ template <class RandomAccessIterator>
 KOKKOS_FUNCTION constexpr void reverse(
     RandomAccessIterator first, RandomAccessIterator last,
     std::random_access_iterator_tag /* unused */) {
+  ASSERT_DEVICE_CAPABLE(std::iter_value_t<RandomAccessIterator>);
   if (first != last) {
     for (; first < --last; ++first) {
       cpp20::iter_swap(first, last);
@@ -79,14 +126,15 @@ KOKKOS_FUNCTION constexpr void reverse(
 }
 }  // namespace detail
 
+/// @{
 /*!
  * \ingroup UtilitiesGroup
  * Reimplementation of std::reverse that is constexpr;
  * taken from the LLVM source at
  * https://github.com/llvm-mirror/libcxx/blob/master/include/algorithm
  */
-SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class BidirectionalIterator>
+  requires Algorithm_detail::device_iterator<BidirectionalIterator>
 KOKKOS_FUNCTION constexpr void reverse(BidirectionalIterator first,
                                        BidirectionalIterator last) {
   cpp20::detail::reverse(first, last,
@@ -94,17 +142,26 @@ KOKKOS_FUNCTION constexpr void reverse(BidirectionalIterator first,
                              BidirectionalIterator>::iterator_category());
 }
 
-/*!
- * \ingroup UtilitiesGroup
- * Reimplementation of std::next_permutation that is constexpr,
- * for a generic comparator; taken from the LLVM source at
- * https://github.com/llvm-mirror/libcxx/blob/master/include/algorithm
- */
+template <class BidirectionalIterator>
+  requires(not Algorithm_detail::device_iterator<BidirectionalIterator>)
+constexpr void reverse(BidirectionalIterator first,
+                       BidirectionalIterator last) {
+  cpp20::detail::reverse(first, last,
+                         typename std::iterator_traits<
+                             BidirectionalIterator>::iterator_category());
+}
+/// @}
+
+namespace detail {
+// Reimplementation of std::next_permutation that is constexpr, for a generic
+// comparator; taken from the LLVM source at
+// https://github.com/llvm-mirror/libcxx/blob/master/include/algorithm
 SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Compare, class BidirectionalIterator>
 KOKKOS_FUNCTION constexpr bool next_permutation(BidirectionalIterator first,
                                                 BidirectionalIterator last,
                                                 Compare comp) {
+  ASSERT_DEVICE_CAPABLE(std::iter_value_t<BidirectionalIterator>);
   BidirectionalIterator i = last;
   if (first == last or first == --i) {
     return false;
@@ -125,22 +182,58 @@ KOKKOS_FUNCTION constexpr bool next_permutation(BidirectionalIterator first,
     }
   }
 }
+}  // namespace detail
 
+/// @{
+/*!
+ * \ingroup UtilitiesGroup
+ * Reimplementation of std::next_permutation that is constexpr,
+ * for a generic comparator; taken from the LLVM source at
+ * https://github.com/llvm-mirror/libcxx/blob/master/include/algorithm
+ */
+template <class Compare, class BidirectionalIterator>
+  requires Algorithm_detail::device_iterator<BidirectionalIterator>
+KOKKOS_FUNCTION constexpr bool next_permutation(BidirectionalIterator first,
+                                                BidirectionalIterator last,
+                                                Compare comp) {
+  return cpp20::detail::next_permutation(first, last, comp);
+}
+
+template <class Compare, class BidirectionalIterator>
+  requires(not Algorithm_detail::device_iterator<BidirectionalIterator>)
+constexpr bool next_permutation(BidirectionalIterator first,
+                                BidirectionalIterator last, Compare comp) {
+  return cpp20::detail::next_permutation(first, last, comp);
+}
+/// @}
+
+/// @{
 /*!
  * \ingroup UtilitiesGroup
  * Reimplementation of std::next_permutation that is constexpr,
  * with less as the comparator; taken from the LLVM source at
  * https://github.com/llvm-mirror/libcxx/blob/master/include/algorithm
  */
-SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class BidirectionalIterator>
+  requires Algorithm_detail::device_iterator<BidirectionalIterator>
 KOKKOS_FUNCTION constexpr bool next_permutation(BidirectionalIterator first,
                                                 BidirectionalIterator last) {
-  return cpp20::next_permutation(
+  return cpp20::detail::next_permutation(
       first, last,
       std::less<
           typename std::iterator_traits<BidirectionalIterator>::value_type>());
 }
+
+template <class BidirectionalIterator>
+  requires(not Algorithm_detail::device_iterator<BidirectionalIterator>)
+constexpr bool next_permutation(BidirectionalIterator first,
+                                BidirectionalIterator last) {
+  return cpp20::detail::next_permutation(
+      first, last,
+      std::less<
+          typename std::iterator_traits<BidirectionalIterator>::value_type>());
+}
+/// @}
 
 /*!
  * \ingroup UtilitiesGroup
@@ -148,9 +241,10 @@ KOKKOS_FUNCTION constexpr bool next_permutation(BidirectionalIterator first,
  */
 SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class InputIt, class T>
-  requires std::contiguous_iterator<InputIt>
+  requires Algorithm_detail::device_iterator<InputIt>
 KOKKOS_FUNCTION constexpr InputIt find(InputIt first, InputIt last,
                                        const T& value) {
+  ASSERT_DEVICE_CAPABLE(std::iter_value_t<InputIt>, T);
   for (; first != last; ++first) {
     if (*first == value) {
       return first;
@@ -159,8 +253,8 @@ KOKKOS_FUNCTION constexpr InputIt find(InputIt first, InputIt last,
   return last;
 }
 
-// Non-contiguous iterators use host-only overloads with the same behavior, see
-// `Algorithm_detail::device_iterable` below.
+// Other iterators use host-only overloads with the same behavior, see
+// `Algorithm_detail::device_iterator` above.
 /// \cond
 template <class InputIt, class T>
 constexpr InputIt find(InputIt first, InputIt last, const T& value) {
@@ -179,9 +273,10 @@ constexpr InputIt find(InputIt first, InputIt last, const T& value) {
  */
 SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class InputIt, class UnaryPredicate>
-  requires std::contiguous_iterator<InputIt>
+  requires Algorithm_detail::device_iterator<InputIt>
 KOKKOS_FUNCTION constexpr InputIt find_if(InputIt first, InputIt last,
                                           UnaryPredicate p) {
+  ASSERT_DEVICE_CAPABLE(std::iter_value_t<InputIt>);
   for (; first != last; ++first) {
     if (p(*first)) {
       return first;
@@ -208,9 +303,10 @@ constexpr InputIt find_if(InputIt first, InputIt last, UnaryPredicate p) {
  */
 SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class InputIt, class UnaryPredicate>
-  requires std::contiguous_iterator<InputIt>
+  requires Algorithm_detail::device_iterator<InputIt>
 KOKKOS_FUNCTION constexpr InputIt find_if_not(InputIt first, InputIt last,
                                               UnaryPredicate q) {
+  ASSERT_DEVICE_CAPABLE(std::iter_value_t<InputIt>);
   for (; first != last; ++first) {
     if (not q(*first)) {
       return first;
@@ -233,18 +329,28 @@ constexpr InputIt find_if_not(InputIt first, InputIt last, UnaryPredicate q) {
 }  // namespace cpp20
 
 namespace Algorithm_detail {
-using std::begin;
-// The containers that the device-callable `alg` functions loop over. Other
-// containers, such as the standard library's node-based containers, use
-// host-only overloads. For them, the loops would warn in CUDA builds about
-// calling host functions from device functions, e.g. because their iterators
-// have implicitly constexpr comparison operators.
-//
-// Like the standard library algorithms, the loops call a copy of the function
-// objects passed to them, so the caller's function objects aren't modified.
-template <typename Container>
-concept device_iterable =
-    std::contiguous_iterator<decltype(begin(std::declval<const Container&>()))>;
+// The body of `alg::bubble_sort` shared by its overloads
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <class Container, class Compare>
+KOKKOS_FUNCTION constexpr void bubble_sort(Container& c, Compare comp) {
+  ASSERT_DEVICE_CAPABLE(Container);
+  using std::begin;
+  using std::end;
+  const auto first = begin(c);
+  auto last = end(c);
+  // After each pass the largest remaining element is in its place at the end
+  bool swapped = true;
+  while (swapped and last != first) {
+    swapped = false;
+    for (auto it = first; it + 1 != last; ++it) {
+      if (comp(*(it + 1), *it)) {
+        cpp20::iter_swap(it, it + 1);
+        swapped = true;
+      }
+    }
+    --last;
+  }
+}
 }  // namespace Algorithm_detail
 
 /*!
@@ -252,13 +358,14 @@ concept device_iterable =
  * \brief Utility functions wrapping STL algorithms and additional algorithms.
  *
  * All functions except `alg::sample` and `alg::sort` can be called in Kokkos
- * kernels on containers with contiguous iterators, such as `std::array` and
- * `Kokkos::Array`. For these containers they are implemented as plain loops
- * rather than by calling the standard library, because the standard library
- * algorithms aren't supported in device code (see \ref gpu_support "GPU
- * support"). To sort short lists on the device, use `alg::bubble_sort`. For
- * other containers, e.g. `std::unordered_map` or `DataVector`, the functions
- * can only be called on the host.
+ * kernels on containers with contiguous iterators whose type is device-capable
+ * (see `tt::is_device_capable`), such as `std::array`. For
+ * these containers they are implemented as plain loops rather than by calling
+ * the standard library, because the standard library algorithms aren't
+ * supported in device code (see \ref gpu_support "GPU support"). To sort
+ * short lists on the device, use `alg::bubble_sort`. For other containers,
+ * e.g. `std::vector`, `std::unordered_map` or `DataVector`, the functions can
+ * only be called on the host.
  */
 namespace alg {
 /// Like `std::all_of` on the whole container
@@ -267,6 +374,7 @@ template <class Container, class UnaryPredicate>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr bool all_of(const Container& c,
                                       UnaryPredicate&& unary_predicate) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   std::decay_t<UnaryPredicate> predicate(
@@ -295,6 +403,7 @@ template <class Container, class UnaryPredicate>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr bool any_of(const Container& c,
                                       UnaryPredicate&& unary_predicate) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   std::decay_t<UnaryPredicate> predicate(
@@ -323,6 +432,7 @@ template <class Container, class UnaryPredicate>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr bool none_of(const Container& c,
                                        UnaryPredicate&& unary_predicate) {
+  ASSERT_DEVICE_CAPABLE(Container);
   return not alg::any_of(c, std::forward<UnaryPredicate>(unary_predicate));
 }
 
@@ -341,6 +451,7 @@ SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Container, class T>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr auto count(const Container& c, const T& value) {
+  ASSERT_DEVICE_CAPABLE(Container, T);
   using std::begin;
   using std::end;
   typename std::iterator_traits<decltype(begin(c))>::difference_type result = 0;
@@ -367,6 +478,7 @@ template <class Container, class UnaryPredicate>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr auto count_if(const Container& c,
                                         UnaryPredicate&& unary_predicate) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   std::decay_t<UnaryPredicate> predicate(
@@ -395,6 +507,7 @@ SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Container, class T>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) find(Container&& c, const T& value) {
+  ASSERT_DEVICE_CAPABLE(Container, T);
   using std::begin;
   using std::end;
   return cpp20::find(begin(std::forward<Container>(c)),
@@ -417,6 +530,7 @@ template <class Container, class UnaryPredicate>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) find_if(
     Container&& c, UnaryPredicate&& unary_predicate) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   return cpp20::find_if(begin(std::forward<Container>(c)),
@@ -442,6 +556,7 @@ template <class Container, class UnaryPredicate>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) find_if_not(
     Container&& c, UnaryPredicate&& unary_predicate) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   return cpp20::find_if_not(begin(std::forward<Container>(c)),
@@ -467,6 +582,7 @@ SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Container, class T>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr bool found(const Container& c, const T& value) {
+  ASSERT_DEVICE_CAPABLE(Container, T);
   using std::begin;
   using std::end;
   return cpp20::find(begin(c), end(c), value) != end(c);
@@ -488,6 +604,7 @@ template <class Container, class UnaryPredicate>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr bool found_if(const Container& c,
                                         UnaryPredicate&& unary_predicate) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   return cpp20::find_if(begin(c), end(c),
@@ -514,6 +631,7 @@ template <class Container, class UnaryPredicate>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr bool found_if_not(const Container& c,
                                             UnaryPredicate&& unary_predicate) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   return cpp20::find_if_not(begin(c), end(c),
@@ -540,6 +658,7 @@ template <class Container, class UnaryFunction>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr std::decay_t<UnaryFunction> for_each(
     const Container& c, UnaryFunction&& f) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   std::decay_t<UnaryFunction> function(std::forward<UnaryFunction>(f));
@@ -563,6 +682,7 @@ template <class Container, class UnaryFunction>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr std::decay_t<UnaryFunction> for_each(
     Container& c, UnaryFunction&& f) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   std::decay_t<UnaryFunction> function(std::forward<UnaryFunction>(f));
@@ -590,6 +710,7 @@ template <class Container, class Container2>
            Algorithm_detail::device_iterable<Container2>
 KOKKOS_FUNCTION constexpr bool equal(const Container& lhs,
                                      const Container2& rhs) {
+  ASSERT_DEVICE_CAPABLE(Container, Container2);
   using std::begin;
   using std::end;
   auto rhs_it = begin(rhs);
@@ -619,6 +740,7 @@ template <class Container, class Container2, class BinaryPredicate>
 KOKKOS_FUNCTION constexpr bool equal(const Container& lhs,
                                      const Container2& rhs,
                                      BinaryPredicate&& p) {
+  ASSERT_DEVICE_CAPABLE(Container, Container2);
   using std::begin;
   using std::end;
   std::decay_t<BinaryPredicate> predicate(std::forward<BinaryPredicate>(p));
@@ -647,6 +769,7 @@ template <class Container, class Compare>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) max_element(const Container& c,
                                                      Compare&& comp) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   std::decay_t<Compare> compare(std::forward<Compare>(comp));
@@ -686,6 +809,7 @@ SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Container>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) max_element(const Container& c) {
+  ASSERT_DEVICE_CAPABLE(Container);
   return alg::max_element(c,
                           [](const auto& a, const auto& b) { return a < b; });
 }
@@ -704,6 +828,7 @@ template <class Container, class Compare>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) min_element(const Container& c,
                                                      Compare&& comp) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   std::decay_t<Compare> compare(std::forward<Compare>(comp));
@@ -743,6 +868,7 @@ SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Container>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) min_element(const Container& c) {
+  ASSERT_DEVICE_CAPABLE(Container);
   return alg::min_element(c,
                           [](const auto& a, const auto& b) { return a < b; });
 }
@@ -762,6 +888,7 @@ template <class Container, class Compare>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) minmax_element(const Container& c,
                                                         Compare&& comp) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   std::decay_t<Compare> compare(std::forward<Compare>(comp));
@@ -809,6 +936,7 @@ SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Container>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) minmax_element(const Container& c) {
+  ASSERT_DEVICE_CAPABLE(Container);
   return alg::minmax_element(
       c, [](const auto& a, const auto& b) { return a < b; });
 }
@@ -827,6 +955,7 @@ template <class Container, class UnaryPredicate>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) remove_if(
     Container& c, UnaryPredicate&& unary_predicate) {
+  ASSERT_DEVICE_CAPABLE(Container);
   using std::begin;
   using std::end;
   std::decay_t<UnaryPredicate> predicate(
@@ -858,6 +987,7 @@ SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Container, class T>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr decltype(auto) remove(Container& c, const T& value) {
+  ASSERT_DEVICE_CAPABLE(Container, T);
   return alg::remove_if(c, [&value](const auto& x) { return x == value; });
 }
 
@@ -887,32 +1017,25 @@ decltype(auto) sample(Container& c, OutputIt out, Distance n, URBG&& g) {
  * It takes \f$O(N^2)\f$ operations, so it is only suitable for short lists.
  * Elements that compare equal keep their order.
  */
-SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Container, class Compare>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr void bubble_sort(Container& c, Compare comp) {
-  using std::begin;
-  using std::end;
-  const auto first = begin(c);
-  auto last = end(c);
-  // After each pass the largest remaining element is in its place at the end
-  bool swapped = true;
-  while (swapped and last != first) {
-    swapped = false;
-    for (auto it = first; it + 1 != last; ++it) {
-      if (comp(*(it + 1), *it)) {
-        cpp20::iter_swap(it, it + 1);
-        swapped = true;
-      }
-    }
-    --last;
-  }
+  Algorithm_detail::bubble_sort(c, comp);
 }
 
-SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <class Container, class Compare>
+constexpr void bubble_sort(Container& c, Compare comp) {
+  Algorithm_detail::bubble_sort(c, comp);
+}
+
 template <class Container>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr void bubble_sort(Container& c) {
+  alg::bubble_sort(c, [](const auto& a, const auto& b) { return a < b; });
+}
+
+template <class Container>
+constexpr void bubble_sort(Container& c) {
   alg::bubble_sort(c, [](const auto& a, const auto& b) { return a < b; });
 }
 /// @}
@@ -928,6 +1051,7 @@ SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Container, class Compare>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr void sort(Container& c, Compare&& comp) {
+  ASSERT_DEVICE_CAPABLE(Container);
   // Device code that calls `alg::sort` compiles, so that the host-only uses
   // still compile in GPU builds (they are also compiled for the device), but
   // it aborts at runtime
@@ -952,6 +1076,7 @@ SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <class Container>
   requires Algorithm_detail::device_iterable<Container>
 KOKKOS_FUNCTION constexpr void sort(Container& c) {
+  ASSERT_DEVICE_CAPABLE(Container);
   alg::sort(c, [](const auto& a, const auto& b) { return a < b; });
 }
 
@@ -972,6 +1097,7 @@ template <class Container, class OutputIt, class UnaryOp>
 KOKKOS_FUNCTION constexpr OutputIt transform(const Container& c,
                                              OutputIt output_first,
                                              UnaryOp&& unary_op) {
+  ASSERT_DEVICE_CAPABLE(Container, OutputIt);
   using std::begin;
   using std::end;
   std::decay_t<UnaryOp> op(std::forward<UnaryOp>(unary_op));
@@ -1001,6 +1127,7 @@ KOKKOS_FUNCTION constexpr OutputIt transform(const Container1& c1,
                                              const Container2& c2,
                                              OutputIt output_first,
                                              BinaryOp&& binary_op) {
+  ASSERT_DEVICE_CAPABLE(Container1, Container2, OutputIt);
   using std::begin;
   using std::end;
   std::decay_t<BinaryOp> op(std::forward<BinaryOp>(binary_op));

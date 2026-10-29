@@ -94,8 +94,12 @@ class numeric_limits<::xsimd::batch<T, Arch>> : public numeric_limits<T> {
 #include <complex>
 #include <type_traits>
 
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/Requires.hpp"
 
+// Without xsimd these scalar functions are also used in Kokkos kernels, so the
+// ones that aren't from the standard library are `KOKKOS_FUNCTION`s. Builds
+// with a Kokkos GPU backend don't support xsimd.
 namespace simd {
 template <typename T, typename A = void>
 class batch;
@@ -201,118 +205,130 @@ using std::tgamma;
 using std::trunc;
 // NOLINTEND(misc-unused-using-decls)
 
-inline bool all(const bool mask) { return mask; }
+KOKKOS_INLINE_FUNCTION bool all(const bool mask) { return mask; }
 
-inline bool any(const bool mask) { return mask; }
+KOKKOS_INLINE_FUNCTION bool any(const bool mask) { return mask; }
 
-inline bool none(const bool mask) { return not mask; }
+KOKKOS_INLINE_FUNCTION bool none(const bool mask) { return not mask; }
 
 template <typename T, Requires<std::is_scalar_v<T>> = nullptr>
-T clip(const T& val, const T& low, const T& hi) {
-  assert(low <= hi && "ordered clipping bounds");
+KOKKOS_FUNCTION T clip(const T& val, const T& low, const T& hi) {
+  assert(low <= hi and "ordered clipping bounds");
   return low > val ? low : (hi < val ? hi : val);
 }
 
+// glibc's `exp10` can't be called on the device, so the device uses the same
+// formula as other platforms
+KOKKOS_INLINE_FUNCTION float exp10(const float& x) {
 #if defined(__GLIBC__)
-inline float exp10(const float& x) { return ::exp10f(x); }
-inline double exp10(const double& x) { return ::exp10(x); }
+  KOKKOS_IF_ON_HOST((return ::exp10f(x);))
+  KOKKOS_IF_ON_DEVICE(
+      (const float ln10 = std::log(10.f); return std::exp(ln10 * x);))
 #else
-inline float exp10(const float& x) {
   const float ln10 = std::log(10.f);
   return std::exp(ln10 * x);
+#endif
 }
-inline double exp10(const double& x) {
+KOKKOS_INLINE_FUNCTION double exp10(const double& x) {
+#if defined(__GLIBC__)
+  KOKKOS_IF_ON_HOST((return ::exp10(x);))
+  KOKKOS_IF_ON_DEVICE(
+      (const double ln10 = std::log(10.); return std::exp(ln10 * x);))
+#else
   const double ln10 = std::log(10.);
   return std::exp(ln10 * x);
-}
 #endif
+}
 
-inline double sign(const bool& v) { return static_cast<double>(v); }
+KOKKOS_INLINE_FUNCTION double sign(const bool& v) {
+  return static_cast<double>(v);
+}
 
 template <typename T>
-T sign(const T& v) {
+KOKKOS_FUNCTION T sign(const T& v) {
   return v < static_cast<T>(0)    ? static_cast<T>(-1.)
          : v == static_cast<T>(0) ? static_cast<T>(0.)
                                   : static_cast<T>(1.);
 }
 
 template <typename T>
-T select(const bool cond, const T true_branch, const T false_branch) {
+KOKKOS_FUNCTION T select(const bool cond, const T true_branch,
+                         const T false_branch) {
   return cond ? true_branch : false_branch;
 }
 
-inline std::pair<float, float> sincos(const float val) {
+KOKKOS_INLINE_FUNCTION std::pair<float, float> sincos(const float val) {
   // The `__sincosf` and `__sincos` builtins aren't available everywhere: glibc
   // doesn't export them, and CUDA has no `__sincos`. Compilers combine these
   // calls into one where possible.
   return std::pair{std::sin(val), std::cos(val)};
 }
 
-inline std::pair<double, double> sincos(const double val) {
+KOKKOS_INLINE_FUNCTION std::pair<double, double> sincos(const double val) {
   // See the `float` overload
   return std::pair{std::sin(val), std::cos(val)};
 }
 
 template <typename T, Requires<std::is_integral_v<T>> = nullptr>
-T fma(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fma(const T a, const T b, const T c) {
   return a * b + c;
 }
 
 template <typename T, Requires<std::is_floating_point_v<T>> = nullptr>
-T fma(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fma(const T a, const T b, const T c) {
   return std::fma(a, b, c);
 }
 
 template <typename T, Requires<std::is_integral_v<T>> = nullptr>
-T fms(const T& a, const T& b, const T& c) {
+KOKKOS_FUNCTION T fms(const T& a, const T& b, const T& c) {
   return a * b - c;
 }
 
 template <typename T, Requires<std::is_floating_point_v<T>> = nullptr>
-T fms(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fms(const T a, const T b, const T c) {
   return std::fma(a, b, -c);
 }
 
 template <typename T, Requires<std::is_integral_v<T>> = nullptr>
-T fnma(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fnma(const T a, const T b, const T c) {
   return -(a * b) + c;
 }
 
 template <typename T, Requires<std::is_floating_point_v<T>> = nullptr>
-T fnma(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fnma(const T a, const T b, const T c) {
   return std::fma(-a, b, c);
 }
 
 template <typename T, Requires<std::is_integral_v<T>> = nullptr>
-T fnms(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fnms(const T a, const T b, const T c) {
   return -(a * b) - c;
 }
 
 template <typename T, Requires<std::is_floating_point_v<T>> = nullptr>
-T fnms(const T a, const T b, const T c) {
+KOKKOS_FUNCTION T fnms(const T a, const T b, const T c) {
   return -std::fma(a, b, c);
 }
 
 template <typename Arch = void, typename From>
-From load(From* mem) {
+KOKKOS_FUNCTION From load(From* mem) {
   static_assert(std::is_arithmetic_v<From>);
   return *mem;
 }
 
 template <typename Arch = void, typename T>
-void store(T* mem, const T& val) {
+KOKKOS_FUNCTION void store(T* mem, const T& val) {
   static_assert(std::is_arithmetic_v<T>);
   *mem = val;
 }
 
 template <typename Arch = void, typename From>
-From load_unaligned(From* mem) {
+KOKKOS_FUNCTION From load_unaligned(From* mem) {
   static_assert(std::is_arithmetic_v<From>);
   return *mem;
 }
 
 template <typename Arch = void, typename T>
-void store_unaligned(T* mem, const T& val) {
+KOKKOS_FUNCTION void store_unaligned(T* mem, const T& val) {
   static_assert(std::is_arithmetic_v<T>);
   *mem = val;
 }

@@ -18,7 +18,9 @@
 #include "Utilities/ErrorHandling/CaptureForError.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Expected.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/Simd/Simd.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 namespace RootFinder {
 /// \ingroup NumericalAlgorithmsGroup
@@ -86,7 +88,7 @@ namespace toms748_detail {
 // Deppe. Changes are copyrighted by SXS Collaboration under the MIT License.
 
 template <typename T>
-T safe_div(const T& num, const T& denom, const T& r) {
+KOKKOS_FUNCTION T safe_div(const T& num, const T& denom, const T& r) {
   if constexpr (std::is_floating_point_v<T>) {
     using std::abs;
     if (abs(denom) < static_cast<T>(1)) {
@@ -123,8 +125,9 @@ T safe_div(const T& num, const T& denom, const T& r) {
 }
 
 template <typename T>
-T secant_interpolate(const T& a, const T& b, const T& fa, const T& fb,
-                     const simd::mask_type_t<T>& incomplete_mask) {
+KOKKOS_FUNCTION T
+secant_interpolate(const T& a, const T& b, const T& fa, const T& fb,
+                   const simd::mask_type_t<T>& incomplete_mask) {
   //
   // Performs standard secant interpolation of [a,b] given
   // function evaluations f(a) and f(b).  Performs a bisection
@@ -166,10 +169,9 @@ T secant_interpolate(const T& a, const T& b, const T& fa, const T& fb,
 }
 
 template <bool AssumeFinite, typename T>
-T quadratic_interpolate(const T& a, const T& b, const T& d, const T& fa,
-                        const T& fb, const T& fd,
-                        const simd::mask_type_t<T>& incomplete_mask,
-                        const unsigned count) {
+KOKKOS_FUNCTION T quadratic_interpolate(
+    const T& a, const T& b, const T& d, const T& fa, const T& fb, const T& fd,
+    const simd::mask_type_t<T>& incomplete_mask, const unsigned count) {
   // Performs quadratic interpolation to determine the next point,
   // takes count Newton steps to find the location of the
   // quadratic polynomial.
@@ -223,9 +225,9 @@ T quadratic_interpolate(const T& a, const T& b, const T& d, const T& fa,
 }
 
 template <bool AssumeFinite, typename T>
-T cubic_interpolate(const T& a, const T& b, const T& d, const T& e, const T& fa,
-                    const T& fb, const T& fd, const T& fe,
-                    const simd::mask_type_t<T>& incomplete_mask) {
+KOKKOS_FUNCTION T cubic_interpolate(
+    const T& a, const T& b, const T& d, const T& e, const T& fa, const T& fb,
+    const T& fd, const T& fe, const simd::mask_type_t<T>& incomplete_mask) {
   // Uses inverse cubic interpolation of f(x) at points
   // [a,b,d,e] to obtain an approximate root of f(x).
   // Points d and e lie outside the interval [a,b]
@@ -297,9 +299,11 @@ T cubic_interpolate(const T& a, const T& b, const T& d, const T& e, const T& fa,
   return c;
 }
 
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool AssumeFinite, typename F, typename T>
-void bracket(F f, T& a, T& b, T c, T& fa, T& fb, T& d, T& fd,
-             const simd::mask_type_t<T>& incomplete_mask) {
+KOKKOS_FUNCTION void bracket(F f, T& a, T& b, T c, T& fa, T& fb, T& d, T& fd,
+                             const simd::mask_type_t<T>& incomplete_mask) {
+  ASSERT_DEVICE_CAPABLE(F, T);
   // Given a point c inside the existing enclosing interval
   // [a, b] sets a = c if f(c) == 0, otherwise finds the new
   // enclosing interval: either [a, c] or [c, b] and sets
@@ -372,12 +376,13 @@ void bracket(F f, T& a, T& b, T c, T& fa, T& fb, T& d, T& fd,
   fa = simd::select(mask_else, fc, fa);
 }
 
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool AssumeFinite, class F, class T, class Tol>
-std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
-                              const T& fbx, Tol tol,
-                              const simd::mask_type_t<T>& ignore_filter,
-                              size_t& max_iter,
-                              std::optional<Toms748Failure>& failure) {
+KOKKOS_FUNCTION std::pair<T, T> toms748_solve(
+    F f, const T& ax, const T& bx, const T& fax, const T& fbx, Tol tol,
+    const simd::mask_type_t<T>& ignore_filter, size_t& max_iter,
+    std::optional<Toms748Failure>& failure) {
+  ASSERT_DEVICE_CAPABLE(F, T, Tol);
   // Main entry point and logic for Toms Algorithm 748
   // root finder.
   if (UNLIKELY(simd::any(ax > bx))) {
@@ -392,7 +397,7 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
 
   size_t count = max_iter;
   // mu is a parameter in the algorithm that must be between (0, 1).
-  static const T mu = 0.5f;
+  const T mu = static_cast<T>(0.5);
 
   // initialise a, b and fa, fb:
   T a = ax;
@@ -491,7 +496,7 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
     // fa, fb, fd, and fe are distinct, should that not be the case
     // then variable prof will get set to true, and we'll end up
     // taking a quadratic step instead.
-    static const T min_diff = std::numeric_limits<T>::min() * 32;
+    const T min_diff = std::numeric_limits<T>::min() * 32;
     bool prof =
         simd::any(((fabs(fa - fb) < min_diff) or (fabs(fa - fd) < min_diff) or
                    (fabs(fa - fe) < min_diff) or (fabs(fb - fd) < min_diff) or
@@ -592,15 +597,15 @@ std::pair<T, T> toms748_solve(F f, const T& ax, const T& bx, const T& fax,
 
 // The root find of `toms748`. Returns the final bracket of the root and sets
 // `failure` if the root find failed.
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool AssumeFinite, typename Function, typename T>
-std::pair<T, T> toms748_bracket(std::optional<Toms748Failure>& failure,
-                                const Function& f, const T lower_bound,
-                                const T upper_bound, const T f_at_lower_bound,
-                                const T f_at_upper_bound,
-                                const simd::scalar_type_t<T> absolute_tolerance,
-                                const simd::scalar_type_t<T> relative_tolerance,
-                                const size_t max_iterations,
-                                const simd::mask_type_t<T> ignore_filter) {
+KOKKOS_FUNCTION std::pair<T, T> toms748_bracket(
+    std::optional<Toms748Failure>& failure, const Function& f,
+    const T lower_bound, const T upper_bound, const T f_at_lower_bound,
+    const T f_at_upper_bound, const simd::scalar_type_t<T> absolute_tolerance,
+    const simd::scalar_type_t<T> relative_tolerance,
+    const size_t max_iterations, const simd::mask_type_t<T> ignore_filter) {
+  ASSERT_DEVICE_CAPABLE(Function, T);
   ASSERT(relative_tolerance >
              std::numeric_limits<simd::scalar_type_t<T>>::epsilon(),
          "The relative tolerance is too small. Got "
@@ -664,8 +669,9 @@ std::pair<T, T> toms748_bracket(std::optional<Toms748Failure>& failure,
  * Call `value()` on the result to get the root and error if the root find
  * failed.
  */
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool AssumeFinite = false, typename Function, typename T>
-Expected<T, Toms748Error<T>> toms748(
+KOKKOS_FUNCTION Expected<T, Toms748Error<T>> toms748(
     const Function& f, const T lower_bound, const T upper_bound,
     const T f_at_lower_bound, const T f_at_upper_bound,
     const simd::scalar_type_t<T> absolute_tolerance,
@@ -673,6 +679,7 @@ Expected<T, Toms748Error<T>> toms748(
     const size_t max_iterations = 100,
     const simd::mask_type_t<T> ignore_filter =
         static_cast<simd::mask_type_t<T>>(0)) {
+  ASSERT_DEVICE_CAPABLE(Function, T);
   std::optional<Toms748Failure> failure{};
   const auto result = toms748_detail::toms748_bracket<AssumeFinite>(
       failure, f, lower_bound, upper_bound, f_at_lower_bound, f_at_upper_bound,
@@ -696,14 +703,16 @@ Expected<T, Toms748Error<T>> toms748(
  * runtime but will cause bugs if the numbers aren't finite. It also assumes
  * that products like `fa * fb` are also finite.
  */
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <bool AssumeFinite = false, typename Function, typename T>
-Expected<T, Toms748Error<T>> toms748(
+KOKKOS_FUNCTION Expected<T, Toms748Error<T>> toms748(
     const Function& f, const T lower_bound, const T upper_bound,
     const simd::scalar_type_t<T> absolute_tolerance,
     const simd::scalar_type_t<T> relative_tolerance,
     const size_t max_iterations = 100,
     const simd::mask_type_t<T> ignore_filter =
         static_cast<simd::mask_type_t<T>>(0)) {
+  ASSERT_DEVICE_CAPABLE(Function, T);
   return toms748<AssumeFinite>(
       f, lower_bound, upper_bound, f(lower_bound), f(upper_bound),
       absolute_tolerance, relative_tolerance, max_iterations, ignore_filter);

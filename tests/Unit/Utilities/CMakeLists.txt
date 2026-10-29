@@ -60,6 +60,7 @@ if(SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
     Test_AlgorithmKokkos.cpp
     Test_ExpectedKokkos.cpp
+    Test_SimdKokkos.cpp
     )
 endif()
 

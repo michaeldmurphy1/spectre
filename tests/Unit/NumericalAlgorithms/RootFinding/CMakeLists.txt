@@ -10,6 +10,10 @@ set(LIBRARY_SOURCES
   Test_TOMS748.cpp
   )
 
+if(SPECTRE_KOKKOS)
+  list(APPEND LIBRARY_SOURCES Test_TOMS748Kokkos.cpp)
+endif()
+
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")
 
 target_link_libraries(

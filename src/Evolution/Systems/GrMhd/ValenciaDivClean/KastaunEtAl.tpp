@@ -9,7 +9,6 @@
 #include <exception>
 #include <limits>
 #include <optional>
-#include <stdexcept>
 #include <utility>
 
 #include "DataStructures/Tensor/Tensor.hpp"
@@ -165,7 +164,7 @@ class FunctionOfMu {
     }
   }
 
-  std::pair<double, double> root_bracket(
+  std::optional<std::pair<double, double>> root_bracket(
       double rest_mass_density_times_lorentz_factor, double absolute_tolerance,
       double relative_tolerance, size_t max_iterations) const;
 
@@ -189,7 +188,7 @@ class FunctionOfMu {
 };
 
 template <bool EnforcePhysicality, typename EosType>
-std::pair<double, double>
+std::optional<std::pair<double, double>>
 FunctionOfMu<EnforcePhysicality, EosType>::root_bracket(
     const double rest_mass_density_times_lorentz_factor,
     const double absolute_tolerance, const double relative_tolerance,
@@ -204,12 +203,15 @@ FunctionOfMu<EnforcePhysicality, EosType>::root_bracket(
     // be the upper bound for the master function bracket
     const auto auxiliary_function =
         AuxiliaryFunction{h_0_, r_squared_, b_squared_, r_dot_b_squared_};
-    upper_bound =
+    const auto root =
         // NOLINTNEXTLINE(clang-analyzer-core)
         RootFinder::toms748(auxiliary_function, lower_bound, upper_bound,
                             absolute_tolerance, relative_tolerance,
-                            max_iterations)
-            .value();
+                            max_iterations);
+    if (not root.has_value()) {
+      return std::nullopt;
+    }
+    upper_bound = root.value();
   }
 
   // Determine if the corner case discussed in Appendix A occurs where the
@@ -221,7 +223,7 @@ FunctionOfMu<EnforcePhysicality, EosType>::root_bracket(
   // for atmosphere is smaller than the minimum density of the EOS, i.e. this
   // point should have been flagged as atmosphere
   if (rest_mass_density_times_lorentz_factor < rho_min) {
-    throw std::runtime_error("Density too small for EOS");
+    return std::nullopt;
   }
 
   const double mu_b = upper_bound;
@@ -236,10 +238,8 @@ FunctionOfMu<EnforcePhysicality, EosType>::root_bracket(
   // If this is being triggered, the only possible recourse would be
   // to limit the rest mass density to the maximum value allowed by the
   // EOS.  This seems questionable, so it is treated as an inversion failure.
-  // The exception should be caught by the try-catch in apply() which will
-  // return std::nullopt
   if (rest_mass_density_times_lorentz_factor / w_hat > rho_max) {
-    throw std::runtime_error("Density too big for EOS");
+    return std::nullopt;
   }
 
   if (rest_mass_density_times_lorentz_factor / w_hat < rho_min) {
@@ -247,11 +247,13 @@ FunctionOfMu<EnforcePhysicality, EosType>::root_bracket(
     const auto corner_case_function =
         CornerCaseFunction{rest_mass_density_times_lorentz_factor / rho_max,
                            r_squared_, b_squared_, r_dot_b_squared_};
-    lower_bound = std::max(
-        lower_bound, RootFinder::toms748(corner_case_function, lower_bound,
-                                         upper_bound, absolute_tolerance,
-                                         relative_tolerance, max_iterations)
-                         .value());
+    const auto root = RootFinder::toms748(corner_case_function, lower_bound,
+                                          upper_bound, absolute_tolerance,
+                                          relative_tolerance, max_iterations);
+    if (not root.has_value()) {
+      return std::nullopt;
+    }
+    lower_bound = std::max(lower_bound, root.value());
   }
 
   if (rho_max < rest_mass_density_times_lorentz_factor) {
@@ -259,14 +261,16 @@ FunctionOfMu<EnforcePhysicality, EosType>::root_bracket(
     const auto corner_case_function =
         CornerCaseFunction{rest_mass_density_times_lorentz_factor / rho_min,
                            r_squared_, b_squared_, r_dot_b_squared_};
-    upper_bound = std::min(
-        upper_bound, RootFinder::toms748(corner_case_function, lower_bound,
-                                         upper_bound, absolute_tolerance,
-                                         relative_tolerance, max_iterations)
-                         .value());
+    const auto root = RootFinder::toms748(corner_case_function, lower_bound,
+                                          upper_bound, absolute_tolerance,
+                                          relative_tolerance, max_iterations);
+    if (not root.has_value()) {
+      return std::nullopt;
+    }
+    upper_bound = std::min(upper_bound, root.value());
   }
 
-  return {lower_bound, upper_bound};
+  return std::pair{lower_bound, upper_bound};
 }
 
 template <bool EnforcePhysicality, typename EosType>
@@ -373,23 +377,30 @@ std::optional<PrimitiveRecoveryData> KastaunEtAl::apply(
     return std::nullopt;
   }
 
+  // Bracket for master function, see Sec. II.F
+  const auto bracket = f_of_mu.root_bracket(
+      rest_mass_density_times_lorentz_factor, absolute_tolerance_,
+      relative_tolerance_, max_iterations_);
+  if (not bracket.has_value()) {
+    return std::nullopt;
+  }
+
   // mu is 1 / (h W) see Equation (26)
   double one_over_specific_enthalpy_times_lorentz_factor =
       std::numeric_limits<double>::signaling_NaN();
   try {
-    // Bracket for master function, see Sec. II.F
-    const auto [lower_bound, upper_bound] = f_of_mu.root_bracket(
-        rest_mass_density_times_lorentz_factor, absolute_tolerance_,
-        relative_tolerance_, max_iterations_);
-
     // Try to recover primitves
-    one_over_specific_enthalpy_times_lorentz_factor =
+    const auto root =
         // NOLINTNEXTLINE(clang-analyzer-core)
-        RootFinder::toms748(f_of_mu, lower_bound, upper_bound,
+        RootFinder::toms748(f_of_mu, bracket->first, bracket->second,
                             absolute_tolerance_, relative_tolerance_,
-                            max_iterations_)
-            .value();
+                            max_iterations_);
+    if (not root.has_value()) {
+      return std::nullopt;
+    }
+    one_over_specific_enthalpy_times_lorentz_factor = root.value();
   } catch (std::exception& exception) {
+    // The EOS can throw, e.g. if a root find inside it fails
     return std::nullopt;
   }
 

@@ -6,6 +6,8 @@
 #include <ostream>
 #include <vector>
 
+#include "Utilities/Kokkos/KokkosMacros.hpp"
+
 namespace CaptureForError_detail {
 class CaptureForErrorBase {
  protected:
@@ -92,9 +94,15 @@ class CaptureForError : public CaptureForErrorBase {
  * and any subsequent changes to it will be reflected in the error
  * message.
  */
+#ifdef SPECTRE_KOKKOS_DEVICE_PASS
+// Errors in device code can't print captures, so this is a no-op when compiling
+// for a GPU
+#define CAPTURE_FOR_ERROR(var) static_cast<void>(var)
+#else
 #define CAPTURE_FOR_ERROR(var)                                          \
   const CaptureForError_detail::CaptureForError CAPTURE_FOR_ERROR_NAME( \
       __LINE__)(#var, var)
+#endif
 
 /*!
  * \brief Stream all objects currently captured by CaptureForError.

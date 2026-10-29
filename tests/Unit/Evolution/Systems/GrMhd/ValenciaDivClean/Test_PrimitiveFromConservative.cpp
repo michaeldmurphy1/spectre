@@ -29,6 +29,7 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/MakeWithValue.hpp"
+#include "Utilities/PrettyType.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace grmhd::ValenciaDivClean::PrimitiveRecoverySchemes {
@@ -407,6 +408,81 @@ void test_primitive_from_conservative_known(const DataVector& used_for_size) {
   }
 }
 
+// Primitive recovery must report failures instead of throwing when
+// `ErrorOnFailure` is false, here for a negative `tilde_tau`
+template <typename OrderedListOfPrimitiveRecoverySchemes,
+          bool EnforcePhysicality>
+void test_failure(const double magnetic_field) {
+  CAPTURE(pretty_type::get_name<OrderedListOfPrimitiveRecoverySchemes>());
+  CAPTURE(EnforcePhysicality);
+  CAPTURE(magnetic_field);
+  const DataVector used_for_size(1);
+  const EquationsOfState::Equilibrium3D ideal_fluid{
+      EquationsOfState::IdealFluid<true>(4.0 / 3.0)};
+  auto spatial_metric =
+      make_with_value<tnsr::ii<DataVector, 3>>(used_for_size, 0.0);
+  auto inv_spatial_metric =
+      make_with_value<tnsr::II<DataVector, 3>>(used_for_size, 0.0);
+  for (size_t i = 0; i < 3; ++i) {
+    spatial_metric.get(i, i) = 1.0;
+    inv_spatial_metric.get(i, i) = 1.0;
+  }
+  const auto sqrt_det_spatial_metric =
+      make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  const auto tilde_d = make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  const auto tilde_ye = make_with_value<Scalar<DataVector>>(used_for_size, 0.1);
+  const auto tilde_tau =
+      make_with_value<Scalar<DataVector>>(used_for_size, -10.0);
+  const auto tilde_s =
+      make_with_value<tnsr::i<DataVector, 3>>(used_for_size, 0.0);
+  auto tilde_b = make_with_value<tnsr::I<DataVector, 3>>(used_for_size, 0.0);
+  get<0>(tilde_b) = magnetic_field;
+  const auto tilde_phi =
+      make_with_value<Scalar<DataVector>>(used_for_size, 0.0);
+
+  auto rest_mass_density =
+      make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  auto electron_fraction =
+      make_with_value<Scalar<DataVector>>(used_for_size, 0.1);
+  auto specific_internal_energy =
+      make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  auto spatial_velocity =
+      make_with_value<tnsr::I<DataVector, 3>>(used_for_size, 0.0);
+  auto magnetic_field_result =
+      make_with_value<tnsr::I<DataVector, 3>>(used_for_size, 0.0);
+  auto divergence_cleaning_field =
+      make_with_value<Scalar<DataVector>>(used_for_size, 0.0);
+  auto lorentz_factor = make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  auto pressure = make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  auto temperature = make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  CHECK_FALSE(grmhd::ValenciaDivClean::PrimitiveFromConservative<
+              OrderedListOfPrimitiveRecoverySchemes, false>::
+                  template apply<EnforcePhysicality>(
+                      make_not_null(&rest_mass_density),
+                      make_not_null(&electron_fraction),
+                      make_not_null(&specific_internal_energy),
+                      make_not_null(&spatial_velocity),
+                      make_not_null(&magnetic_field_result),
+                      make_not_null(&divergence_cleaning_field),
+                      make_not_null(&lorentz_factor), make_not_null(&pressure),
+                      make_not_null(&temperature), tilde_d, tilde_ye, tilde_tau,
+                      tilde_s, tilde_b, tilde_phi, spatial_metric,
+                      inv_spatial_metric, sqrt_det_spatial_metric, ideal_fluid,
+                      grmhd::ValenciaDivClean::PrimitiveFromConservativeOptions(
+                          0.0, 0.0, 1.0e4)));
+}
+
+// The Kastaun schemes recover physical primitives from these conservatives if
+// `EnforcePhysicality` is true
+template <typename Scheme, bool RecoversIfEnforcingPhysicality>
+void test_failures() {
+  for (const double magnetic_field : {0.0, 1.0}) {
+    test_failure<tmpl::list<Scheme>, false>(magnetic_field);
+    if constexpr (not RecoversIfEnforcingPhysicality) {
+      test_failure<tmpl::list<Scheme>, true>(magnetic_field);
+    }
+  }
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.PrimitiveFromConservative",
@@ -532,4 +608,15 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.PrimitiveFromConservative",
       wrapped_3d_polytrope_hot, make_with_value<Scalar<DataVector>>(dv, 1e-4),
       make_with_value<Scalar<DataVector>>(dv, 1e-1),
       make_with_value<Scalar<DataVector>>(dv, 1.0), &generator);
+
+  test_failures<grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAl,
+                true>();
+  test_failures<
+      grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAlHydro,
+      true>();
+  test_failures<grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::NewmanHamlin,
+                false>();
+  test_failures<
+      grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::PalenzuelaEtAl,
+      false>();
 }

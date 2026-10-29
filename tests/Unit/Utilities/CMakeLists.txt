@@ -17,6 +17,7 @@ set(LIBRARY_SOURCES
   Test_ContainerHelpers.cpp
   Test_DereferenceWrapper.cpp
   Test_EqualWithinRoundoff.cpp
+  Test_Expected.cpp
   Test_FileSystem.cpp
   Test_Formaline.cpp
   Test_FractionUtilities.cpp
@@ -55,7 +56,10 @@ set(LIBRARY_SOURCES
   )
 
 if(SPECTRE_KOKKOS)
-  list(APPEND LIBRARY_SOURCES Test_AlgorithmKokkos.cpp)
+  list(APPEND LIBRARY_SOURCES
+    Test_AlgorithmKokkos.cpp
+    Test_ExpectedKokkos.cpp
+    )
 endif()
 
 add_subdirectory(Autodiff)

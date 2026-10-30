@@ -17,6 +17,7 @@
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "PointwiseFunctions/Hydro/TagsDeclarations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
@@ -362,35 +363,13 @@ class FixToAtmosphere {
   }
   /// @}
 
+  /// \brief The `DeviceView` that fixes the variables at a single grid point.
+  struct DeviceView;
+
+  /// The `DeviceView` with the options of this variable fixer.
+  DeviceView device_view() const;
+
  private:
-  template <size_t ThermodynamicDim>
-  void set_density_to_atmosphere(
-      gsl::not_null<Scalar<DataVector>*> rest_mass_density,
-      gsl::not_null<Scalar<DataVector>*> specific_internal_energy,
-      gsl::not_null<Scalar<DataVector>*> temperature,
-      gsl::not_null<Scalar<DataVector>*> pressure,
-      const Scalar<DataVector>& electron_fraction,
-      const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
-          equation_of_state,
-      size_t grid_index) const;
-
-  void apply_velocity_limit(
-      gsl::not_null<tnsr::I<DataVector, Dim, Frame::Inertial>*>
-          spatial_velocity,
-      gsl::not_null<Scalar<DataVector>*> lorentz_factor,
-      const Scalar<DataVector>& rest_mass_density,
-      const tnsr::ii<DataVector, Dim, Frame::Inertial>& spatial_metric,
-      size_t grid_index) const;
-
-  template <size_t ThermodynamicDim>
-  bool apply_kappa_limit(
-      gsl::not_null<Scalar<DataVector>*> temperature,
-      const Scalar<DataVector>& rest_mass_density,
-      const Scalar<DataVector>& electron_fraction,
-      const EquationsOfState::EquationOfState<true, ThermodynamicDim>&
-          equation_of_state,
-      size_t grid_index) const;
-
   template <size_t SpatialDim>
   // NOLINTNEXTLINE(readability-redundant-declaration)
   friend bool operator==(const FixToAtmosphere<SpatialDim>& lhs,
@@ -400,6 +379,80 @@ class FixToAtmosphere {
   double density_cutoff_{std::numeric_limits<double>::signaling_NaN()};
   std::optional<VelocityLimitingOptions> velocity_limiting_{std::nullopt};
   std::optional<KappaLimitingOptions> kappa_limiting_{std::nullopt};
+};
+
+/*!
+ * \brief Fixes the primitive variables at a single grid point like
+ * `FixToAtmosphere`.
+ *
+ * Holds the options of `FixToAtmosphere` without `std::optional`s, so it is
+ * trivially copyable and can be passed to Kokkos kernels. The `DataVector`
+ * overload of `FixToAtmosphere` applies `fix_at_point` at every grid point, so
+ * the host and the device use the same code. The definitions of the member
+ * functions are in `FixToAtmosphere.tpp`.
+ */
+template <size_t Dim>
+struct FixToAtmosphere<Dim>::DeviceView {
+  /// \brief Fix the primitive variables at a single grid point.
+  ///
+  /// The `equation_of_state` is the EOS on the host or its `DeviceView`.
+  ///
+  /// If `root_find_failed` is `nullptr`, a failed root find in the kappa
+  /// limiting is an error like in the `DataVector` overload of
+  /// `FixToAtmosphere`. Otherwise it is set to `true` and the function returns
+  /// early, leaving the variables partially fixed, so the failure can be
+  /// reported on the host (see `fix_to_atmosphere_on_device`).
+  template <size_t ThermodynamicDim, typename EosType>
+  KOKKOS_FUNCTION void fix_at_point(
+      gsl::not_null<double*> rest_mass_density,
+      gsl::not_null<double*> specific_internal_energy,
+      gsl::not_null<tnsr::I<double, Dim, Frame::Inertial>*> spatial_velocity,
+      gsl::not_null<double*> lorentz_factor, gsl::not_null<double*> pressure,
+      gsl::not_null<double*> temperature, double electron_fraction,
+      const tnsr::ii<double, Dim, Frame::Inertial>& spatial_metric,
+      const EosType& equation_of_state, bool* root_find_failed) const;
+
+  double density_of_atmosphere{std::numeric_limits<double>::signaling_NaN()};
+  double density_cutoff{std::numeric_limits<double>::signaling_NaN()};
+  /// Whether the `velocity_limiting` is applied
+  bool limit_velocity{false};
+  VelocityLimitingOptions velocity_limiting{};
+  /// Whether the `kappa_limiting` is applied
+  bool limit_kappa{false};
+  /// The `KappaLimitingOptions` without the `std::optional` minimum temperature
+  struct KappaLimiting {
+    double density_lower_bound{std::numeric_limits<double>::signaling_NaN()};
+    double eplison_kappa_minus{std::numeric_limits<double>::signaling_NaN()};
+    double density_upper_bound{std::numeric_limits<double>::signaling_NaN()};
+    double epsilon_kappa_max{std::numeric_limits<double>::signaling_NaN()};
+    /// Whether the minimum temperature is the lower bound of the EOS
+    bool min_temperature_from_eos{true};
+    double min_temperature{std::numeric_limits<double>::signaling_NaN()};
+    bool limit_above_density_upper_bound{false};
+  };
+  KappaLimiting kappa_limiting{};
+
+ private:
+  template <size_t ThermodynamicDim, typename EosType>
+  KOKKOS_FUNCTION void set_density_to_atmosphere(
+      gsl::not_null<double*> rest_mass_density,
+      gsl::not_null<double*> specific_internal_energy,
+      gsl::not_null<double*> temperature, gsl::not_null<double*> pressure,
+      double electron_fraction, const EosType& equation_of_state) const;
+
+  KOKKOS_FUNCTION void apply_velocity_limit(
+      gsl::not_null<tnsr::I<double, Dim, Frame::Inertial>*> spatial_velocity,
+      gsl::not_null<double*> lorentz_factor, double rest_mass_density,
+      const tnsr::ii<double, Dim, Frame::Inertial>& spatial_metric) const;
+
+  // Returns whether the temperature was changed. See `fix_at_point` for
+  // `root_find_failed`.
+  template <size_t ThermodynamicDim, typename EosType>
+  KOKKOS_FUNCTION bool apply_kappa_limit(gsl::not_null<double*> temperature,
+                                         double rest_mass_density,
+                                         double electron_fraction,
+                                         const EosType& equation_of_state,
+                                         bool* root_find_failed) const;
 };
 
 template <size_t Dim>

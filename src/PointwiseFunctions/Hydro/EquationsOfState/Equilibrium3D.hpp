@@ -225,6 +225,18 @@ struct Equilibrium3DFunctions {
     ASSERT_DEVICE_CAPABLE(Underlying);
     return underlying.specific_enthalpy_lower_bound();
   }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  KOKKOS_FUNCTION double temperature_lower_bound() const {
+    ASSERT_DEVICE_CAPABLE(Underlying);
+    return underlying.temperature_lower_bound();
+  }
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  KOKKOS_FUNCTION double temperature_upper_bound() const {
+    ASSERT_DEVICE_CAPABLE(Underlying);
+    return underlying.temperature_upper_bound();
+  }
 };
 }  // namespace detail
 

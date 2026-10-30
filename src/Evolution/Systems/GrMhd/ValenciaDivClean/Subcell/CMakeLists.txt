@@ -5,6 +5,7 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   FixConservativesAndComputePrims.cpp
+  FixToAtmosphere.cpp
   NeighborPackagedData.cpp
   PrimitiveGhostData.cpp
   PrimsAfterRollback.cpp
@@ -23,6 +24,7 @@ spectre_target_headers(
   ComputeFluxes.hpp
   ComputeFluxesKokkos.hpp
   FixConservativesAndComputePrims.hpp
+  FixToAtmosphere.hpp
   NeighborPackagedData.hpp
   PrimitiveGhostData.hpp
   PrimsAfterRollback.hpp

@@ -9,6 +9,7 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   FixToAtmosphere.cpp
+  FixToAtmosphereOnDeviceKokkos.cpp
   LimitLorentzFactor.cpp
   ParameterizedDeleptonization.cpp
   RadiallyFallingFloor.cpp
@@ -21,6 +22,7 @@ spectre_target_headers(
   Actions.hpp
   FixToAtmosphere.hpp
   FixToAtmosphere.tpp
+  FixToAtmosphereOnDeviceKokkos.hpp
   LimitLorentzFactor.hpp
   ParameterizedDeleptonization.hpp
   RadiallyFallingFloor.hpp

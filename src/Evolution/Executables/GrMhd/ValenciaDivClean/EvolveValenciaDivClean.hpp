@@ -71,6 +71,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/QuadrupoleFormula.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/SetVariablesNeededFixingToFalse.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/FixConservativesAndComputePrims.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/FixToAtmosphere.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/NeighborPackagedData.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/PrimitiveGhostData.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/PrimsAfterRollback.hpp"
@@ -495,8 +496,7 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
           grmhd::ValenciaDivClean::subcell::ResizeAndComputePrims<
               ordered_list_of_primitive_recovery_schemes>>,
       parameterized_deleptonization,
-      VariableFixing::Actions::FixVariables<
-          VariableFixing::FixToAtmosphere<volume_dim>>,
+      Actions::MutateApply<grmhd::ValenciaDivClean::subcell::FixToAtmosphere>,
       Actions::UpdateConservatives,
 
       Actions::Label<evolution::dg::subcell::Actions::Labels::EndOfSolvers>>>;

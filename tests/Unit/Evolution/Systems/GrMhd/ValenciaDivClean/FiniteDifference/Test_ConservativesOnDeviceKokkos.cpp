@@ -6,17 +6,21 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <random>
 #include <vector>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/Tensor/EagerMath/Determinant.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ConservativesOnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ReconstructWork.tpp"
+#include "Evolution/VariableFixing/FixToAtmosphere.hpp"
+#include "Evolution/VariableFixing/FixToAtmosphereOnDeviceKokkos.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
@@ -35,10 +39,12 @@
 namespace {
 namespace EoS = EquationsOfState;
 using grmhd::ValenciaDivClean::fd::face_tags;
+using Fixer = VariableFixing::FixToAtmosphere<3>;
 constexpr size_t num_points = 50;
 constexpr size_t num_face_sets = 3;
 
-// Random reconstructed primitive variables and metric on a face
+// Random reconstructed primitive variables and metric on a face. The rest mass
+// density spans the atmosphere and the limiting densities of the fixer below.
 Variables<face_tags> random_face(const gsl::not_null<std::mt19937*> generator) {
   const DataVector used_for_size(num_points);
   std::uniform_real_distribution<> dist_log_density(-13.0, 0.0);
@@ -81,6 +87,9 @@ Variables<face_tags> random_face(const gsl::not_null<std::mt19937*> generator) {
   }
   get(get<gr::Tags::SqrtDetSpatialMetric<DataVector>>(face)) =
       sqrt(get(determinant(spatial_metric)));
+  // Values before the computation, which the fix to the atmosphere can read
+  get(get<hydro::Tags::SpecificInternalEnergy<DataVector>>(face)) = 1.0;
+  get(get<hydro::Tags::Pressure<DataVector>>(face)) = 1.0;
   return face;
 }
 
@@ -119,24 +128,33 @@ std::vector<Variables<face_tags>> to_host(
 // The batched version computes the variables on each face set like
 // `compute_conservatives_for_reconstruction` on the host
 void check_against_host(const gsl::not_null<std::mt19937*> generator,
-                        const EoS::EquationOfState<true, 3>& eos) {
+                        const EoS::EquationOfState<true, 3>& eos,
+                        const std::optional<Fixer>& fixer) {
+  CAPTURE(fixer.has_value());
   std::vector<Variables<face_tags>> faces{};
   for (size_t e = 0; e < num_face_sets; ++e) {
     faces.push_back(random_face(generator));
   }
   auto batch = to_device(faces);
-  grmhd::ValenciaDivClean::fd::compute_conservatives_on_device(
-      Kokkos::DefaultExecutionSpace{}, make_not_null(&batch), eos);
+  const std::optional<Fixer::DeviceView> fixer_view =
+      fixer.has_value() ? std::optional{fixer->device_view()} : std::nullopt;
+  const PointwiseStatusSummary status =
+      grmhd::ValenciaDivClean::fd::compute_conservatives_on_device(
+          Kokkos::DefaultExecutionSpace{}, make_not_null(&batch), eos,
+          fixer_view.has_value() ? &*fixer_view : nullptr);
+  CHECK(status.number_of_failures == 0);
   const auto computed = to_host(batch);
 
   for (size_t e = 0; e < num_face_sets; ++e) {
     CAPTURE(e);
     auto expected = faces[e];
     grmhd::ValenciaDivClean::fd::compute_conservatives_for_reconstruction(
-        make_not_null(&expected), eos, nullptr);
+        make_not_null(&expected), eos, fixer.has_value() ? &*fixer : nullptr);
     // The device code may be compiled differently (e.g. with fused
-    // multiply-adds)
-    const Approx custom_approx = Approx::custom().epsilon(1.e-12).scale(1.0);
+    // multiply-adds), and the kappa limiting of the fix to the atmosphere
+    // finds the temperature with a root finder to a relative tolerance of
+    // 1e-13
+    const Approx custom_approx = Approx::custom().epsilon(1.e-10).scale(1.0);
     tmpl::for_each<face_tags>([&](auto tag_v) {
       using Tag = tmpl::type_from<decltype(tag_v)>;
       CAPTURE(pretty_type::get_name<Tag>());
@@ -159,6 +177,47 @@ void check_against_host(const gsl::not_null<std::mt19937*> generator,
   }
 }
 
+// The options don't allow a negative minimum temperature, but with one the
+// kappa limiting fails (see the test of `fix_to_atmosphere_on_device`). The
+// failure is reported, the variables at the failed grid point are left as they
+// were before the fix, and the error shows them.
+void check_atmosphere_failure(const gsl::not_null<std::mt19937*> generator) {
+  auto fixer_view = Fixer{
+      1.e-12, 3.e-12, std::nullopt,
+      Fixer::KappaLimitingOptions{
+          3.e-12, 1.e-3, 3.e-11, 0.01, std::nullopt,
+          false}}.device_view();
+  fixer_view.kappa_limiting.min_temperature_from_eos = false;
+  fixer_view.kappa_limiting.min_temperature = -1.0;
+  const EoS::Equilibrium3D<EoS::IdealFluid<true>> eos{
+      EoS::IdealFluid<true>{5.0 / 3.0}};
+  auto face = random_face(generator);
+  // Far above the limiting densities except at one grid point
+  get(get<hydro::Tags::RestMassDensity<DataVector>>(face)) = 0.5;
+  get(get<hydro::Tags::RestMassDensity<DataVector>>(face))[7] = 1.e-11;
+  auto batch = to_device({face, face});
+  const PointwiseStatusSummary status =
+      grmhd::ValenciaDivClean::fd::compute_conservatives_on_device(
+          Kokkos::DefaultExecutionSpace{}, make_not_null(&batch), eos,
+          &fixer_view);
+  CHECK(status.number_of_failures == 2);
+  CHECK(status.first_failed_element == 0);
+  CHECK(status.first_failed_grid_point == 7);
+  const auto computed = to_host(batch);
+  CHECK(get(get<hydro::Tags::RestMassDensity<DataVector>>(computed[1]))[7] ==
+        1.e-11);
+  CHECK(get(get<hydro::Tags::Temperature<DataVector>>(computed[1]))[7] ==
+        get(get<hydro::Tags::Temperature<DataVector>>(face))[7]);
+  CHECK(get(get<hydro::Tags::Pressure<DataVector>>(computed[1]))[7] == 1.0);
+  CHECK_THROWS_WITH(VariableFixing::error_fixing_to_atmosphere_on_device(
+                        Kokkos::DefaultExecutionSpace{}, status, batch,
+                        "the faces in direction 0 of [B0,(L0I0)]"),
+                    Catch::Matchers::ContainsSubstring(
+                        "failed on the device at 2 of 100 grid points. At the "
+                        "first one, grid point 7 of the faces in direction 0 "
+                        "of [B0,(L0I0)], before fixing:"));
+}
+
 void check_error_without_device_view(
     const gsl::not_null<std::mt19937*> generator) {
   const EoS::Equilibrium3D<EoS::HybridEos<EoS::PolytropicFluid<true>>> eos{
@@ -167,7 +226,7 @@ void check_error_without_device_view(
   auto batch = to_device({random_face(generator)});
   CHECK_THROWS_WITH(
       grmhd::ValenciaDivClean::fd::compute_conservatives_on_device(
-          Kokkos::DefaultExecutionSpace{}, make_not_null(&batch), eos),
+          Kokkos::DefaultExecutionSpace{}, make_not_null(&batch), eos, nullptr),
       Catch::Matchers::ContainsSubstring(
           "has no DeviceView, so it can't be evaluated on the device"));
 }
@@ -181,10 +240,16 @@ SPECTRE_TEST_CASE(
       EoS::IdealFluid<true>{5.0 / 3.0}};
   const EoS::Barotropic3D<EoS::PolytropicFluid<true>> polytrope{
       EoS::PolytropicFluid<true>{100.0, 2.0}};
+  const Fixer fixer{1.e-12, 3.e-12,
+                    Fixer::VelocityLimitingOptions{0.0, 1.e-4, 3.e-12, 1.e-11},
+                    Fixer::KappaLimitingOptions{3.e-12, 1.e-3, 3.e-11, 0.01,
+                                                std::nullopt, false}};
   for (const auto* const eos :
        {static_cast<const EoS::EquationOfState<true, 3>*>(&ideal_fluid),
         static_cast<const EoS::EquationOfState<true, 3>*>(&polytrope)}) {
-    check_against_host(make_not_null(&generator), *eos);
+    check_against_host(make_not_null(&generator), *eos, std::nullopt);
+    check_against_host(make_not_null(&generator), *eos, fixer);
   }
+  check_atmosphere_failure(make_not_null(&generator));
   check_error_without_device_view(make_not_null(&generator));
 }

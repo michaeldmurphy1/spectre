@@ -195,6 +195,12 @@ struct Barotropic3DFunctions {
     ASSERT_DEVICE_CAPABLE(Underlying);
     return underlying.specific_enthalpy_lower_bound();
   }
+
+  KOKKOS_FUNCTION double temperature_lower_bound() const { return 0.0; }
+
+  KOKKOS_FUNCTION double temperature_upper_bound() const {
+    return std::numeric_limits<double>::max();
+  }
 };
 }  // namespace detail
 

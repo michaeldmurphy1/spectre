@@ -90,13 +90,13 @@ Kokkos::Array<double, number_of_functions<Dim>> evaluate_all(
 // Evaluates the bounds of an EOS (the EOS on the host or its `DeviceView`) at
 // the thermodynamic arguments `args`, of which only the rest mass density (in
 // 2D and 3D) and the electron fraction (in 3D) are used. Not all `DeviceView`s
-// have a temperature bound yet.
+// have temperature bounds yet.
 SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
 template <size_t Dim, bool WithTemperature, typename Eos>
-KOKKOS_FUNCTION Kokkos::Array<double, 8> evaluate_bounds_impl(
+KOKKOS_FUNCTION Kokkos::Array<double, 9> evaluate_bounds_impl(
     const Eos& eos, const Kokkos::Array<double, Dim>& args) {
   ASSERT_DEVICE_CAPABLE(Eos);
-  Kokkos::Array<double, 8> results{};
+  Kokkos::Array<double, 9> results{};
   results[0] = eos.rest_mass_density_lower_bound();
   results[1] = eos.rest_mass_density_upper_bound();
   results[2] = eos.specific_enthalpy_lower_bound();
@@ -114,20 +114,21 @@ KOKKOS_FUNCTION Kokkos::Array<double, 8> evaluate_bounds_impl(
   }
   if constexpr (WithTemperature) {
     results[7] = eos.temperature_lower_bound();
+    results[8] = eos.temperature_upper_bound();
   }
   return results;
 }
 
 template <size_t Dim, bool WithTemperature, typename Eos>
   requires tt::is_device_capable_v<Eos>
-KOKKOS_FUNCTION Kokkos::Array<double, 8> evaluate_bounds(
+KOKKOS_FUNCTION Kokkos::Array<double, 9> evaluate_bounds(
     const Eos& eos, const Kokkos::Array<double, Dim>& args) {
   return evaluate_bounds_impl<Dim, WithTemperature>(eos, args);
 }
 
 template <size_t Dim, bool WithTemperature, typename Eos>
   requires(not tt::is_device_capable_v<Eos>)
-Kokkos::Array<double, 8> evaluate_bounds(
+Kokkos::Array<double, 9> evaluate_bounds(
     const Eos& eos, const Kokkos::Array<double, Dim>& args) {
   return evaluate_bounds_impl<Dim, WithTemperature>(eos, args);
 }
@@ -232,14 +233,14 @@ void check_device_view_bounds(
                                                   gsl::at(ranges, d).second);
     args[d] = distribution(generator);
   }
-  const Kokkos::View<double*> results("bounds", 8);
+  const Kokkos::View<double*> results("bounds", 9);
   Kokkos::parallel_for(
       "check_device_view_bounds", Kokkos::RangePolicy<>(0, 1),
       KOKKOS_LAMBDA(const int /*unused*/) {
         const auto bounds =
             DeviceView_detail::evaluate_bounds<dim, with_temperature>(
                 device_view, args);
-        for (size_t i = 0; i < 8; ++i) {
+        for (size_t i = 0; i < 9; ++i) {
           results(i) = bounds[i];
         }
       });
@@ -247,7 +248,7 @@ void check_device_view_bounds(
       Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, results);
   const auto expected =
       DeviceView_detail::evaluate_bounds<dim, with_temperature>(eos, args);
-  for (size_t i = 0; i < 8; ++i) {
+  for (size_t i = 0; i < 9; ++i) {
     CAPTURE(i);
     CHECK(host_results(i) == approx(expected[i]));
   }

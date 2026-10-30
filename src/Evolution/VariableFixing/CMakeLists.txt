@@ -20,6 +20,7 @@ spectre_target_headers(
   HEADERS
   Actions.hpp
   FixToAtmosphere.hpp
+  FixToAtmosphere.tpp
   LimitLorentzFactor.hpp
   ParameterizedDeleptonization.hpp
   RadiallyFallingFloor.hpp

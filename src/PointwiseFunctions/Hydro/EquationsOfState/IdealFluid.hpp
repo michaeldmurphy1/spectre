@@ -329,6 +329,10 @@ struct IdealFluid<IsRelativistic>::DeviceView {
     return min_temperature;
   }
 
+  KOKKOS_FUNCTION double temperature_upper_bound() const {
+    return std::numeric_limits<double>::max();
+  }
+
  private:
   KOKKOS_FUNCTION double specific_entropy(
       const double rest_mass_density,

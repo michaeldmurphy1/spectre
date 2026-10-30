@@ -3,12 +3,17 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <cstddef>
+#include <optional>
+
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
+#include "Evolution/VariableFixing/FixToAtmosphere.tpp"
 #include "Framework/TestCreation.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/Equilibrium3D.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/IdealFluid.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
 #include "Utilities/Gsl.hpp"
@@ -265,6 +270,49 @@ void test_variable_fixer() {
   test_variable_fixer<Dim>(fixer_from_options, ideal_fluid, false, 1.0e-3);
   test_variable_fixer<Dim>(fixer_from_options_klo, ideal_fluid, true, 1.0e-3);
 }
+// The options don't allow a negative minimum temperature, but with one the
+// pressure at the minimum temperature is negative. Then the maximum pressure of
+// the kappa limiting, which is a factor larger than one times that, is smaller
+// and doesn't bound the root, so the kappa limiting fails.
+void test_kappa_limiting_failure() {
+  using Fixer = VariableFixing::FixToAtmosphere<3>;
+  auto fixer_view = Fixer{
+      1.e-12, 3.e-12, std::nullopt,
+      Fixer::KappaLimitingOptions{
+          3.e-12, 1.e-3, 3.e-11, 0.01, std::nullopt,
+          false}}.device_view();
+  fixer_view.kappa_limiting.min_temperature_from_eos = false;
+  fixer_view.kappa_limiting.min_temperature = -1.0;
+  const EquationsOfState::Equilibrium3D<EquationsOfState::IdealFluid<true>> eos{
+      EquationsOfState::IdealFluid<true>{5.0 / 3.0}};
+  const auto eos_view = eos.device_view();
+  const auto fix = [&fixer_view, &eos_view](bool* const root_find_failed) {
+    double rest_mass_density = 1.e-11;
+    double specific_internal_energy = 1.0;
+    tnsr::I<double, 3, Frame::Inertial> spatial_velocity{0.0};
+    double lorentz_factor = 1.0;
+    double pressure = 1.0;
+    double temperature = 1.0;
+    tnsr::ii<double, 3, Frame::Inertial> spatial_metric{0.0};
+    for (size_t d = 0; d < 3; ++d) {
+      spatial_metric.get(d, d) = 1.0;
+    }
+    fixer_view.template fix_at_point<3>(
+        make_not_null(&rest_mass_density),
+        make_not_null(&specific_internal_energy),
+        make_not_null(&spatial_velocity), make_not_null(&lorentz_factor),
+        make_not_null(&pressure), make_not_null(&temperature), 0.1,
+        spatial_metric, eos_view, root_find_failed);
+  };
+  CHECK_THROWS_WITH(
+      fix(nullptr),
+      Catch::Matchers::ContainsSubstring(
+          "The root for the pressure function while applying the kappa "
+          "limiting strategy was not bound."));
+  bool root_find_failed = false;
+  fix(&root_find_failed);
+  CHECK(root_find_failed);
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.Evolution.VariableFixing.FixToAtmosphere",
@@ -273,4 +321,5 @@ SPECTRE_TEST_CASE("Unit.Evolution.VariableFixing.FixToAtmosphere",
   test_variable_fixer<1>();
   test_variable_fixer<2>();
   test_variable_fixer<3>();
+  test_kappa_limiting_failure();
 }

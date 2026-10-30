@@ -13,11 +13,14 @@
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/DeviceArgumentsKokkos.hpp"
+#include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
+#include "Evolution/VariableFixing/FixToAtmosphere.hpp"
+#include "Evolution/VariableFixing/FixToAtmosphere.tpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/VisitDeviceView.hpp"
@@ -28,9 +31,14 @@
 
 namespace grmhd::ValenciaDivClean::fd {
 namespace {
+// The `FixToAtmosphere::DeviceView` as an argument of the kernel
+struct FixToAtmosphereView : db::SimpleTag {
+  using type = VariableFixing::FixToAtmosphere<3>::DeviceView;
+};
+
 // The variables on a face at a grid point, computed like
 // `compute_conservatives_for_reconstruction`
-template <typename DeviceView>
+template <typename DeviceView, bool FixAtmosphere>
 struct FaceVariablesAtGridPoint {
   using return_tags =
       tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
@@ -42,7 +50,7 @@ struct FaceVariablesAtGridPoint {
                  hydro::Tags::SpatialVelocityOneForm<DataVector, 3>,
                  Tags::TildeD, Tags::TildeYe, Tags::TildeTau, Tags::TildeS<>,
                  Tags::TildeB<>, Tags::TildePhi>;
-  using argument_tags =
+  using argument_tags = tmpl::append<
       tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
                  hydro::Tags::SpecificInternalEnergy<DataVector>,
                  hydro::Tags::Pressure<DataVector>,
@@ -53,9 +61,12 @@ struct FaceVariablesAtGridPoint {
                  hydro::Tags::DivergenceCleaningField<DataVector>,
                  gr::Tags::SpatialMetric<DataVector, 3>,
                  gr::Tags::SqrtDetSpatialMetric<DataVector>,
-                 EquationsOfState::Tags::DeviceView<DeviceView>>;
+                 EquationsOfState::Tags::DeviceView<DeviceView>>,
+      tmpl::conditional_t<FixAtmosphere, tmpl::list<FixToAtmosphereView>,
+                          tmpl::list<>>>;
 
-  KOKKOS_FUNCTION static void apply(
+  template <typename... FixToAtmosphere>
+  KOKKOS_FUNCTION static PointwiseStatus apply(
       const gsl::not_null<Scalar<double>*> rest_mass_density,
       const gsl::not_null<Scalar<double>*> specific_internal_energy,
       const gsl::not_null<tnsr::I<double, 3, Frame::Inertial>*>
@@ -81,7 +92,8 @@ struct FaceVariablesAtGridPoint {
       const tnsr::I<double, 3, Frame::Inertial>& magnetic_field,
       const Scalar<double>& divergence_cleaning_field,
       const tnsr::ii<double, 3, Frame::Inertial>& spatial_metric,
-      const Scalar<double>& sqrt_det_spatial_metric, const DeviceView& eos) {
+      const Scalar<double>& sqrt_det_spatial_metric, const DeviceView& eos,
+      const FixToAtmosphere&... fix_to_atmosphere) {
     // 1. The Lorentz factor and the spatial velocity
     get(*lorentz_factor) = 0.0;
     for (size_t i = 0; i < 3; ++i) {
@@ -104,48 +116,106 @@ struct FaceVariablesAtGridPoint {
     *pressure = previous_pressure;
     *temperature = reconstructed_temperature;
 
-    // 2. The spatial velocity one-form
+    // 2. The fix to the atmosphere
+    if constexpr (sizeof...(FixToAtmosphere) == 1) {
+      const tnsr::I<double, 3, Frame::Inertial> unfixed_spatial_velocity =
+          *spatial_velocity;
+      const Scalar<double> unfixed_lorentz_factor = *lorentz_factor;
+      bool root_find_failed = false;
+      (fix_to_atmosphere.template fix_at_point<3>(
+           make_not_null(&get(*rest_mass_density)),
+           make_not_null(&get(*specific_internal_energy)), spatial_velocity,
+           make_not_null(&get(*lorentz_factor)), make_not_null(&get(*pressure)),
+           make_not_null(&get(*temperature)), get(electron_fraction),
+           spatial_metric, eos, &root_find_failed),
+       ...);
+      if (root_find_failed) {
+        // `fix_at_point` may have partially fixed the variables
+        *rest_mass_density = reconstructed_rest_mass_density;
+        *specific_internal_energy = previous_specific_internal_energy;
+        *spatial_velocity = unfixed_spatial_velocity;
+        *lorentz_factor = unfixed_lorentz_factor;
+        *pressure = previous_pressure;
+        *temperature = reconstructed_temperature;
+        return {false, true};
+      }
+    }
+
+    // 3. The spatial velocity one-form
     raise_or_lower_index(spatial_velocity_one_form, *spatial_velocity,
                          spatial_metric);
 
-    // 3. The specific internal energy and pressure
+    // 4. The specific internal energy and pressure
     *specific_internal_energy =
         eos.specific_internal_energy_from_density_and_temperature(
             *rest_mass_density, *temperature, electron_fraction);
     *pressure = eos.pressure_from_density_and_temperature(
         *rest_mass_density, *temperature, electron_fraction);
 
-    // 4. The conserved variables
+    // 5. The conserved variables
     ConservativeFromPrimitive::apply(
         tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi,
         *rest_mass_density, electron_fraction, *specific_internal_energy,
         *pressure, *spatial_velocity, *lorentz_factor, magnetic_field,
         sqrt_det_spatial_metric, spatial_metric, divergence_cleaning_field);
+    return {false, false};
   }
 };
 }  // namespace
 
-void compute_conservatives_on_device(
+PointwiseStatusSummary compute_conservatives_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
     const gsl::not_null<BatchedVariables<face_tags>*> faces,
-    const EquationsOfState::EquationOfState<true, 3>& eos) {
+    const EquationsOfState::EquationOfState<true, 3>& eos,
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* const
+        fix_to_atmosphere) {
+  PointwiseStatusSummary status{};
   EquationsOfState::visit_device_view(eos, [&](const auto& device_view) {
-    using Function =
-        FaceVariablesAtGridPoint<std::decay_t<decltype(device_view)>>;
-    // The variables are both arguments and results. This is safe because the
-    // arguments at a grid point are read before the results there are
-    // written.
-    apply_pointwise_on_device<Function>(
-        exec, faces, typename Function::return_tags{},
-        typename Function::argument_tags{},
-        [&]<typename... ArgumentTags>(tmpl::list<ArgumentTags...> /*meta*/) {
-          // The last argument is the EOS
-          return make_device_arguments<
-              ArgumentTags..., tmpl::back<typename Function::argument_tags>>(
-              exec, get<::Tags::BatchView<ArgumentTags>>(*faces)...,
-              device_view);
-        }(tmpl::pop_back<typename Function::argument_tags>{}));
+    using DeviceView = std::decay_t<decltype(device_view)>;
+    const auto apply = [&]<bool FixAtmosphere>(
+                           std::bool_constant<FixAtmosphere> /*meta*/,
+                           const auto&... fix_view) {
+      using Function = FaceVariablesAtGridPoint<DeviceView, FixAtmosphere>;
+      // The variables are both arguments and results. This is safe because
+      // the arguments at a grid point are read before the results there are
+      // written.
+      status = apply_pointwise_on_device<Function>(
+          exec, faces, typename Function::return_tags{},
+          typename Function::argument_tags{},
+          [&]<typename... ArgumentTags>(tmpl::list<ArgumentTags...> /*meta*/) {
+            return make_device_arguments<ArgumentTags...>(
+                exec,
+                get<::Tags::BatchView<
+                    hydro::Tags::RestMassDensity<DataVector>>>(*faces),
+                get<::Tags::BatchView<
+                    hydro::Tags::SpecificInternalEnergy<DataVector>>>(*faces),
+                get<::Tags::BatchView<hydro::Tags::Pressure<DataVector>>>(
+                    *faces),
+                get<::Tags::BatchView<hydro::Tags::Temperature<DataVector>>>(
+                    *faces),
+                get<::Tags::BatchView<
+                    hydro::Tags::ElectronFraction<DataVector>>>(*faces),
+                get<::Tags::BatchView<
+                    hydro::Tags::LorentzFactorTimesSpatialVelocity<DataVector,
+                                                                   3>>>(*faces),
+                get<::Tags::BatchView<
+                    hydro::Tags::MagneticField<DataVector, 3>>>(*faces),
+                get<::Tags::BatchView<
+                    hydro::Tags::DivergenceCleaningField<DataVector>>>(*faces),
+                get<::Tags::BatchView<gr::Tags::SpatialMetric<DataVector, 3>>>(
+                    *faces),
+                get<::Tags::BatchView<
+                    gr::Tags::SqrtDetSpatialMetric<DataVector>>>(*faces),
+                device_view, fix_view...);
+          }(typename Function::argument_tags{}));
+    };
+    if (fix_to_atmosphere != nullptr) {
+      apply(std::true_type{}, *fix_to_atmosphere);
+    } else {
+      apply(std::false_type{});
+    }
   });
+  return status;
 }
 }  // namespace grmhd::ValenciaDivClean::fd
 #endif  // SPECTRE_KOKKOS

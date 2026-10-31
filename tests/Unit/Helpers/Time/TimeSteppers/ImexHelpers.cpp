@@ -15,6 +15,7 @@
 #include "Time/Slab.hpp"
 #include "Time/Time.hpp"
 #include "Time/TimeStepId.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Time/TimeSteppers/ImexTimeStepper.hpp"
 
 namespace TimeStepperTestUtils::imex {
@@ -58,6 +59,7 @@ void check_convergence_order(const ImexTimeStepper& stepper,
       // This system is simple enough that we can do the implicit
       // solve analytically.
 
+      const double explicit_y = y;
       stepper.add_inhomogeneous_implicit_terms(make_not_null(&y),
                                                implicit_history, step_size);
 
@@ -68,6 +70,18 @@ void check_convergence_order(const ImexTimeStepper& stepper,
       });
       const double weight =
           stepper.implicit_weight(implicit_history2, step_size);
+
+      {
+        const auto coefficients = stepper.implicit_coefficients(
+            TimeSteppers::HistoryTimes(implicit_history2), step_size);
+        CHECK(coefficients.inhomogeneous.accumulate);
+        double y_from_coefficients = explicit_y;
+        TimeSteppers::apply_history_linear_combination(
+            make_not_null(&y_from_coefficients), implicit_history,
+            coefficients.inhomogeneous);
+        CHECK(y_from_coefficients == approx(y));
+        CHECK(coefficients.weight == weight);
+      }
 
       y /= 1.0 + 2.0 * weight;
       stepper.clean_history(make_not_null(&implicit_history));

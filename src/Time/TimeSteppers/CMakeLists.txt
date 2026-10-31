@@ -11,6 +11,7 @@ spectre_target_sources(
   ClassicalRungeKutta4.cpp
   DormandPrince5.cpp
   Heun2.cpp
+  HistoryCoefficients.cpp
   ImexRungeKutta.cpp
   LtsError.cpp
   Rk3HesthavenSsp.cpp
@@ -37,6 +38,7 @@ spectre_target_headers(
   DormandPrince5.hpp
   Factory.hpp
   Heun2.hpp
+  HistoryCoefficients.hpp
   ImexRungeKutta.hpp
   ImexTimeStepper.hpp
   LtsError.hpp

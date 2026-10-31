@@ -11,6 +11,7 @@ set(LIBRARY_SOURCES
   TimeSteppers/Test_DormandPrince5.cpp
   TimeSteppers/Test_Factory.cpp
   TimeSteppers/Test_Heun2.cpp
+  TimeSteppers/Test_HistoryCoefficients.cpp
   TimeSteppers/Test_Rk3HesthavenSsp.cpp
   TimeSteppers/Test_Rk3Kennedy.cpp
   TimeSteppers/Test_Rk3Owren.cpp

@@ -58,6 +58,10 @@ class ImexRungeKutta : public virtual RungeKutta,
 
   virtual const ImplicitButcherTableau& implicit_butcher_tableau() const = 0;
 
+  ImplicitCoefficients implicit_coefficients(
+      const HistoryTimes& implicit_history,
+      const TimeDelta& time_step) const override;
+
  private:
   template <typename T>
   void add_inhomogeneous_implicit_terms_impl(

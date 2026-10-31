@@ -10,6 +10,7 @@
 #include "DataStructures/TaggedVariant.hpp"
 #include "Time/StepperErrorEstimate.hpp"
 #include "Time/TimeStepId.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 
@@ -74,6 +75,23 @@ LtsError::order() const {
 [[noreturn]] bool LtsError::neighbor_data_required(
     const double /*dense_output_time*/,
     const TimeStepId& /*neighbor_data_id*/) const {
+  gts_error();
+}
+
+[[noreturn]] StepCoefficients LtsError::step_coefficients(
+    const HistoryTimes& /*history*/, const TimeDelta& /*time_step*/) const {
+  gts_error();
+}
+
+[[noreturn]] StepCoefficients LtsError::step_coefficients(
+    const HistoryTimes& /*history*/, const TimeDelta& /*time_step*/,
+    const StepperErrorTolerances& /*tolerances*/) const {
+  gts_error();
+}
+
+[[noreturn]] std::optional<HistoryLinearCombination>
+LtsError::dense_output_coefficients(const HistoryTimes& /*history*/,
+                                    const double /*time*/) const {
   gts_error();
 }
 

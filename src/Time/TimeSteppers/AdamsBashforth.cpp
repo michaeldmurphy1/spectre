@@ -26,6 +26,7 @@
 #include "Time/TimeStepId.hpp"
 #include "Time/TimeSteppers/AdamsCoefficients.hpp"
 #include "Time/TimeSteppers/AdamsLts.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Utilities/Algorithm.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
@@ -148,6 +149,114 @@ double evaluate_error(
   return largest_stepper_error(*history.back().value, *scratch, tolerances);
 }
 }  // namespace
+
+namespace {
+HistoryLinearCombination error_combination(
+    const HistoryTimes& history,
+    const adams_coefficients::OrderVector<double>& higher_order_coefficients,
+    const adams_coefficients::OrderVector<double>& lower_order_coefficients) {
+  auto error_coefficients = higher_order_coefficients;
+  for (size_t i = 0; i < lower_order_coefficients.size(); ++i) {
+    error_coefficients[i + 1] -= lower_order_coefficients[i];
+  }
+
+  HistoryLinearCombination result{};
+  for (size_t i = 0; i < error_coefficients.size(); ++i) {
+    result.add_term(HistoryTerm::Record::Step, history.steps.size() - 1 - i,
+                    HistoryTerm::Field::Derivative,
+                    error_coefficients[error_coefficients.size() - 1 - i]);
+  }
+  return result;
+}
+}  // namespace
+
+template <bool DenseOutput>
+StepCoefficients AdamsBashforth::step_coefficients_common(
+    const HistoryTimes& history,
+    const tmpl::conditional_t<DenseOutput, ApproximateTime, Time>& time,
+    const StepperErrorTolerances::Estimates estimates) const {
+  ASSERT(
+      not DenseOutput or estimates == StepperErrorTolerances::Estimates::None,
+      "Can't compute errors in dense output.");
+  const size_t integration_order = history.integration_order;
+  ASSERT(history.steps.size() >= integration_order,
+         "Incorrect data to take an order-"
+             << integration_order << " step.  Have " << history.steps.size()
+             << " times, need at least " << integration_order);
+  ASSERT(integration_order <= order_.value_or(maximum_order),
+         "Requested integration order higher than integrator order");
+
+  const auto& step_start = history.steps.back().step_time();
+  const size_t history_start = history.steps.size() - integration_order;
+  adams_coefficients::OrderVector<Time> control_times{};
+  for (size_t i = history_start; i < history.steps.size(); ++i) {
+    control_times.push_back(history.steps[i].step_time());
+  }
+  const auto update_coefficients = adams_coefficients::coefficients(
+      control_times.begin(), control_times.end(), step_start, time);
+
+  StepCoefficients result{};
+  if constexpr (not DenseOutput) {
+    if (estimates != StepperErrorTolerances::Estimates::None) {
+      auto lower_order_coefficients = adams_coefficients::coefficients(
+          control_times.begin() + 1, control_times.end(), step_start, time);
+      result.error.emplace();
+      result.error->step_time = step_start;
+      result.error->step_size = time - step_start;
+      result.error->order = integration_order - 1;
+      gsl::at(result.error->errors, integration_order - 1) = error_combination(
+          history, update_coefficients, lower_order_coefficients);
+
+      if (estimates == StepperErrorTolerances::Estimates::AllOrders) {
+        for (size_t error_order = integration_order - 2;
+             error_order != std::numeric_limits<size_t>::max(); --error_order) {
+          const auto higher_order_coefficients = lower_order_coefficients;
+          lower_order_coefficients = adams_coefficients::coefficients(
+              control_times.end() -
+                  static_cast<decltype(control_times)::difference_type>(
+                      error_order),
+              control_times.end(), step_start, time);
+          gsl::at(result.error->errors, error_order) = error_combination(
+              history, higher_order_coefficients, lower_order_coefficients);
+        }
+      }
+    }
+
+    // Dense output adds to the existing value, but the main step overwrites.
+    result.update.add_term(HistoryTerm::Record::Step, history.steps.size() - 1,
+                           HistoryTerm::Field::Value, 1.0);
+  } else {
+    result.update.accumulate = true;
+  }
+
+  for (size_t i = 0; i < update_coefficients.size(); ++i) {
+    result.update.add_term(HistoryTerm::Record::Step, history_start + i,
+                           HistoryTerm::Field::Derivative,
+                           update_coefficients[i]);
+  }
+  return result;
+}
+
+StepCoefficients AdamsBashforth::step_coefficients(
+    const HistoryTimes& history, const TimeDelta& time_step) const {
+  return step_coefficients(history, time_step, StepperErrorTolerances{});
+}
+
+StepCoefficients AdamsBashforth::step_coefficients(
+    const HistoryTimes& history, const TimeDelta& time_step,
+    const StepperErrorTolerances& tolerances) const {
+  const Time next_time = history.steps.back().step_time() + time_step;
+  return step_coefficients_common<false>(history, next_time,
+                                         tolerances.estimates);
+}
+
+std::optional<HistoryLinearCombination>
+AdamsBashforth::dense_output_coefficients(const HistoryTimes& history,
+                                          const double time) const {
+  return step_coefficients_common<true>(history, ApproximateTime{time},
+                                        StepperErrorTolerances::Estimates::None)
+      .update;
+}
 
 template <bool DenseOutput, typename T>
 std::optional<StepperErrorEstimate> AdamsBashforth::update_u_common(

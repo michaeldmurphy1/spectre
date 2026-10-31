@@ -80,6 +80,17 @@ class LtsError : public LtsTimeStepper {
       double dense_output_time,
       const TimeStepId& neighbor_data_id) const override;
 
+  [[noreturn]] StepCoefficients step_coefficients(
+      const HistoryTimes& history, const TimeDelta& time_step) const override;
+
+  [[noreturn]] StepCoefficients step_coefficients(
+      const HistoryTimes& history, const TimeDelta& time_step,
+      const StepperErrorTolerances& tolerances) const override;
+
+  [[noreturn]] std::optional<HistoryLinearCombination>
+  dense_output_coefficients(const HistoryTimes& history,
+                            double time) const override;
+
 #if defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-noreturn"

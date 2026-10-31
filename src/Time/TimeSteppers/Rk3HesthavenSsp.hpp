@@ -12,6 +12,7 @@
 #include "Time/StepperErrorEstimate.hpp"
 #include "Time/StepperErrorTolerances.hpp"
 #include "Time/TimeStepId.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
@@ -77,6 +78,16 @@ class Rk3HesthavenSsp : public TimeStepper {
 
   TimeStepId next_time_id_for_error(const TimeStepId& current_id,
                                     const TimeDelta& time_step) const override;
+
+  StepCoefficients step_coefficients(const HistoryTimes& history,
+                                     const TimeDelta& time_step) const override;
+
+  StepCoefficients step_coefficients(
+      const HistoryTimes& history, const TimeDelta& time_step,
+      const StepperErrorTolerances& tolerances) const override;
+
+  std::optional<HistoryLinearCombination> dense_output_coefficients(
+      const HistoryTimes& history, double time) const override;
 
  private:
   template <typename T>

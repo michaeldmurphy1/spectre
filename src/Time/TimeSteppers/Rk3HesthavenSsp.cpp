@@ -13,6 +13,7 @@
 #include "Time/StepperErrorEstimate.hpp"
 #include "Time/StepperErrorTolerances.hpp"
 #include "Time/Time.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
@@ -56,6 +57,97 @@ TimeStepId Rk3HesthavenSsp::next_time_id(const TimeStepId& current_id,
 TimeStepId Rk3HesthavenSsp::next_time_id_for_error(
     const TimeStepId& current_id, const TimeDelta& time_step) const {
   return next_time_id(current_id, time_step);
+}
+
+StepCoefficients Rk3HesthavenSsp::step_coefficients(
+    const HistoryTimes& history, const TimeDelta& time_step) const {
+  return step_coefficients(history, time_step, StepperErrorTolerances{});
+}
+
+StepCoefficients Rk3HesthavenSsp::step_coefficients(
+    const HistoryTimes& history, const TimeDelta& time_step,
+    const StepperErrorTolerances& tolerances) const {
+  ASSERT(
+      history.integration_order == get<Tags::FixedOrder>(order()),
+      "Fixed-order stepper cannot run at order " << history.integration_order);
+  using Record = HistoryTerm::Record;
+  using Field = HistoryTerm::Field;
+
+  const auto substep = history.at_step_start() ? 0 : history.substeps.size();
+  const size_t step = history.steps.size() - 1;
+  const double dt = time_step.value();
+
+  StepCoefficients result{};
+  if (substep == 2 and
+      tolerances.estimates != StepperErrorTolerances::Estimates::None) {
+    ASSERT(
+        tolerances.estimates == StepperErrorTolerances::Estimates::StepperOrder,
+        "Lower-order error estimates not provided");
+    result.error.emplace();
+    result.error->step_time = history.steps.back().step_time();
+    result.error->step_size = time_step;
+    result.error->order = 2;
+    auto& error = gsl::at(result.error->errors, 2).emplace();
+    error.add_term(Record::Step, step, Field::Value, -1.0 / 6.0);
+    error.add_term(Record::Substep, 1, Field::Value, 2.0 / 3.0);
+    error.add_term(Record::Substep, 1, Field::Derivative, 2.0 / 3.0 * dt);
+    error.add_term(Record::Substep, 0, Field::Value, -0.5);
+    error.add_term(Record::Substep, 0, Field::Derivative, -0.5 * dt);
+  }
+
+  auto& update = result.update;
+  switch (substep) {
+    case 0:
+      update.add_term(Record::Step, step, Field::Value, 1.0);
+      update.add_term(Record::Step, step, Field::Derivative, dt);
+      break;
+    case 1:
+      update.add_term(Record::Step, step, Field::Value, 0.75);
+      update.add_term(Record::Substep, 0, Field::Value, 0.25);
+      update.add_term(Record::Substep, 0, Field::Derivative, 0.25 * dt);
+      break;
+    case 2:
+      update.add_term(Record::Step, step, Field::Value, 1.0 / 3.0);
+      update.add_term(Record::Substep, 1, Field::Value, 2.0 / 3.0);
+      update.add_term(Record::Substep, 1, Field::Derivative, 2.0 / 3.0 * dt);
+      break;
+    default:
+      ERROR("Bad substep: " << history.substeps.size());
+  }
+
+  return result;
+}
+
+std::optional<HistoryLinearCombination>
+Rk3HesthavenSsp::dense_output_coefficients(const HistoryTimes& history,
+                                           const double time) const {
+  using Record = HistoryTerm::Record;
+  using Field = HistoryTerm::Field;
+
+  HistoryLinearCombination result{.accumulate = true};
+  const double step_start = history.steps.front().step_time().value();
+  if (time == step_start) {
+    return result;
+  }
+  if (history.substeps.size() != 2) {
+    return std::nullopt;
+  }
+  const double step_end = history.substeps.front().skip_to_step().value();
+  const double step_size = step_end - step_start;
+  const double output_fraction = (time - step_start) / step_size;
+  ASSERT(output_fraction >= 0.0, "Attempting dense output at time "
+                                     << time << ", but already progressed past "
+                                     << step_start);
+
+  result.add_term(Record::Step, 0, Field::Value,
+                  -(2.0 / 3.0) * square(output_fraction));
+  result.add_term(Record::Step, 0, Field::Derivative,
+                  output_fraction * (1.0 - output_fraction) * step_size);
+  result.add_term(Record::Substep, 1, Field::Value,
+                  (2.0 / 3.0) * square(output_fraction));
+  result.add_term(Record::Substep, 1, Field::Derivative,
+                  (2.0 / 3.0) * square(output_fraction) * step_size);
+  return result;
 }
 
 template <typename T>

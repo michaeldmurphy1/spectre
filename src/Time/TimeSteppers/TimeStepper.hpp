@@ -13,6 +13,7 @@
 #include "DataStructures/TaggedVariant.hpp"
 #include "Time/History.hpp"
 #include "Time/StepperErrorEstimate.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
@@ -206,6 +207,34 @@ class TimeStepper : public PUP::able {
     return dense_update_u_forward(&*make_math_wrapper(u), history.untyped(),
                                   time);
   }
+
+  /// \brief The coefficients for `update_u`.
+  ///
+  /// These only depend on the times in the history, so they can be
+  /// computed without the history data and applied by a generic
+  /// kernel, e.g., on a device.  Applying them with
+  /// `TimeSteppers::apply_step_coefficients` gives the same result as
+  /// `update_u`.  The overload without \p tolerances corresponds to
+  /// the `update_u` overload without tolerances, and so never
+  /// requests an error estimate and does not take any extra substeps
+  /// needed for error estimation.
+  /// @{
+  virtual TimeSteppers::StepCoefficients step_coefficients(
+      const TimeSteppers::HistoryTimes& history,
+      const TimeDelta& time_step) const = 0;
+  virtual TimeSteppers::StepCoefficients step_coefficients(
+      const TimeSteppers::HistoryTimes& history, const TimeDelta& time_step,
+      const StepperErrorTolerances& tolerances) const = 0;
+  /// @}
+
+  /// \brief The coefficients for `dense_update_u`.
+  ///
+  /// Returns `std::nullopt` if `dense_update_u` would return false.
+  /// The returned linear combination accumulates into the result,
+  /// which should be initialized as for `dense_update_u`.
+  virtual std::optional<TimeSteppers::HistoryLinearCombination>
+  dense_output_coefficients(const TimeSteppers::HistoryTimes& history,
+                            double time) const = 0;
 
   /// The convergence order of the stepper
   virtual variants::TaggedVariant<TimeSteppers::Tags::FixedOrder,

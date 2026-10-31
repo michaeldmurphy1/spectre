@@ -20,6 +20,7 @@ spectre_target_sources(
   PositivityPreservingAdaptiveOrder.cpp
   SecondPartialDerivatives.cpp
   Unlimited.cpp
+  VolumeViewKokkos.cpp
   Wcns5z.cpp
   )
 
@@ -47,15 +48,17 @@ spectre_target_headers(
   SecondPartialDerivatives.hpp
   SecondPartialDerivatives.tpp
   Unlimited.hpp
+  VolumeViewKokkos.hpp
   Wcns5z.hpp
   )
 
 target_link_libraries(
   ${LIBRARY}
   PUBLIC
+  DataStructures
+  SpectreKokkos
   Utilities
   PRIVATE
-  DataStructures
   DomainStructure
   ErrorHandling
   )

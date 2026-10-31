@@ -39,6 +39,7 @@ spectre_target_headers(
   Factory.hpp
   Heun2.hpp
   HistoryCoefficients.hpp
+  HistoryCoefficientsKokkos.hpp
   ImexRungeKutta.hpp
   ImexTimeStepper.hpp
   LtsError.hpp

@@ -1,8 +1,7 @@
 # Distributed under the MIT License.
 # See LICENSE.txt for details.
 
-set(LIBRARY_SOURCES
-  ${LIBRARY_SOURCES}
+set(TIME_STEPPERS_SOURCES
   TimeSteppers/Test_AdamsBashforth.cpp
   TimeSteppers/Test_AdamsCoefficients.cpp
   TimeSteppers/Test_AdamsLts.cpp
@@ -20,4 +19,14 @@ set(LIBRARY_SOURCES
   TimeSteppers/Test_Rk4Owren.cpp
   TimeSteppers/Test_Rk5Owren.cpp
   TimeSteppers/Test_Rk5Tsitouras.cpp
+  )
+
+if(SPECTRE_KOKKOS)
+  list(APPEND TIME_STEPPERS_SOURCES
+    TimeSteppers/Test_HistoryCoefficientsKokkos.cpp)
+endif()
+
+set(LIBRARY_SOURCES
+  ${LIBRARY_SOURCES}
+  ${TIME_STEPPERS_SOURCES}
   PARENT_SCOPE)

@@ -15,6 +15,7 @@ spectre_target_sources(
   Minmod.cpp
   MonotonicityPreserving5.cpp
   MonotonisedCentral.cpp
+  MonotonisedCentralKokkos.cpp
   NonUniform1D.cpp
   PartialDerivatives.cpp
   PositivityPreservingAdaptiveOrder.cpp
@@ -38,6 +39,7 @@ spectre_target_headers(
   Minmod.hpp
   MonotonicityPreserving5.hpp
   MonotonisedCentral.hpp
+  MonotonisedCentralKokkos.hpp
   NeighborDataAsVariables.hpp
   NonUniform1D.hpp
   PartialDerivatives.hpp
@@ -45,6 +47,7 @@ spectre_target_headers(
   PositivityPreservingAdaptiveOrder.hpp
   Reconstruct.hpp
   Reconstruct.tpp
+  ReconstructKokkos.hpp
   SecondPartialDerivatives.hpp
   SecondPartialDerivatives.tpp
   Unlimited.hpp

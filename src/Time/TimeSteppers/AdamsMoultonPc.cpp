@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <pup.h>
 
@@ -21,6 +22,7 @@
 #include "Time/StepperErrorTolerances.hpp"
 #include "Time/TimeSteppers/AdamsCoefficients.hpp"
 #include "Time/TimeSteppers/AdamsLts.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Utilities/Algorithm.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
@@ -205,6 +207,150 @@ double evaluate_error(
   return largest_stepper_error(*history.back().value, *scratch, tolerances);
 }
 }  // namespace
+
+namespace {
+HistoryLinearCombination error_combination(
+    const HistoryTimes& history,
+    const adams_coefficients::OrderVector<double>& corrector_coefficients,
+    const adams_coefficients::OrderVector<double>& predictor_coefficients) {
+  // We can't use the predictor value from the history because it
+  // might have been modified by variable fixing and filtering and
+  // such.
+  auto error_coefficients = corrector_coefficients;
+  for (size_t i = 0; i < predictor_coefficients.size(); ++i) {
+    error_coefficients[i] -= predictor_coefficients[i];
+  }
+
+  HistoryLinearCombination result{};
+  result.add_term(HistoryTerm::Record::Substep, 0,
+                  HistoryTerm::Field::Derivative, error_coefficients.back());
+  for (size_t i = 1; i < error_coefficients.size(); ++i) {
+    result.add_term(HistoryTerm::Record::Step, history.steps.size() - i,
+                    HistoryTerm::Field::Derivative,
+                    error_coefficients[error_coefficients.size() - 1 - i]);
+  }
+  return result;
+}
+}  // namespace
+
+template <bool Monotonic>
+template <bool DenseOutput>
+StepCoefficients AdamsMoultonPc<Monotonic>::step_coefficients_common(
+    const HistoryTimes& history,
+    const tmpl::conditional_t<DenseOutput, ApproximateTime, Time>& time,
+    const bool corrector,
+    const StepperErrorTolerances::Estimates estimates) const {
+  ASSERT(
+      not DenseOutput or estimates == StepperErrorTolerances::Estimates::None,
+      "Can't compute errors in dense output.");
+  const size_t integration_order = history.integration_order;
+  ASSERT(history.steps.size() >= integration_order - 1, "Insufficient history");
+  // Pass in whether to run the predictor or corrector even though we
+  // can compute it as a sanity check.
+  ASSERT(corrector != history.substeps.empty(),
+         "Applying predictor or corrector when expecting the other.");
+  ASSERT(corrector != history.at_step_start(), "Unexpected new data");
+
+  const auto& step_start = history.steps.back().step_time();
+  const size_t history_start = history.steps.size() - (integration_order - 1);
+  adams_coefficients::OrderVector<Time> control_times{};
+  for (size_t i = history_start; i < history.steps.size(); ++i) {
+    control_times.push_back(history.steps[i].step_time());
+  }
+  if (corrector) {
+    control_times.push_back(step_start + history.substeps.front().step_size());
+  }
+  const auto update_coefficients = adams_coefficients::coefficients(
+      control_times.begin(), control_times.end(), step_start, time);
+
+  StepCoefficients result{};
+  if constexpr (not DenseOutput) {
+    if (corrector and estimates != StepperErrorTolerances::Estimates::None) {
+      const auto predictor_coefficients = adams_coefficients::coefficients(
+          control_times.begin(), control_times.end() - 1, step_start, time);
+      result.error.emplace();
+      result.error->step_time = step_start;
+      result.error->step_size = time - step_start;
+      result.error->order = integration_order - 1;
+      gsl::at(result.error->errors, integration_order - 1) = error_combination(
+          history, update_coefficients, predictor_coefficients);
+
+      if (estimates == StepperErrorTolerances::Estimates::AllOrders) {
+        for (size_t error_order = integration_order - 2;
+             error_order != std::numeric_limits<size_t>::max(); --error_order) {
+          const auto error_corrector = adams_coefficients::coefficients(
+              control_times.end() -
+                  static_cast<decltype(control_times)::difference_type>(
+                      error_order + 1),
+              control_times.end(), step_start, time);
+          const auto error_predictor = adams_coefficients::coefficients(
+              control_times.end() -
+                  static_cast<decltype(control_times)::difference_type>(
+                      error_order + 1),
+              control_times.end() - 1, step_start, time);
+          gsl::at(result.error->errors, error_order) =
+              error_combination(history, error_corrector, error_predictor);
+        }
+      }
+    }
+
+    // Dense output adds to the existing value, but the main step overwrites.
+    result.update.add_term(HistoryTerm::Record::Step, history.steps.size() - 1,
+                           HistoryTerm::Field::Value, 1.0);
+  } else {
+    result.update.accumulate = true;
+  }
+
+  for (size_t i = 0; i < integration_order - 1; ++i) {
+    result.update.add_term(HistoryTerm::Record::Step, history_start + i,
+                           HistoryTerm::Field::Derivative,
+                           update_coefficients[i]);
+  }
+  if (corrector) {
+    result.update.add_term(HistoryTerm::Record::Substep, 0,
+                           HistoryTerm::Field::Derivative,
+                           update_coefficients.back());
+  }
+  return result;
+}
+
+template <bool Monotonic>
+StepCoefficients AdamsMoultonPc<Monotonic>::step_coefficients(
+    const HistoryTimes& history, const TimeDelta& time_step) const {
+  return step_coefficients(history, time_step, StepperErrorTolerances{});
+}
+
+template <bool Monotonic>
+StepCoefficients AdamsMoultonPc<Monotonic>::step_coefficients(
+    const HistoryTimes& history, const TimeDelta& time_step,
+    const StepperErrorTolerances& tolerances) const {
+  const Time next_time = history.steps.back().step_time() + time_step;
+  return step_coefficients_common<false>(
+      history, next_time, not history.at_step_start(), tolerances.estimates);
+}
+
+template <bool Monotonic>
+std::optional<HistoryLinearCombination>
+AdamsMoultonPc<Monotonic>::dense_output_coefficients(
+    const HistoryTimes& history, const double time) const {
+  if constexpr (Monotonic) {
+    if (not history.at_step_start()) {
+      return std::nullopt;
+    }
+    return step_coefficients_common<true>(
+               history, ApproximateTime{time}, false,
+               StepperErrorTolerances::Estimates::None)
+        .update;
+  } else {
+    if (history.at_step_start()) {
+      return std::nullopt;
+    }
+    return step_coefficients_common<true>(
+               history, ApproximateTime{time}, true,
+               StepperErrorTolerances::Estimates::None)
+        .update;
+  }
+}
 
 template <bool Monotonic>
 template <bool DenseOutput, typename T>

@@ -12,6 +12,7 @@
 #include "Time/StepperErrorEstimate.hpp"
 #include "Time/StepperErrorTolerances.hpp"
 #include "Time/Time.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
@@ -127,6 +128,165 @@ void update_u_impl_with_tableau(const gsl::not_null<T*> u,
   }
 }
 }  // namespace
+
+namespace {
+void add_substep_terms(const gsl::not_null<HistoryLinearCombination*> result,
+                       const HistoryTimes& history, const double dt,
+                       const std::vector<double>& substep_coefficients) {
+  if (substep_coefficients[0] != 0.0) {
+    result->add_term(HistoryTerm::Record::Step, history.steps.size() - 1,
+                     HistoryTerm::Field::Derivative,
+                     substep_coefficients[0] * dt);
+  }
+  for (size_t i = 1; i < substep_coefficients.size(); ++i) {
+    if (substep_coefficients[i] != 0.0) {
+      result->add_term(HistoryTerm::Record::Substep, i - 1,
+                       HistoryTerm::Field::Derivative,
+                       substep_coefficients[i] * dt);
+    }
+  }
+}
+
+HistoryLinearCombination step_error_coefficients(
+    const HistoryTimes& history, const double dt,
+    const RungeKutta::ButcherTableau& tableau) {
+  const auto& coefficients = tableau.result_coefficients;
+  const auto& error_coefficients = tableau.error_coefficients;
+
+  HistoryLinearCombination result{};
+  result.add_term(HistoryTerm::Record::Step, history.steps.size() - 1,
+                  HistoryTerm::Field::Derivative,
+                  (coefficients[0] - error_coefficients[0]) * dt);
+  const size_t num_coefficients =
+      std::max(coefficients.size(), error_coefficients.size());
+  for (size_t i = 1; i < num_coefficients; ++i) {
+    const double coefficient =
+        (i < coefficients.size() ? coefficients[i] : 0.0) -
+        (i < error_coefficients.size() ? error_coefficients[i] : 0.0);
+    if (coefficient != 0.0) {
+      result.add_term(HistoryTerm::Record::Substep, i - 1,
+                      HistoryTerm::Field::Derivative, coefficient * dt);
+    }
+  }
+  return result;
+}
+
+HistoryLinearCombination update_coefficients_with_tableau(
+    const HistoryTimes& history, const TimeDelta& time_step,
+    const RungeKutta::ButcherTableau& tableau,
+    const size_t number_of_substeps) {
+  const double dt = time_step.value();
+
+  HistoryLinearCombination result{};
+  result.add_term(HistoryTerm::Record::Step, history.steps.size() - 1,
+                  HistoryTerm::Field::Value, 1.0);
+  const auto substep = history.at_step_start() ? 0 : history.substeps.size();
+  if (substep == number_of_substeps - 1) {
+    add_substep_terms(make_not_null(&result), history, dt,
+                      tableau.result_coefficients);
+  } else if (substep < number_of_substeps - 1) {
+    add_substep_terms(make_not_null(&result), history, dt,
+                      tableau.substep_coefficients[substep]);
+  } else {
+    ERROR("Substep should be less than " << number_of_substeps << ", not "
+                                         << substep);
+  }
+  return result;
+}
+}  // namespace
+
+StepCoefficients RungeKutta::step_coefficients(
+    const HistoryTimes& history, const TimeDelta& time_step) const {
+  ASSERT(
+      history.integration_order == get<Tags::FixedOrder>(order()),
+      "Fixed-order stepper cannot run at order " << history.integration_order);
+  return {.update = update_coefficients_with_tableau(
+              history, time_step, butcher_tableau(), number_of_substeps()),
+          .error = std::nullopt};
+}
+
+StepCoefficients RungeKutta::step_coefficients(
+    const HistoryTimes& history, const TimeDelta& time_step,
+    const StepperErrorTolerances& tolerances) const {
+  ASSERT(
+      history.integration_order == get<Tags::FixedOrder>(order()),
+      "Fixed-order stepper cannot run at order " << history.integration_order);
+
+  const auto& tableau = butcher_tableau();
+  const auto number_of_substeps = number_of_substeps_for_error();
+  const size_t substep = history.at_step_start() ? 0 : history.substeps.size();
+  StepCoefficients result{};
+  if (substep == number_of_substeps - 1 and
+      tolerances.estimates != StepperErrorTolerances::Estimates::None) {
+    ASSERT(
+        tolerances.estimates == StepperErrorTolerances::Estimates::StepperOrder,
+        "Lower-order error estimates not provided");
+    const size_t error_order = get<Tags::FixedOrder>(order()) - 1;
+    result.error.emplace();
+    result.error->step_time = history.steps.back().step_time();
+    result.error->step_size = time_step;
+    result.error->order = error_order;
+    gsl::at(result.error->errors, error_order) =
+        step_error_coefficients(history, time_step.value(), tableau);
+  }
+
+  result.update = update_coefficients_with_tableau(history, time_step, tableau,
+                                                   number_of_substeps);
+  return result;
+}
+
+std::optional<HistoryLinearCombination> RungeKutta::dense_output_coefficients(
+    const HistoryTimes& history, const double time) const {
+  HistoryLinearCombination result{.accumulate = true};
+  const double step_start = history.steps.front().step_time().value();
+  if (time == step_start) {
+    return result;
+  }
+  const bool uses_fsal = dense_output_uses_fsal();
+  if ((uses_fsal and history.steps.size() == 1) or
+      history.substeps.size() + 1 < number_of_substeps()) {
+    return std::nullopt;
+  }
+  const double step_end = history.substeps.front().skip_to_step().value();
+  const evolution_less<double> before{step_end > step_start};
+  if (not before(time, step_end)) {
+    return std::nullopt;
+  }
+  const double step_size = step_end - step_start;
+  const double output_fraction = (time - step_start) / step_size;
+  ASSERT(output_fraction >= 0.0, "Attempting dense output at time "
+                                     << time << ", but already progressed past "
+                                     << step_start);
+
+  const auto& tableau = butcher_tableau();
+
+  const size_t number_of_substep_terms = tableau.result_coefficients.size();
+  for (size_t i = 0; i < number_of_substep_terms; ++i) {
+    const double coef =
+        evaluate_polynomial(tableau.dense_coefficients[i], output_fraction);
+    if (coef != 0.0) {
+      if (i == 0) {
+        result.add_term(HistoryTerm::Record::Step, 0,
+                        HistoryTerm::Field::Derivative, coef * step_size);
+      } else {
+        result.add_term(HistoryTerm::Record::Substep, i - 1,
+                        HistoryTerm::Field::Derivative, coef * step_size);
+      }
+    }
+  }
+
+  if (uses_fsal) {
+    // We use the derivative at the end of the step.
+    const double coef =
+        evaluate_polynomial(tableau.dense_coefficients.back(), output_fraction);
+    if (coef != 0.0) {
+      result.add_term(HistoryTerm::Record::Step, history.steps.size() - 1,
+                      HistoryTerm::Field::Derivative, coef * step_size);
+    }
+  }
+
+  return result;
+}
 
 template <typename T>
 void RungeKutta::update_u_impl(const gsl::not_null<T*> u,

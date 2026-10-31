@@ -12,14 +12,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <utility>
 
 #include "Time/EvolutionOrdering.hpp"
 #include "Time/History.hpp"
 #include "Time/Slab.hpp"
+#include "Time/StepperErrorEstimate.hpp"
 #include "Time/StepperErrorTolerances.hpp"
 #include "Time/Time.hpp"
 #include "Time/TimeStepId.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Utilities/Algorithm.hpp"
 #include "Utilities/ConstantExpressions.hpp"
@@ -27,6 +30,76 @@
 #include "Utilities/Gsl.hpp"
 
 namespace TimeStepperTestUtils {
+
+template <typename T>
+void check_step_coefficients(
+    const TimeStepper& stepper, const TimeSteppers::History<T>& history,
+    const TimeDelta& time_step,
+    const std::optional<StepperErrorTolerances>& tolerances,
+    const T& expected_u,
+    const std::optional<StepperErrorEstimate>& expected_error) {
+  // The coefficients may only depend on the times, so check that they
+  // don't change if the data does.
+  auto history_without_data = history;
+  history_without_data.map_entries([](const auto entry) {
+    *entry = std::numeric_limits<double>::signaling_NaN();
+  });
+  const TimeSteppers::HistoryTimes history_times(history_without_data);
+  const auto coefficients =
+      tolerances.has_value()
+          ? stepper.step_coefficients(history_times, time_step, *tolerances)
+          : stepper.step_coefficients(history_times, time_step);
+  T u = std::numeric_limits<double>::signaling_NaN();
+  const auto error = TimeSteppers::apply_step_coefficients(
+      make_not_null(&u), history, coefficients,
+      tolerances.value_or(StepperErrorTolerances{}));
+  CHECK_ITERABLE_APPROX(u, expected_u);
+  REQUIRE(error.has_value() == expected_error.has_value());
+  if (error.has_value()) {
+    CHECK(error->step_time == expected_error->step_time);
+    CHECK(error->step_size == expected_error->step_size);
+    CHECK(error->order == expected_error->order);
+    for (size_t i = 0; i < error->errors.size(); ++i) {
+      CAPTURE(i);
+      REQUIRE(gsl::at(error->errors, i).has_value() ==
+              gsl::at(expected_error->errors, i).has_value());
+      if (gsl::at(error->errors, i).has_value()) {
+        CHECK(*gsl::at(error->errors, i) ==
+              approx(*gsl::at(expected_error->errors, i)));
+      }
+    }
+  }
+}
+
+template void check_step_coefficients(
+    const TimeStepper& stepper, const TimeSteppers::History<double>& history,
+    const TimeDelta& time_step,
+    const std::optional<StepperErrorTolerances>& tolerances,
+    const double& expected_u,
+    const std::optional<StepperErrorEstimate>& expected_error);
+template void check_step_coefficients(
+    const TimeStepper& stepper,
+    const TimeSteppers::History<std::complex<double>>& history,
+    const TimeDelta& time_step,
+    const std::optional<StepperErrorTolerances>& tolerances,
+    const std::complex<double>& expected_u,
+    const std::optional<StepperErrorEstimate>& expected_error);
+
+void check_dense_output_coefficients(
+    const TimeStepper& stepper, const TimeSteppers::History<double>& history,
+    const double time, const double initial_u, const bool expected_success,
+    const double expected_u) {
+  const auto coefficients = stepper.dense_output_coefficients(
+      TimeSteppers::HistoryTimes(history), time);
+  REQUIRE(coefficients.has_value() == expected_success);
+  if (coefficients.has_value()) {
+    CHECK(coefficients->accumulate);
+    double u = initial_u;
+    TimeSteppers::apply_history_linear_combination(make_not_null(&u), history,
+                                                   *coefficients);
+    CHECK(u == approx(expected_u));
+  }
+}
 
 namespace {
 template <typename T, typename F>
@@ -43,6 +116,8 @@ void take_step(
     // There is no std::numeric_limits<complex>
     *y = std::numeric_limits<double>::signaling_NaN();
     stepper.update_u(y, *history, step_size);
+    check_step_coefficients(stepper, *history, step_size, std::nullopt, *y,
+                            std::nullopt);
     stepper.clean_history(history);
     time_id = stepper.next_time_id(time_id, step_size);
   }
@@ -76,7 +151,12 @@ void take_step_and_check_error(
                            step_size, StepperErrorTolerances{});
       CHECK(not error_without_tolerances.has_value());
       CHECK(y_without_tolerances == *y);
+      check_step_coefficients(stepper, *history, step_size,
+                              StepperErrorTolerances{}, y_without_tolerances,
+                              error_without_tolerances);
     }
+    check_step_coefficients(stepper, *history, step_size, tolerances, *y,
+                            error);
     stepper.clean_history(history);
     CAPTURE(substep);
     REQUIRE((substep == stepper.number_of_substeps_for_error() - 1) ==
@@ -390,7 +470,12 @@ void check_dense_output(
         if (before(time, (time_id.step_time() + step).value())) {
           // Make sure the initial value is preserved.
           y = 2.0 * *history.step_start(time).value;
-          if (stepper.dense_update_u(make_not_null(&y), history, time)) {
+          const double initial_y = y;
+          const bool dense_success =
+              stepper.dense_update_u(make_not_null(&y), history, time);
+          check_dense_output_coefficients(stepper, history, time, initial_y,
+                                          dense_success, y);
+          if (dense_success) {
             if (time != time_id.step_time().value()) {
               CHECK(stepper.dense_output_uses_fsal() ==
                     before(time, time_id.step_time().value()));
@@ -404,8 +489,12 @@ void check_dense_output(
         if (use_error_methods) {
           stepper.update_u(make_not_null(&y), history, step,
                            StepperErrorTolerances{});
+          check_step_coefficients(stepper, history, step,
+                                  StepperErrorTolerances{}, y, std::nullopt);
         } else {
           stepper.update_u(make_not_null(&y), history, step);
+          check_step_coefficients(stepper, history, step, std::nullopt, y,
+                                  std::nullopt);
         }
         stepper.clean_history(make_not_null(&history));
         time_id = use_error_methods

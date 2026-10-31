@@ -9,11 +9,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include "Time/History.hpp"
 #include "Time/Slab.hpp"
+#include "Time/StepperErrorEstimate.hpp"
+#include "Time/StepperErrorTolerances.hpp"
 #include "Time/Time.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
@@ -28,6 +31,27 @@ class TimeStepper;
 /// \endcond
 
 namespace TimeStepperTestUtils {
+
+/// Check that applying the coefficients from
+/// `TimeStepper::step_coefficients` reproduces the result \p
+/// expected_u and error estimate \p expected_error of the
+/// corresponding call to `TimeStepper::update_u`.  If \p tolerances
+/// is empty, the overloads without tolerances are compared.
+template <typename T>
+void check_step_coefficients(
+    const TimeStepper& stepper, const TimeSteppers::History<T>& history,
+    const TimeDelta& time_step,
+    const std::optional<StepperErrorTolerances>& tolerances,
+    const T& expected_u,
+    const std::optional<StepperErrorEstimate>& expected_error);
+
+/// Check that applying the coefficients from
+/// `TimeStepper::dense_output_coefficients` to \p initial_u reproduces
+/// the result \p expected_u of the corresponding call to
+/// `TimeStepper::dense_update_u`, which returned \p expected_success.
+void check_dense_output_coefficients(
+    const TimeStepper& stepper, const TimeSteppers::History<double>& history,
+    double time, double initial_u, bool expected_success, double expected_u);
 
 void check_multistep_properties(const TimeStepper& stepper);
 

@@ -8,6 +8,7 @@
 #include "DataStructures/MathWrapper.hpp"
 #include "Time/History.hpp"
 #include "Time/Time.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
@@ -134,6 +135,16 @@ class ImexTimeStepper : public virtual TimeStepper {
                          const TimeDelta& time_step) const {
     return implicit_weight_forward(implicit_history.untyped(), time_step);
   }
+
+  /// \brief The coefficients for `add_inhomogeneous_implicit_terms`
+  /// and the result of `implicit_weight`.
+  ///
+  /// These only depend on the times in the history, so they can be
+  /// computed without the history data and applied by a generic
+  /// kernel, e.g., on a device.
+  virtual TimeSteppers::ImplicitCoefficients implicit_coefficients(
+      const TimeSteppers::HistoryTimes& implicit_history,
+      const TimeDelta& time_step) const = 0;
 };
 
 /// \cond

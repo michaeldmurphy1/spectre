@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <iterator>
 #include <limits>
 #include <optional>
 #include <pup.h>
@@ -18,7 +17,6 @@
 #include "Time/BoundaryHistory.hpp"
 #include "Time/EvolutionOrdering.hpp"
 #include "Time/History.hpp"
-#include "Time/LargestStepperError.hpp"
 #include "Time/SelfStart.hpp"
 #include "Time/StepperErrorEstimate.hpp"
 #include "Time/StepperErrorTolerances.hpp"
@@ -121,34 +119,6 @@ void AdamsBashforth::pup(PUP::er& p) {
   LtsTimeStepper::pup(p);
   p | order_;
 }
-
-namespace {
-template <typename T>
-double evaluate_error(
-    const gsl::not_null<T*> scratch, const ConstUntypedHistory<T>& history,
-    const StepperErrorTolerances& tolerances,
-    const adams_coefficients::OrderVector<double>& higher_order_coefficients,
-    const adams_coefficients::OrderVector<double>& lower_order_coefficients) {
-  auto error_coefficients = higher_order_coefficients;
-  for (size_t i = 0; i < lower_order_coefficients.size(); ++i) {
-    error_coefficients[i + 1] -= lower_order_coefficients[i];
-  }
-
-  auto coefficient = error_coefficients.rbegin();
-  auto history_entry = history.rbegin();
-  *scratch = *coefficient * history_entry->derivative;
-  for (;;) {
-    ++history_entry;
-    ++coefficient;
-    if (coefficient == error_coefficients.rend()) {
-      break;
-    }
-    *scratch += *coefficient * history_entry->derivative;
-  }
-
-  return largest_stepper_error(*history.back().value, *scratch, tolerances);
-}
-}  // namespace
 
 namespace {
 HistoryLinearCombination error_combination(
@@ -258,82 +228,15 @@ AdamsBashforth::dense_output_coefficients(const HistoryTimes& history,
       .update;
 }
 
-template <bool DenseOutput, typename T>
-std::optional<StepperErrorEstimate> AdamsBashforth::update_u_common(
-    const gsl::not_null<T*> u, const ConstUntypedHistory<T>& history,
-    const tmpl::conditional_t<DenseOutput, ApproximateTime, Time>& time,
-    const StepperErrorTolerances& tolerances) const {
-  ASSERT(not DenseOutput or
-             tolerances.estimates == StepperErrorTolerances::Estimates::None,
-         "Can't compute errors in dense output.");
-  ASSERT(history.size() >= history.integration_order(),
-         "Incorrect data to take an order-" << history.integration_order()
-         << " step.  Have " << history.size() << " times, need at least "
-         << history.integration_order());
-  ASSERT(history.integration_order() <= order_.value_or(maximum_order),
-         "Requested integration order higher than integrator order");
-
-  const auto& step_start = history.back().time_step_id.step_time();
-  const auto history_start =
-      history.end() -
-      static_cast<typename ConstUntypedHistory<T>::difference_type>(
-          history.integration_order());
-  adams_coefficients::OrderVector<Time> control_times{};
-  std::transform(history_start, history.end(),
-                 std::back_inserter(control_times),
-                 [](const auto& r) { return r.time_step_id.step_time(); });
-  const auto update_coefficients = adams_coefficients::coefficients(
-      control_times.begin(), control_times.end(), step_start, time);
-
-  std::optional<StepperErrorEstimate> error{};
-  if constexpr (not DenseOutput) {
-    if (tolerances.estimates != StepperErrorTolerances::Estimates::None) {
-      auto lower_order_coefficients = adams_coefficients::coefficients(
-          control_times.begin() + 1, control_times.end(), step_start, time);
-      error.emplace(step_start, time - step_start,
-                    history.integration_order() - 1,
-                    evaluate_error(u, history, tolerances, update_coefficients,
-                                   lower_order_coefficients));
-
-      if (tolerances.estimates ==
-          StepperErrorTolerances::Estimates::AllOrders) {
-        for (size_t error_order = history.integration_order() - 2;
-             error_order != std::numeric_limits<size_t>::max();
-             --error_order) {
-          const auto higher_order_coefficients = lower_order_coefficients;
-          lower_order_coefficients = adams_coefficients::coefficients(
-              control_times.end() -
-                  static_cast<decltype(control_times)::difference_type>(
-                      error_order),
-              control_times.end(), step_start, time);
-          gsl::at(error->errors, error_order)
-              .emplace(evaluate_error(u, history, tolerances,
-                                      higher_order_coefficients,
-                                      lower_order_coefficients));
-        }
-      }
-    }
-
-    // Dense output adds to the existing value, but the main step overwrites.
-    *u = *history.back().value;
-  }
-
-  auto coefficient = update_coefficients.begin();
-  for (auto history_entry = history_start;
-       history_entry != history.end();
-       ++history_entry, ++coefficient) {
-    *u += *coefficient * history_entry->derivative;
-  }
-  return error;
-}
-
 template <typename T>
 std::optional<StepperErrorEstimate> AdamsBashforth::update_u_impl(
     const gsl::not_null<T*> u, const ConstUntypedHistory<T>& history,
     const TimeDelta& time_step,
     const StepperErrorTolerances& tolerances) const {
-  const Time next_time = history.back().time_step_id.step_time() + time_step;
-  return update_u_common<false>(u, history, next_time, tolerances);
+  return apply_step_coefficients(
+      u, history,
+      step_coefficients(HistoryTimes(history), time_step, tolerances),
+      tolerances);
 }
 
 template <typename T>
@@ -351,8 +254,12 @@ template <typename T>
 bool AdamsBashforth::dense_update_u_impl(const gsl::not_null<T*> u,
                                          const ConstUntypedHistory<T>& history,
                                          const double time) const {
-  update_u_common<true>(u, history, ApproximateTime{time},
-                        StepperErrorTolerances{});
+  const auto coefficients =
+      dense_output_coefficients(HistoryTimes(history), time);
+  if (not coefficients.has_value()) {
+    return false;
+  }
+  apply_history_linear_combination(u, history, *coefficients);
   return true;
 }
 

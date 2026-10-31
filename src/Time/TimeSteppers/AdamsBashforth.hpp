@@ -275,12 +275,6 @@ class AdamsBashforth : public LtsTimeStepper {
       const tmpl::conditional_t<DenseOutput, ApproximateTime, Time>& time,
       StepperErrorTolerances::Estimates estimates) const;
 
-  template <bool DenseOutput, typename T>
-  std::optional<StepperErrorEstimate> update_u_common(
-      gsl::not_null<T*> u, const ConstUntypedHistory<T>& history,
-      const tmpl::conditional_t<DenseOutput, ApproximateTime, Time>& time,
-      const StepperErrorTolerances& tolerances) const;
-
   template <typename T>
   std::optional<StepperErrorEstimate> update_u_impl(
       gsl::not_null<T*> u, const ConstUntypedHistory<T>& history,

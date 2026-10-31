@@ -15,6 +15,7 @@
 #include "Options/String.hpp"
 #include "Time/StepperErrorEstimate.hpp"
 #include "Time/StepperErrorTolerances.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Time/TimeSteppers/LtsTimeStepper.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
@@ -153,6 +154,16 @@ class AdamsMoultonPc : public LtsTimeStepper {
       double dense_output_time,
       const TimeStepId& neighbor_data_id) const override;
 
+  StepCoefficients step_coefficients(const HistoryTimes& history,
+                                     const TimeDelta& time_step) const override;
+
+  StepCoefficients step_coefficients(
+      const HistoryTimes& history, const TimeDelta& time_step,
+      const StepperErrorTolerances& tolerances) const override;
+
+  std::optional<HistoryLinearCombination> dense_output_coefficients(
+      const HistoryTimes& history, double time) const override;
+
   WRAPPED_PUPable_decl_template(AdamsMoultonPc);  // NOLINT
 
   explicit AdamsMoultonPc(CkMigrateMessage* /*unused*/) {}
@@ -160,6 +171,12 @@ class AdamsMoultonPc : public LtsTimeStepper {
   void pup(PUP::er& p) override;
 
  private:
+  template <bool DenseOutput>
+  StepCoefficients step_coefficients_common(
+      const HistoryTimes& history,
+      const tmpl::conditional_t<DenseOutput, ApproximateTime, Time>& time,
+      bool corrector, StepperErrorTolerances::Estimates estimates) const;
+
   template <bool DenseOutput, typename T>
   std::optional<StepperErrorEstimate> update_u_common(
       gsl::not_null<T*> u, const ConstUntypedHistory<T>& history,

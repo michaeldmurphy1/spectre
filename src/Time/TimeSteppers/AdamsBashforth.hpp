@@ -14,6 +14,7 @@
 #include "Time/StepperErrorEstimate.hpp"
 #include "Time/StepperErrorTolerances.hpp"
 #include "Time/TimeStepId.hpp"
+#include "Time/TimeSteppers/HistoryCoefficients.hpp"
 #include "Time/TimeSteppers/LtsTimeStepper.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/TMPL.hpp"
@@ -248,6 +249,16 @@ class AdamsBashforth : public LtsTimeStepper {
       double dense_output_time,
       const TimeStepId& neighbor_data_id) const override;
 
+  StepCoefficients step_coefficients(const HistoryTimes& history,
+                                     const TimeDelta& time_step) const override;
+
+  StepCoefficients step_coefficients(
+      const HistoryTimes& history, const TimeDelta& time_step,
+      const StepperErrorTolerances& tolerances) const override;
+
+  std::optional<HistoryLinearCombination> dense_output_coefficients(
+      const HistoryTimes& history, double time) const override;
+
   WRAPPED_PUPable_decl_template(AdamsBashforth);  // NOLINT
 
   explicit AdamsBashforth(CkMigrateMessage* /*unused*/) {}
@@ -257,6 +268,12 @@ class AdamsBashforth : public LtsTimeStepper {
 
  private:
   friend bool operator==(const AdamsBashforth& lhs, const AdamsBashforth& rhs);
+
+  template <bool DenseOutput>
+  StepCoefficients step_coefficients_common(
+      const HistoryTimes& history,
+      const tmpl::conditional_t<DenseOutput, ApproximateTime, Time>& time,
+      StepperErrorTolerances::Estimates estimates) const;
 
   template <bool DenseOutput, typename T>
   std::optional<StepperErrorEstimate> update_u_common(

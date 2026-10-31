@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "Utilities/ErrorHandling/Error.hpp"
-#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 /*!
  * \ingroup UtilitiesGroup
@@ -40,8 +39,9 @@ concept streamable =
  * \snippet Test_Expected.cpp expected_example
  *
  * Calling `value()` when there is an error, or `error()` when there is a
- * value, is an error (also in release builds). On the host, the message
- * includes the held error if `E` can be streamed.
+ * value, is an error (also in release builds). The message includes the held
+ * error if `E` can be streamed (on the device only if `DeviceMessage` supports
+ * it).
  *
  * Unlike `std::expected`, this class stores both a `T` and an `E`, so both must
  * be default-constructible and the one that isn't held is default-constructed.
@@ -81,9 +81,7 @@ class Expected {
   /// The error. It is an error to call this if `has_value()` is true.
   constexpr const E& error() const {
     if (has_value_) {
-      KOKKOS_IF_ON_HOST((ERROR("Expected holds a value, not an error.");))
-      KOKKOS_IF_ON_DEVICE(
-          (Kokkos::abort("Expected holds a value, not an error.");))
+      ERROR("Expected holds a value, not an error.");
     }
     return error_;
   }
@@ -91,13 +89,12 @@ class Expected {
  private:
   constexpr void check_has_value() const {
     if (not has_value_) {
-      KOKKOS_IF_ON_HOST((
-          if constexpr (Expected_detail::streamable<E>) {
-            ERROR("Expected holds an error, not a value. The error is:\n"
-                  << error_);
-          } else { ERROR("Expected holds an error, not a value."); }))
-      KOKKOS_IF_ON_DEVICE(
-          (Kokkos::abort("Expected holds an error, not a value.");))
+      if constexpr (Expected_detail::streamable<E>) {
+        ERROR("Expected holds an error, not a value. The error is:\n"
+              << error_);
+      } else {
+        ERROR("Expected holds an error, not a value.");
+      }
     }
   }
 

@@ -25,6 +25,7 @@ if(SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
     Test_DerivativeStencilsKokkos.cpp
     Test_MonotonisedCentralKokkos.cpp
+    Test_PartialDerivativesKokkos.cpp
     Test_VolumeViewKokkos.cpp
     )
 endif()

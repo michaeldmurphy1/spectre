@@ -12,6 +12,7 @@
 #include "Framework/TestCreation.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "PointwiseFunctions/Hydro/MagneticFieldTreatment.hpp"
+#include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/Serialization/Serialize.hpp"
@@ -173,6 +174,53 @@ void run_benchmark(const bool enable) {
                    spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric);
   };
 }
+// A spatial metric that isn't positive definite makes the magnetic field
+// squared negative. Then the lower bound for the root find of the Lorentz
+// factor is larger than the upper bound, so the root find fails.
+void test_root_find_failure() {
+  const grmhd::ValenciaDivClean::FixConservatives variable_fixer{
+      1.e-12,  1.0e-11,
+      1.0e-10, 1.0e-9,
+      0.0,     0.0,
+      1.e-12,  0.0,
+      true,    hydro::MagneticFieldTreatment::AssumeNonZero};
+  const DataVector used_for_size(3);
+  auto tilde_d = make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  auto tilde_ye = make_with_value<Scalar<DataVector>>(used_for_size, 0.1);
+  auto tilde_tau = make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  auto tilde_s = make_with_value<tnsr::i<DataVector, 3, Frame::Inertial>>(
+      used_for_size, 0.0);
+  get<1>(tilde_s) = 10.0;
+  auto tilde_b = make_with_value<tnsr::I<DataVector, 3, Frame::Inertial>>(
+      used_for_size, 0.0);
+  get<0>(tilde_b) = 1.0;
+  auto spatial_metric =
+      make_with_value<tnsr::ii<DataVector, 3, Frame::Inertial>>(used_for_size,
+                                                                0.0);
+  auto inv_spatial_metric =
+      make_with_value<tnsr::II<DataVector, 3, Frame::Inertial>>(used_for_size,
+                                                                0.0);
+  for (size_t d = 0; d < 3; ++d) {
+    spatial_metric.get(d, d) = 1.0;
+    inv_spatial_metric.get(d, d) = 1.0;
+  }
+  get<0, 0>(spatial_metric) = -1.0;
+  const auto sqrt_det_spatial_metric =
+      make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  // The magnetic field squared is negative, so the square root of the product
+  // of the squares of the magnetic field and the momentum density is NaN
+  const ScopedFpeState disable_fpes(false);
+  CHECK_THROWS_WITH(
+      variable_fixer(make_not_null(&tilde_d), make_not_null(&tilde_ye),
+                     make_not_null(&tilde_tau), make_not_null(&tilde_s),
+                     tilde_b, spatial_metric, inv_spatial_metric,
+                     sqrt_det_spatial_metric),
+      Catch::Matchers::ContainsSubstring(
+          "Failed to fix conserved variables because the root finder failed "
+          "to find the lorentz factor.") and
+          Catch::Matchers::ContainsSubstring(
+              "Lower bound is larger than upper bound"));
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.Evolution.GrMhd.ValenciaDivClean.FixConservatives",
@@ -226,6 +274,8 @@ SPECTRE_TEST_CASE("Unit.Evolution.GrMhd.ValenciaDivClean.FixConservatives",
           "MagneticField: AssumeZero\n");
   test_variable_fixer(fixer_from_options, true);
   test_variable_fixer_zero_b_field(fixer_from_options_zero_b_field, true);
+
+  test_root_find_failure();
 
   run_benchmark(false);
 }

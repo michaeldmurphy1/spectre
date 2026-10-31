@@ -18,6 +18,7 @@ spectre_target_sources(
   MonotonisedCentralKokkos.cpp
   NonUniform1D.cpp
   PartialDerivatives.cpp
+  PartialDerivativesKokkos.cpp
   PositivityPreservingAdaptiveOrder.cpp
   SecondPartialDerivatives.cpp
   Unlimited.cpp
@@ -44,6 +45,7 @@ spectre_target_headers(
   NonUniform1D.hpp
   PartialDerivatives.hpp
   PartialDerivatives.tpp
+  PartialDerivativesKokkos.hpp
   PositivityPreservingAdaptiveOrder.hpp
   Reconstruct.hpp
   Reconstruct.tpp
@@ -64,4 +66,5 @@ target_link_libraries(
   PRIVATE
   DomainStructure
   ErrorHandling
+  Spectral
   )

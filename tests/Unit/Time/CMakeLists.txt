@@ -31,7 +31,10 @@ set(LIBRARY_SOURCES
   )
 
 if(SPECTRE_KOKKOS)
-  list(APPEND LIBRARY_SOURCES Test_DeviceHistoryKokkos.cpp)
+  list(APPEND LIBRARY_SOURCES
+    Test_DeviceHistoryKokkos.cpp
+    Test_TimeStepperOnDeviceKokkos.cpp
+    )
 endif()
 
 add_subdirectory(Actions)

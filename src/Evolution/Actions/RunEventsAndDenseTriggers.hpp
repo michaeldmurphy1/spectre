@@ -18,12 +18,21 @@
 #include "ParallelAlgorithms/EventsAndDenseTriggers/Tags.hpp"
 #include "ParallelAlgorithms/Initialization/MutateAssign.hpp"
 #include "Time/EvolutionOrdering.hpp"
+#include "Time/Tags/HistoryEvolvedVariables.hpp"
 #include "Time/Tags/Time.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
 #include "Utilities/TypeTraits/CreateIsCallable.hpp"
 #include "Utilities/TypeTraits/IsA.hpp"
+
+#ifdef SPECTRE_KOKKOS
+#include "Time/DeviceHistoryKokkos.hpp"
+#include "Time/Tags/DeviceHistoryEvolvedVariablesKokkos.hpp"
+#include "Time/TimeStepperOnDeviceKokkos.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
+#endif  // SPECTRE_KOKKOS
 
 /// \cond
 class DataVector;
@@ -194,6 +203,48 @@ struct RunEventsAndDenseTriggers {
     }
   };
 
+#ifdef SPECTRE_KOKKOS
+  // Dense output from histories with their data on the device.
+  template <typename VariablesTags>
+  struct DoDenseOutputOnDevice;
+
+  template <typename... VariablesTags>
+  struct DoDenseOutputOnDevice<tmpl::list<VariablesTags...>> {
+    using return_tags =
+        tmpl::list<VariablesTags...,
+                   ::Tags::DeviceHistoryEvolvedVariables<VariablesTags>...>;
+    using argument_tags = tmpl::list<::Tags::TimeStepper<TimeStepper>>;
+    static bool apply(
+        const gsl::not_null<typename VariablesTags::type*>... vars,
+        const typename tmpl::has_type<
+            VariablesTags,
+            gsl::not_null<TimeSteppers::DeviceHistory<>*>>::type... histories,
+        const TimeStepper& stepper, const double time) {
+      const Kokkos::DefaultExecutionSpace& exec =
+          Parallel::device_execution_space();
+      return (... and TimeSteppers::dense_update_u_on_device(
+                          exec, vars, histories, stepper, time));
+    }
+  };
+#endif  // SPECTRE_KOKKOS
+
+  // Dense output of the evolved variables, from the histories on the
+  // device if they hold the data.
+  template <typename VariablesTags, typename DbTags>
+  static bool dense_output(const gsl::not_null<db::DataBox<DbTags>*> box,
+                           const double time) {
+#ifdef SPECTRE_KOKKOS
+    using device_history_tags = ::Tags::get_all_device_history_tags<DbTags>;
+    if constexpr (tmpl::size<device_history_tags>::value > 0) {
+      if (not db::get<tmpl::front<device_history_tags>>(*box).empty()) {
+        return db::mutate_apply<DoDenseOutputOnDevice<VariablesTags>>(box,
+                                                                      time);
+      }
+    }
+#endif  // SPECTRE_KOKKOS
+    return db::mutate_apply<DoDenseOutput<VariablesTags>>(box, time);
+  }
+
  public:
   template <typename DbTags, typename... InboxTags, typename Metavariables,
             typename ArrayIndex, typename ActionList,
@@ -266,8 +317,7 @@ struct RunEventsAndDenseTriggers {
         case TriggeringState::NeedsEvolvedVariables: {
           variables_restorer.save();
           const bool dense_output_succeeded =
-              db::mutate_apply<DoDenseOutput<variables_tags>>(
-                  make_not_null(&box), next_trigger);
+              dense_output<variables_tags>(make_not_null(&box), next_trigger);
           if (not dense_output_succeeded) {
             // Need to take another time step
             return {Parallel::AlgorithmExecution::Continue, std::nullopt};

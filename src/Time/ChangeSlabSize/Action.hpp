@@ -152,6 +152,12 @@ struct ChangeSlabSize {
             [&]<typename... HistoryTags>(tmpl::type_<HistoryTags>... /*meta*/) {
               return (... and time_stepper.can_change_step_size(
                                   time_step_id, db::get<HistoryTags>(box)));
+            }) and
+        tmpl::as_pack<::Tags::get_all_device_history_tags<DbTags>>(
+            [&]<typename... HistoryTags>(tmpl::type_<HistoryTags>... /*meta*/) {
+              return (... and time_stepper.can_change_step_size(
+                                  time_step_id,
+                                  db::get<HistoryTags>(box).bookkeeping()));
             })) {
       change_slab_size(make_not_null(&box), new_slab_end);
     }

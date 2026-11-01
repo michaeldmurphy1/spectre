@@ -39,10 +39,12 @@
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Time/History.hpp"
+#include "Time/Tags/HistoryEvolvedVariables.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Utilities/Algorithm.hpp"
 #include "Utilities/ContainerHelpers.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -52,8 +54,6 @@ template <typename Metavariables>
 class GlobalCache;
 }  // namespace Parallel
 namespace Tags {
-template <typename Tag>
-struct HistoryEvolvedVariables;
 struct TimeStepId;
 template <typename StepperInterface>
 struct TimeStepper;
@@ -306,6 +306,14 @@ struct TciAndSwitchToDg {
                          })
 
              )) {
+      using device_history_tags = ::Tags::get_all_device_history_tags<DbTags>;
+      if constexpr (tmpl::size<device_history_tags>::value > 0) {
+        if (not db::get<tmpl::front<device_history_tags>>(box).empty()) {
+          ERROR(
+              "Switching from FD to DG is not supported with the time "
+              "stepper history on the device yet.");
+        }
+      }
       db::mutate<
           variables_tag, ::Tags::HistoryEvolvedVariables<variables_tag>,
           Tags::ActiveGrid, subcell::Tags::GhostDataForReconstruction<Dim>,

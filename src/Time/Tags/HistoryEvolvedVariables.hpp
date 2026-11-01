@@ -25,4 +25,19 @@ struct HistoryEvolvedVariables : db::SimpleTag {
 template <typename TagList>
 using get_all_history_tags =
     tmpl::filter<TagList, tt::is_a<::Tags::HistoryEvolvedVariables, tmpl::_1>>;
+
+/// \cond
+template <typename Tag>
+struct DeviceHistoryEvolvedVariables;
+/// \endcond
+
+/// \ingroup TimeGroup
+/// From a list of tags `TagList`, extract all tags that are template
+/// specializations of `DeviceHistoryEvolvedVariables`, the TimeStepper
+/// histories with their data on the device.  This is always empty
+/// without Kokkos.
+template <typename TagList>
+using get_all_device_history_tags =
+    tmpl::filter<TagList,
+                 tt::is_a<::Tags::DeviceHistoryEvolvedVariables, tmpl::_1>>;
 }  // namespace Tags

@@ -332,8 +332,10 @@ struct CheckForOrderIncrease {
     const auto& time = time_step_id.step_time();
     const auto& time_step = db::get<::Tags::TimeStep>(box);
     using history_tags = ::Tags::get_all_history_tags<DbTags>;
-    const size_t history_integration_order =
-        db::get<tmpl::front<history_tags>>(box).integration_order();
+    // The histories on the host and on the device have the same order
+    const size_t history_integration_order = db::get<tmpl::front<tmpl::append<
+        history_tags, ::Tags::get_all_device_history_tags<DbTags>>>>(box)
+                                                 .integration_order();
 
     // This is correct for both AdamsBashforth and AdamsMoultonPc.
     // The latter doesn't need as many history values, but it can't
@@ -358,8 +360,13 @@ struct CheckForOrderIncrease {
                                                                : slab.end());
           },
           make_not_null(&box), db::get<::Tags::TimeStepId>(box));
-      tmpl::for_each<history_tags>([&box,
-                                    &history_integration_order](auto tag_v) {
+      // Histories with their data on the device have the same
+      // integration order.
+      tmpl::for_each<
+          tmpl::append<history_tags, ::Tags::get_all_device_history_tags<
+                                         DbTags>>>([&box,
+                                                    &history_integration_order](
+                                                       auto tag_v) {
         using history_tag = typename decltype(tag_v)::type;
         db::mutate<history_tag>(
             [&history_integration_order](

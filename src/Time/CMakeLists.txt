@@ -62,6 +62,7 @@ spectre_target_headers(
   Time.hpp
   TimeSequence.hpp
   TimeStepId.hpp
+  TimeStepperOnDeviceKokkos.hpp
   TimeStepRequest.hpp
   TimeStepRequestProcessor.hpp
   UpdateU.hpp

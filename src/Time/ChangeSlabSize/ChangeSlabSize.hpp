@@ -123,7 +123,8 @@ void change_slab_size(const gsl::not_null<db::DataBox<DbTags>*> box,
       });
 
   db::mutate_apply<
-      tmpl::push_front<Tags::get_all_history_tags<DbTags>,
+      tmpl::push_front<tmpl::append<Tags::get_all_history_tags<DbTags>,
+                                    Tags::get_all_device_history_tags<DbTags>>,
                        ::Tags::Next<::Tags::TimeStepId>, ::Tags::TimeStep,
                        ::Tags::TimeStepId, ::Tags::AdaptiveSteppingDiagnostics>,
       tmpl::list<>>(
@@ -133,12 +134,21 @@ void change_slab_size(const gsl::not_null<db::DataBox<DbTags>*> box,
           const gsl::not_null<TimeStepId*> local_time_step_id,
           const gsl::not_null<AdaptiveSteppingDiagnostics*> diags,
           const auto... histories) {
-        const auto update_history = [&](const auto history) {
-          if (not history->empty() and
-              history->back().time_step_id == *local_time_step_id) {
-            ASSERT(history->at_step_start(),
+        const auto update_history = [&](const auto history_ptr) {
+          // Histories with their data on the device are renamed through
+          // their bookkeeping.
+          auto& history = [&]() -> auto& {
+            if constexpr (requires { history_ptr->bookkeeping(); }) {
+              return history_ptr->bookkeeping();
+            } else {
+              return *history_ptr;
+            }
+          }();
+          if (not history.empty() and
+              history.back().time_step_id == *local_time_step_id) {
+            ASSERT(history.at_step_start(),
                    "Cannot change step size with substep data.");
-            history->back().time_step_id = new_time_step_id;
+            history.back().time_step_id = new_time_step_id;
           }
           return 0;
         };

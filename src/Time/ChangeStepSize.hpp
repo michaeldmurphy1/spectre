@@ -100,6 +100,16 @@ struct ChangeStepSize {
       can_change_step_size =
           time_stepper.can_change_step_size(time_step_id, history);
     });
+    tmpl::for_each<::Tags::get_all_device_history_tags<DbTags>>(
+        [&box, &can_change_step_size, &time_stepper,
+         &time_step_id](auto tag_v) {
+          if (not can_change_step_size) {
+            return;
+          }
+          using tag = typename decltype(tag_v)::type;
+          can_change_step_size = time_stepper.can_change_step_size(
+              time_step_id, db::get<tag>(*box).bookkeeping());
+        });
 
     const auto current_step = db::get<Tags::TimeStep>(*box);
 

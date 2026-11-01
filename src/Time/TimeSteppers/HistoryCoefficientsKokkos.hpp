@@ -62,10 +62,7 @@ struct DeviceHistoryRecordView {
  * stepping.
  *
  * This is a non-owning view.  It doesn't prescribe how the history
- * data is stored, so it can be built from a history of device
- * `Variables` for each element (a batch of one), or, in the future,
- * from slots of a pool batched over the elements of a
- * `DgElementCollection`.
+ * data is stored; `DeviceHistory` stores it for a batch of elements.
  */
 template <typename MemorySpace =
               typename Kokkos::DefaultExecutionSpace::memory_space>

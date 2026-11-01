@@ -45,6 +45,7 @@ spectre_target_headers(
   CleanHistory.hpp
   CleanHistory.tpp
   CollectStepperErrorTolerances.hpp
+  DeviceHistoryKokkos.hpp
   EvolutionOrdering.hpp
   History.hpp
   LargestStepperError.hpp

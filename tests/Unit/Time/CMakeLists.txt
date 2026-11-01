@@ -30,6 +30,10 @@ set(LIBRARY_SOURCES
   Test_UpdateU.cpp
   )
 
+if(SPECTRE_KOKKOS)
+  list(APPEND LIBRARY_SOURCES Test_DeviceHistoryKokkos.cpp)
+endif()
+
 add_subdirectory(Actions)
 add_subdirectory(ChangeSlabSize)
 add_subdirectory(OptionTags)

@@ -21,6 +21,15 @@ set(LIBRARY_SOURCES
   Test_Wcns5z.cpp
   )
 
+if(SPECTRE_KOKKOS)
+  list(APPEND LIBRARY_SOURCES
+    Test_DerivativeStencilsKokkos.cpp
+    Test_MonotonisedCentralKokkos.cpp
+    Test_PartialDerivativesKokkos.cpp
+    Test_VolumeViewKokkos.cpp
+    )
+endif()
+
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")
 
 target_link_libraries(
@@ -30,7 +39,9 @@ target_link_libraries(
   DataStructures
   DgSubcell
   Domain
+  DomainStructure
   FiniteDifference
   ErrorHandling
+  SpectreKokkos
   Utilities
   )

@@ -104,12 +104,9 @@ static_assert(history_max_substeps + 2 <= max_history_terms);
  * The terms only reference history records by index, so a generic
  * kernel can apply them to history data stored anywhere.
  *
- * \note On the device, the history data is intended to be stored as a
- * separate history of device `Variables` for each element.  An
- * alternative to consider in the future is a pool of history slots
- * batched over all the elements of a `DgElementCollection`, with the
- * indices of the terms mapping into the pool.  The coefficients are
- * the same in either case.
+ * \note On the device, `DeviceHistory` stores the history data of a
+ * batch of elements that share their record times, e.g., the FD
+ * elements of a patch, so the same coefficients apply to all of them.
  */
 struct HistoryLinearCombination {
   /// Whether to add to the existing value of the result instead of

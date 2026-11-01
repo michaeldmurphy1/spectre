@@ -111,6 +111,36 @@ void reconstruct_prims_work(
     bool compute_conservatives, bool reconstruct_density_times_temperature,
     const VariableFixing::FixToAtmosphere<3>* fix_to_atmosphere);
 
+#ifdef SPECTRE_KOKKOS
+/*!
+ * \brief Device version of `reconstruct_prims_work`.
+ *
+ * All `PrimTagsForReconstruction` are reconstructed together in Kokkos kernels
+ * by `reconstruct`, which is called as
+ * `reconstruct(exec, upper_side_of_face_vars, lower_side_of_face_vars,
+ * padded_volume_vars, volume_extents)` with the arguments of, e.g.,
+ * `::fd::device::monotonised_central`.  The volume and ghost data are packed
+ * into a padded view on the host and copied to the device, and the face values
+ * are copied back, since the data is still stored on the host.  Cartoon grids
+ * are not supported.
+ */
+template <typename PrimTagsForReconstruction, typename PrimsTagsVolume,
+          size_t ThermodynamicDim, typename F, typename PrimsTagsSentByNeighbor>
+void reconstruct_prims_work_on_device(
+    gsl::not_null<std::array<Variables<tags_list_for_reconstruct>, 3>*>
+        vars_on_lower_face,
+    gsl::not_null<std::array<Variables<tags_list_for_reconstruct>, 3>*>
+        vars_on_upper_face,
+    const F& reconstruct, const Variables<PrimsTagsVolume>& volume_prims,
+    const EquationsOfState::EquationOfState<true, ThermodynamicDim>& eos,
+    const Element<3>& element,
+    const DirectionalIdMap<3, Variables<PrimsTagsSentByNeighbor>>&
+        neighbor_data,
+    const Mesh<3>& subcell_mesh, size_t ghost_zone_size,
+    bool compute_conservatives, bool reconstruct_density_times_temperature,
+    const VariableFixing::FixToAtmosphere<3>* fix_to_atmosphere);
+#endif  // SPECTRE_KOKKOS
+
 /*!
  * \brief Reconstructs the `PrimTagsForReconstruction` and if
  * `compute_conservatives` is `true`  computes the Lorentz factor, upper spatial

@@ -18,9 +18,11 @@
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Evolution/DgSubcell/GhostData.hpp"
+#include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DiscontinuousGalerkin/Actions/NormalCovectorAndMagnitude.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ReconstructWork.tpp"
 #include "NumericalAlgorithms/FiniteDifference/MonotonisedCentral.hpp"
+#include "NumericalAlgorithms/FiniteDifference/MonotonisedCentralKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/NeighborDataAsVariables.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
@@ -65,6 +67,26 @@ void MonotonisedCentralPrim::reconstruct(
   ::fd::neighbor_data_as_variables<dim>(make_not_null(&neighbor_variables_data),
                                         ghost_data, ghost_zone_size(),
                                         subcell_mesh);
+#ifdef SPECTRE_KOKKOS
+  // Cartoon grids are reconstructed on the host, since the device
+  // reconstruction doesn't support them yet.
+  if (evolution::dg::subcell::fd::get_computational_dim(subcell_mesh) == 3) {
+    reconstruct_prims_work_on_device<prims_to_reconstruct_tags>(
+        vars_on_lower_face, vars_on_upper_face,
+        [](const Kokkos::DefaultExecutionSpace& exec,
+           const auto& upper_side_of_face_vars,
+           const auto& lower_side_of_face_vars, const auto& padded_volume_vars,
+           const Index<3>& volume_extents) {
+          ::fd::device::monotonised_central(exec, upper_side_of_face_vars,
+                                            lower_side_of_face_vars,
+                                            padded_volume_vars, volume_extents);
+        },
+        volume_prims, eos, element, neighbor_variables_data, subcell_mesh,
+        ghost_zone_size(), true, reconstruct_rho_times_temperature(),
+        &fix_to_atmosphere);
+    return;
+  }
+#endif  // SPECTRE_KOKKOS
   reconstruct_prims_work<prims_to_reconstruct_tags>(
       vars_on_lower_face, vars_on_upper_face,
       [](auto upper_face_vars_ptr, auto lower_face_vars_ptr,

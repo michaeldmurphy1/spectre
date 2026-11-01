@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <iterator>
+#include <type_traits>
 #include <utility>
 
 #include "DataStructures/DataVector.hpp"
@@ -35,6 +36,7 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
@@ -42,6 +44,7 @@
 
 #ifdef SPECTRE_KOKKOS
 #include "DataStructures/ApplyPointwiseOnDeviceKokkos.hpp"
+#include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #endif  // SPECTRE_KOKKOS
 
 namespace grmhd::ValenciaDivClean::fd {
@@ -363,6 +366,210 @@ void reconstruct_prims_work(
         fix_to_atmosphere);
   }
 }
+
+#ifdef SPECTRE_KOKKOS
+template <typename PrimTagsForReconstruction, typename PrimsTags,
+          size_t ThermodynamicDim, typename F, typename PrimsTagsSentByNeighbor>
+void reconstruct_prims_work_on_device(
+    const gsl::not_null<std::array<Variables<tags_list_for_reconstruct>, 3>*>
+        vars_on_lower_face,
+    const gsl::not_null<std::array<Variables<tags_list_for_reconstruct>, 3>*>
+        vars_on_upper_face,
+    const F& reconstruct, const Variables<PrimsTags>& volume_prims,
+    const EquationsOfState::EquationOfState<true, ThermodynamicDim>& eos,
+    const Element<3>& element,
+    const DirectionalIdMap<3, Variables<PrimsTagsSentByNeighbor>>&
+        neighbor_data,
+    const Mesh<3>& subcell_mesh, const size_t ghost_zone_size,
+    const bool compute_conservatives,
+    const bool reconstruct_density_times_temperature,
+    const VariableFixing::FixToAtmosphere<3>* const fix_to_atmosphere) {
+  if (evolution::dg::subcell::fd::get_computational_dim(subcell_mesh) != 3) {
+    ERROR("Reconstruction on the device does not support cartoon grids yet.");
+  }
+  evolution::dg::subcell::fd::verify_subcell_extents(subcell_mesh.extents());
+  const Index<3>& volume_extents = subcell_mesh.extents();
+  const size_t volume_num_pts = subcell_mesh.number_of_grid_points();
+  const size_t neighbor_num_pts =
+      ghost_zone_size * volume_extents.slice_away(0).product();
+  const size_t number_of_variables =
+      tmpl::as_pack<PrimTagsForReconstruction>([](auto... tags) {
+        return (... + tmpl::type_from<decltype(tags)>::type::size());
+      });
+
+  // All reconstructed variables of the element, with the same
+  // transformations as in `reconstruct_prims_work`: W v^i is computed from
+  // the volume primitives, and rho T is reconstructed instead of T if
+  // requested.
+  DataVector volume_vars(number_of_variables * volume_num_pts);
+  DirectionMap<3, DataVector> ghost_vars{};
+  for (const auto& direction : Direction<3>::all_directions()) {
+    ghost_vars[direction] = DataVector(number_of_variables * neighbor_num_pts);
+  }
+  const auto ghost_data_id = [&element](const Direction<3>& direction) {
+    if (element.neighbors().contains(direction)) {
+      const auto& neighbors_in_direction = element.neighbors().at(direction);
+      ASSERT(neighbors_in_direction.size() == 1,
+             "Currently only support one neighbor in each direction, but got "
+                 << neighbors_in_direction.size() << " in direction "
+                 << direction);
+      return DirectionalId<3>{direction, *neighbors_in_direction.begin()};
+    }
+    ASSERT(element.external_boundaries().count(direction) == 1,
+           "Element has neither neighbor nor external boundary to direction: "
+               << direction);
+    return DirectionalId<3>{direction, ElementId<3>::external_boundary_id()};
+  };
+  // The first variable of each tag
+  std::array<size_t, tmpl::size<PrimTagsForReconstruction>::value>
+      variable_offsets{};
+  size_t variable_offset = 0;
+  size_t tag_index = 0;
+  tmpl::for_each<PrimTagsForReconstruction>([&](auto tag_v) {
+    using tag = tmpl::type_from<decltype(tag_v)>;
+    const size_t number_of_components = tag::type::size();
+    gsl::at(variable_offsets, tag_index) = variable_offset;
+    ++tag_index;
+    for (size_t component = 0; component < number_of_components; ++component) {
+      DataVector destination(
+          &volume_vars[(variable_offset + component) * volume_num_pts],
+          volume_num_pts);
+      if constexpr (std::is_same_v<
+                        tag, hydro::Tags::LorentzFactorTimesSpatialVelocity<
+                                 DataVector, 3>>) {
+        destination =
+            get<hydro::Tags::SpatialVelocity<DataVector, 3>>(volume_prims)
+                .get(component) *
+            get(get<hydro::Tags::LorentzFactor<DataVector>>(volume_prims));
+      } else if constexpr (std::is_same_v<
+                               tag, hydro::Tags::Temperature<DataVector>>) {
+        if (reconstruct_density_times_temperature) {
+          destination =
+              get(get<tag>(volume_prims)) *
+              get(get<hydro::Tags::RestMassDensity<DataVector>>(volume_prims));
+        } else {
+          destination = get(get<tag>(volume_prims));
+        }
+      } else {
+        destination = get<tag>(volume_prims)[component];
+      }
+      for (const auto& direction : Direction<3>::all_directions()) {
+        const auto& data_in_direction =
+            neighbor_data.at(ghost_data_id(direction));
+        DataVector ghost_destination(
+            &ghost_vars[direction]
+                       [(variable_offset + component) * neighbor_num_pts],
+            neighbor_num_pts);
+        if constexpr (std::is_same_v<tag,
+                                     hydro::Tags::Temperature<DataVector>>) {
+          if (reconstruct_density_times_temperature) {
+            ghost_destination =
+                get(get<hydro::Tags::RestMassDensity<DataVector>>(
+                    data_in_direction)) *
+                get(get<tag>(data_in_direction));
+            continue;
+          }
+        }
+        ghost_destination = get<tag>(data_in_direction)[component];
+      }
+    }
+    variable_offset += number_of_components;
+  });
+
+  // Reconstruct all variables on the device
+  const Kokkos::DefaultExecutionSpace& exec =
+      Parallel::device_execution_space();
+  const auto padded_vars = ::fd::device::make_volume_view(
+      exec, "padded primitives", 1, number_of_variables, volume_extents,
+      ghost_zone_size);
+  {
+    const auto host_padded_vars = Kokkos::create_mirror_view(padded_vars);
+    DirectionMap<3, gsl::span<const double>> ghost_spans{};
+    for (const auto& [direction, data] : ghost_vars) {
+      ghost_spans[direction] = gsl::make_span(data.data(), data.size());
+    }
+    ::fd::device::pack_with_ghost_zones(
+        host_padded_vars, 0,
+        gsl::make_span(volume_vars.data(), volume_vars.size()), ghost_spans,
+        volume_extents);
+    Kokkos::deep_copy(exec, padded_vars, host_padded_vars);
+    // The host data must stay valid until the copy is done.
+    exec.fence();
+  }
+  std::array<::fd::device::VolumeView, 3> upper_side_of_face_vars{};
+  std::array<::fd::device::VolumeView, 3> lower_side_of_face_vars{};
+  for (size_t d = 0; d < 3; ++d) {
+    Index<3> face_extents = volume_extents;
+    ++face_extents[d];
+    gsl::at(upper_side_of_face_vars, d) = ::fd::device::make_volume_view(
+        exec, "upper side of faces", 1, number_of_variables, face_extents);
+    gsl::at(lower_side_of_face_vars, d) = ::fd::device::make_volume_view(
+        exec, "lower side of faces", 1, number_of_variables, face_extents);
+  }
+  reconstruct(exec, upper_side_of_face_vars, lower_side_of_face_vars,
+              ::fd::device::ConstVolumeView{padded_vars}, volume_extents);
+
+  // Copy the face values of each tag back to the host
+  std::array<::fd::device::VolumeView::host_mirror_type, 3> host_upper_sides{};
+  std::array<::fd::device::VolumeView::host_mirror_type, 3> host_lower_sides{};
+  for (size_t d = 0; d < 3; ++d) {
+    gsl::at(host_upper_sides, d) = Kokkos::create_mirror_view(
+        Kokkos::WithoutInitializing, gsl::at(upper_side_of_face_vars, d));
+    gsl::at(host_lower_sides, d) = Kokkos::create_mirror_view(
+        Kokkos::WithoutInitializing, gsl::at(lower_side_of_face_vars, d));
+    Kokkos::deep_copy(exec, gsl::at(host_upper_sides, d),
+                      gsl::at(upper_side_of_face_vars, d));
+    Kokkos::deep_copy(exec, gsl::at(host_lower_sides, d),
+                      gsl::at(lower_side_of_face_vars, d));
+  }
+  exec.fence();
+  for (size_t d = 0; d < 3; ++d) {
+    const auto& host_upper_side = gsl::at(host_upper_sides, d);
+    const auto& host_lower_side = gsl::at(host_lower_sides, d);
+    const size_t face_num_pts = host_upper_side.extent(2) *
+                                host_upper_side.extent(3) *
+                                host_upper_side.extent(4);
+    tag_index = 0;
+    tmpl::for_each<PrimTagsForReconstruction>([&](auto tag_v) {
+      using tag = tmpl::type_from<decltype(tag_v)>;
+      const size_t first_value =
+          gsl::at(variable_offsets, tag_index) * face_num_pts;
+      const size_t number_of_values = tag::type::size() * face_num_pts;
+      ++tag_index;
+      auto& upper_tensor = get<tag>(gsl::at(*vars_on_upper_face, d));
+      auto& lower_tensor = get<tag>(gsl::at(*vars_on_lower_face, d));
+      ASSERT(upper_tensor[0].size() == face_num_pts,
+             "The face variables have " << upper_tensor[0].size()
+                                        << " points but expected "
+                                        << face_num_pts);
+      std::copy(host_upper_side.data() + first_value,
+                host_upper_side.data() + first_value + number_of_values,
+                upper_tensor[0].data());
+      std::copy(host_lower_side.data() + first_value,
+                host_lower_side.data() + first_value + number_of_values,
+                lower_tensor[0].data());
+      if constexpr (std::is_same_v<tag, hydro::Tags::Temperature<DataVector>>) {
+        if (reconstruct_density_times_temperature) {
+          using density_tag = hydro::Tags::RestMassDensity<DataVector>;
+          get(upper_tensor) /=
+              get(get<density_tag>(gsl::at(*vars_on_upper_face, d)));
+          get(lower_tensor) /=
+              get(get<density_tag>(gsl::at(*vars_on_lower_face, d)));
+        }
+      }
+    });
+  }
+
+  for (size_t i = 0; compute_conservatives and i < 3; ++i) {
+    compute_conservatives_for_reconstruction(
+        make_not_null(&gsl::at(*vars_on_lower_face, i)), eos,
+        fix_to_atmosphere);
+    compute_conservatives_for_reconstruction(
+        make_not_null(&gsl::at(*vars_on_upper_face, i)), eos,
+        fix_to_atmosphere);
+  }
+}
+#endif  // SPECTRE_KOKKOS
 
 template <typename PrimTagsForReconstruction, typename PrimsTagsSentByNeighbor,
           typename PrimsTags, size_t ThermodynamicDim, typename F0, typename F1>

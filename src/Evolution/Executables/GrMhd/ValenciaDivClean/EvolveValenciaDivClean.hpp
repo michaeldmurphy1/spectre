@@ -184,6 +184,10 @@
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
 
+#ifdef SPECTRE_KOKKOS
+#include "Time/TimeStepperOnDeviceKokkos.hpp"
+#endif  // SPECTRE_KOKKOS
+
 /// \cond
 namespace Frame {
 struct Inertial;
@@ -447,6 +451,23 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
           VariableFixing::FixToAtmosphere<volume_dim>>,
       Actions::UpdateConservatives>>;
 
+#ifdef SPECTRE_KOKKOS
+  // The FD time stepping keeps the time stepper history on the device.
+  using fd_record_time_stepper_data =
+      Actions::MutateApply<RecordTimeStepperDataOnDevice<system>>;
+  using fd_update_u = Actions::MutateApply<UpdateUOnDevice<system>>;
+  using fd_clean_history = Actions::MutateApply<CleanHistoryOnDevice<system>>;
+  using initialize_device_time_stepper_history =
+      Initialization::Actions::InitializeItems<
+          Initialization::DeviceTimeStepperHistory<system>>;
+#else
+  using fd_record_time_stepper_data =
+      Actions::MutateApply<RecordTimeStepperData<system>>;
+  using fd_update_u = Actions::MutateApply<UpdateU<system>>;
+  using fd_clean_history = Actions::MutateApply<CleanHistory<system>>;
+  using initialize_device_time_stepper_history = tmpl::list<>;
+#endif  // SPECTRE_KOKKOS
+
   using dg_subcell_step_actions = tmpl::flatten<tmpl::list<
       evolution::dg::subcell::Actions::SelectNumericalMethod,
 
@@ -480,11 +501,10 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
           system, grmhd::ValenciaDivClean::ComputeFluxes, volume_dim, true>>,
       evolution::dg::subcell::fd::Actions::TakeTimeStep<
           grmhd::ValenciaDivClean::subcell::TimeDerivative>,
-      Actions::MutateApply<RecordTimeStepperData<system>>,
+      fd_record_time_stepper_data,
       evolution::Actions::RunEventsAndDenseTriggers<
           events_and_dense_triggers_subcell_postprocessors>,
-      Actions::MutateApply<UpdateU<system>>,
-      Actions::MutateApply<CleanHistory<system>>,
+      fd_update_u, fd_clean_history,
       Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
       Actions::MutateApply<
           grmhd::ValenciaDivClean::subcell::FixConservativesAndComputePrims<
@@ -526,6 +546,8 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
       Initialization::Actions::ConservativeSystem<system>,
       Initialization::Actions::InitializeItems<
           Initialization::TimeStepperHistory<system>>,
+      tmpl::conditional_t<use_dg_subcell,
+                          initialize_device_time_stepper_history, tmpl::list<>>,
 
       tmpl::conditional_t<
           use_dg_subcell,

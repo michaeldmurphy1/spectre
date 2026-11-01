@@ -15,11 +15,14 @@ spectre_target_sources(
   Minmod.cpp
   MonotonicityPreserving5.cpp
   MonotonisedCentral.cpp
+  MonotonisedCentralKokkos.cpp
   NonUniform1D.cpp
   PartialDerivatives.cpp
+  PartialDerivativesKokkos.cpp
   PositivityPreservingAdaptiveOrder.cpp
   SecondPartialDerivatives.cpp
   Unlimited.cpp
+  VolumeViewKokkos.cpp
   Wcns5z.cpp
   )
 
@@ -29,6 +32,7 @@ spectre_target_headers(
   HEADERS
   AoWeno.hpp
   DerivativeOrder.hpp
+  DerivativeStencils.hpp
   FallbackReconstructorType.hpp
   Filter.hpp
   FiniteDifference.hpp
@@ -36,25 +40,31 @@ spectre_target_headers(
   Minmod.hpp
   MonotonicityPreserving5.hpp
   MonotonisedCentral.hpp
+  MonotonisedCentralKokkos.hpp
   NeighborDataAsVariables.hpp
   NonUniform1D.hpp
   PartialDerivatives.hpp
   PartialDerivatives.tpp
+  PartialDerivativesKokkos.hpp
   PositivityPreservingAdaptiveOrder.hpp
   Reconstruct.hpp
   Reconstruct.tpp
+  ReconstructKokkos.hpp
   SecondPartialDerivatives.hpp
   SecondPartialDerivatives.tpp
   Unlimited.hpp
+  VolumeViewKokkos.hpp
   Wcns5z.hpp
   )
 
 target_link_libraries(
   ${LIBRARY}
   PUBLIC
+  DataStructures
+  SpectreKokkos
   Utilities
   PRIVATE
-  DataStructures
   DomainStructure
   ErrorHandling
+  Spectral
   )

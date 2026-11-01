@@ -358,8 +358,13 @@ struct CheckForOrderIncrease {
                                                                : slab.end());
           },
           make_not_null(&box), db::get<::Tags::TimeStepId>(box));
-      tmpl::for_each<history_tags>([&box,
-                                    &history_integration_order](auto tag_v) {
+      // Histories with their data on the device have the same
+      // integration order.
+      tmpl::for_each<
+          tmpl::append<history_tags, ::Tags::get_all_device_history_tags<
+                                         DbTags>>>([&box,
+                                                    &history_integration_order](
+                                                       auto tag_v) {
         using history_tag = typename decltype(tag_v)::type;
         db::mutate<history_tag>(
             [&history_integration_order](

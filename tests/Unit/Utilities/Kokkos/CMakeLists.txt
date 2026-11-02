@@ -17,6 +17,7 @@ set(LIBRARY "Test_Kokkos")
 
 set(LIBRARY_SOURCES
   Test_DeviceMessageKokkos.cpp
+  Test_ExecutionSpaceKokkos.cpp
   Test_Kokkos.cpp
   )
 

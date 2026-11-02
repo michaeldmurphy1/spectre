@@ -25,6 +25,7 @@
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/Side.hpp"
 #include "Evolution/DgSubcell/GhostData.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
@@ -44,6 +45,7 @@
 
 #ifdef SPECTRE_KOKKOS
 #include "DataStructures/ApplyPointwiseOnDeviceKokkos.hpp"
+#include "NumericalAlgorithms/FiniteDifference/TransfersKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #endif  // SPECTRE_KOKKOS
 
@@ -401,10 +403,20 @@ void reconstruct_prims_work_on_device(
   // transformations as in `reconstruct_prims_work`: W v^i is computed from
   // the volume primitives, and rho T is reconstructed instead of T if
   // requested.
-  DataVector volume_vars(number_of_variables * volume_num_pts);
+  //
+  // All data is in one buffer, so it is copied to the device at once: the
+  // volume data followed by the ghost data of each direction.
+  DataVector all_vars(number_of_variables *
+                      (volume_num_pts + 6 * neighbor_num_pts));
+  DataVector volume_vars(all_vars.data(), number_of_variables * volume_num_pts);
   DirectionMap<3, DataVector> ghost_vars{};
-  for (const auto& direction : Direction<3>::all_directions()) {
-    ghost_vars[direction] = DataVector(number_of_variables * neighbor_num_pts);
+  DirectionMap<3, size_t> ghost_offsets{};
+  for (size_t i = 0; i < 6; ++i) {
+    const auto& direction = gsl::at(Direction<3>::all_directions(), i);
+    ghost_offsets[direction] =
+        number_of_variables * (volume_num_pts + i * neighbor_num_pts);
+    ghost_vars[direction].set_data_ref(&all_vars[ghost_offsets.at(direction)],
+                                       number_of_variables * neighbor_num_pts);
   }
   const auto ghost_data_id = [&element](const Direction<3>& direction) {
     if (element.neighbors().contains(direction)) {
@@ -483,16 +495,38 @@ void reconstruct_prims_work_on_device(
       exec, "padded primitives", 1, number_of_variables, volume_extents,
       ghost_zone_size);
   {
-    const auto host_padded_vars = Kokkos::create_mirror_view(padded_vars);
-    DirectionMap<3, gsl::span<const double>> ghost_spans{};
-    for (const auto& [direction, data] : ghost_vars) {
-      ghost_spans[direction] = gsl::make_span(data.data(), data.size());
+    // Fill the padded view on the device: the volume data in its interior and
+    // the ghost data of each direction in its ghost zones
+    ::fd::device::Transfers transfers{};
+    const size_t padded_num_pts = padded_vars.size() / number_of_variables;
+    transfers.add_copy(
+        0, volume_num_pts, 0, padded_num_pts,
+        ::fd::device::slab_points(volume_extents, 0, 0, volume_extents[0]),
+        ::fd::device::padded_interior_points(volume_extents, ghost_zone_size));
+    for (const auto& direction : Direction<3>::all_directions()) {
+      const size_t dimension = direction.dimension();
+      Index<3> ghost_extents = volume_extents;
+      ghost_extents[dimension] = ghost_zone_size;
+      transfers.add_copy(ghost_offsets.at(direction), neighbor_num_pts, 0,
+                         padded_num_pts,
+                         ::fd::device::slab_points(ghost_extents, dimension, 0,
+                                                   ghost_zone_size),
+                         ::fd::device::padded_ghost_zone_points(
+                             volume_extents, ghost_zone_size, dimension,
+                             direction.side() == Side::Upper));
     }
-    ::fd::device::pack_with_ghost_zones(
-        host_padded_vars, 0,
-        gsl::make_span(volume_vars.data(), volume_vars.size()), ghost_spans,
-        volume_extents);
-    Kokkos::deep_copy(exec, padded_vars, host_padded_vars);
+    transfers.copy_to_device(exec);
+    const Kokkos::View<double*> device_all_vars(
+        Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                           "volume and ghost data"),
+        all_vars.size());
+    Kokkos::deep_copy(
+        exec, device_all_vars,
+        Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>(
+            all_vars.data(), all_vars.size()));
+    transfers.apply(
+        exec, Kokkos::View<double*>(padded_vars.data(), padded_vars.size()),
+        device_all_vars, number_of_variables);
     // The host data must stay valid until the copy is done.
     exec.fence();
   }

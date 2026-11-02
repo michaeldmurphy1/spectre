@@ -185,6 +185,7 @@
 #include "Utilities/TMPL.hpp"
 
 #ifdef SPECTRE_KOKKOS
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitiveOnDeviceKokkos.hpp"
 #include "Time/TimeStepperOnDeviceKokkos.hpp"
 #endif  // SPECTRE_KOKKOS
 
@@ -452,11 +453,14 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
       Actions::UpdateConservatives>>;
 
 #ifdef SPECTRE_KOKKOS
-  // The FD time stepping keeps the time stepper history on the device.
+  // In the FD steps, the time stepping (with the time stepper history) and
+  // updating the conserved variables run on the device.
   using fd_record_time_stepper_data =
       Actions::MutateApply<RecordTimeStepperDataOnDevice<system>>;
   using fd_update_u = Actions::MutateApply<UpdateUOnDevice<system>>;
   using fd_clean_history = Actions::MutateApply<CleanHistoryOnDevice<system>>;
+  using fd_update_conservatives = Actions::MutateApply<
+      grmhd::ValenciaDivClean::ConservativeFromPrimitiveOnDevice>;
   using initialize_device_time_stepper_history =
       Initialization::Actions::InitializeItems<
           Initialization::DeviceTimeStepperHistory<system>>;
@@ -465,6 +469,7 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
       Actions::MutateApply<RecordTimeStepperData<system>>;
   using fd_update_u = Actions::MutateApply<UpdateU<system>>;
   using fd_clean_history = Actions::MutateApply<CleanHistory<system>>;
+  using fd_update_conservatives = Actions::UpdateConservatives;
   using initialize_device_time_stepper_history = tmpl::list<>;
 #endif  // SPECTRE_KOKKOS
 
@@ -517,7 +522,7 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
               ordered_list_of_primitive_recovery_schemes>>,
       parameterized_deleptonization,
       Actions::MutateApply<grmhd::ValenciaDivClean::subcell::FixToAtmosphere>,
-      Actions::UpdateConservatives,
+      fd_update_conservatives,
 
       Actions::Label<evolution::dg::subcell::Actions::Labels::EndOfSolvers>>>;
 

@@ -11,6 +11,7 @@ spectre_target_sources(
   Characteristics.cpp
   ComovingMagneticFieldMagnitude.cpp
   ConservativeFromPrimitive.cpp
+  ConservativeFromPrimitiveOnDeviceKokkos.cpp
   FixConservatives.cpp
   FixConservativesOnDeviceKokkos.cpp
   Flattener.cpp
@@ -33,6 +34,7 @@ spectre_target_headers(
   ComovingMagneticFieldMagnitude.hpp
   ComputeFluxesFromPrimitives.hpp
   ConservativeFromPrimitive.hpp
+  ConservativeFromPrimitiveOnDeviceKokkos.hpp
   DefaultIfThrows.hpp
   FixConservatives.hpp
   FixConservativesOnDeviceKokkos.hpp

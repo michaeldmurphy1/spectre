@@ -30,6 +30,7 @@
 #include "Time/DeviceHistoryKokkos.hpp"
 #include "Time/Tags/DeviceHistoryEvolvedVariablesKokkos.hpp"
 #include "Time/TimeStepperOnDeviceKokkos.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #endif  // SPECTRE_KOKKOS
 
@@ -219,7 +220,8 @@ struct RunEventsAndDenseTriggers {
             VariablesTags,
             gsl::not_null<TimeSteppers::DeviceHistory<>*>>::type... histories,
         const TimeStepper& stepper, const double time) {
-      const Kokkos::DefaultExecutionSpace exec{};
+      const Kokkos::DefaultExecutionSpace& exec =
+          Parallel::device_execution_space();
       return (... and TimeSteppers::dense_update_u_on_device(
                           exec, vars, histories, stepper, time));
     }

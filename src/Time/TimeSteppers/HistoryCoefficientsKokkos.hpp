@@ -322,7 +322,9 @@ apply_step_coefficients_on_device(
       });
 
   const auto host_largest_errors =
-      Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, largest_errors);
+      Kokkos::create_mirror_view(Kokkos::WithoutInitializing, largest_errors);
+  Kokkos::deep_copy(exec, host_largest_errors, largest_errors);
+  exec.fence();
   for (size_t e = 0; e < number_of_elements; ++e) {
     auto& estimate = result[e].emplace(
         error_coefficients.step_time, error_coefficients.step_size,

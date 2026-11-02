@@ -38,6 +38,7 @@
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -154,7 +155,7 @@ void compute_conservatives_for_reconstruction(
     // The EOS is evaluated in the same Kokkos kernel as the conserved
     // variables, so it must have a `DeviceView`
     compute_conservatives_on_device(
-        Kokkos::DefaultExecutionSpace{},
+        Parallel::device_execution_space(),
         make_not_null(&specific_internal_energy), make_not_null(&pressure),
         make_not_null(&get<Tags::TildeD>(*vars_on_face)),
         make_not_null(&get<Tags::TildeYe>(*vars_on_face)),
@@ -476,7 +477,8 @@ void reconstruct_prims_work_on_device(
   });
 
   // Reconstruct all variables on the device
-  const Kokkos::DefaultExecutionSpace exec{};
+  const Kokkos::DefaultExecutionSpace& exec =
+      Parallel::device_execution_space();
   const auto padded_vars = ::fd::device::make_volume_view(
       exec, "padded primitives", 1, number_of_variables, volume_extents,
       ghost_zone_size);
@@ -506,14 +508,24 @@ void reconstruct_prims_work_on_device(
   }
   reconstruct(exec, upper_side_of_face_vars, lower_side_of_face_vars,
               ::fd::device::ConstVolumeView{padded_vars}, volume_extents);
-  exec.fence();
 
   // Copy the face values of each tag back to the host
+  std::array<::fd::device::VolumeView::host_mirror_type, 3> host_upper_sides{};
+  std::array<::fd::device::VolumeView::host_mirror_type, 3> host_lower_sides{};
   for (size_t d = 0; d < 3; ++d) {
-    const auto host_upper_side = Kokkos::create_mirror_view_and_copy(
-        Kokkos::HostSpace{}, gsl::at(upper_side_of_face_vars, d));
-    const auto host_lower_side = Kokkos::create_mirror_view_and_copy(
-        Kokkos::HostSpace{}, gsl::at(lower_side_of_face_vars, d));
+    gsl::at(host_upper_sides, d) = Kokkos::create_mirror_view(
+        Kokkos::WithoutInitializing, gsl::at(upper_side_of_face_vars, d));
+    gsl::at(host_lower_sides, d) = Kokkos::create_mirror_view(
+        Kokkos::WithoutInitializing, gsl::at(lower_side_of_face_vars, d));
+    Kokkos::deep_copy(exec, gsl::at(host_upper_sides, d),
+                      gsl::at(upper_side_of_face_vars, d));
+    Kokkos::deep_copy(exec, gsl::at(host_lower_sides, d),
+                      gsl::at(lower_side_of_face_vars, d));
+  }
+  exec.fence();
+  for (size_t d = 0; d < 3; ++d) {
+    const auto& host_upper_side = gsl::at(host_upper_sides, d);
+    const auto& host_lower_side = gsl::at(host_lower_sides, d);
     const size_t face_num_pts = host_upper_side.extent(2) *
                                 host_upper_side.extent(3) *
                                 host_upper_side.extent(4);

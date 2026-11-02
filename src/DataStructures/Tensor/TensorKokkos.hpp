@@ -8,6 +8,7 @@
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
 #ifdef SPECTRE_KOKKOS
@@ -18,8 +19,9 @@
  * The allocation and copies are enqueued on the execution space instance
  * `exec`, so work that uses the result must run on the same instance (or fence
  * it first), and `tensor_host` must stay alive until `exec` is fenced. Without
- * `exec` the default instance is used and this function blocks until the copy
- * is complete, like `Kokkos::deep_copy`.
+ * `exec` the instance of the calling thread
+ * (`Parallel::device_execution_space()`) is used and this function blocks until
+ * the copy is complete.
  */
 template <typename ExecSpace, typename HostVectorType, typename... Properties>
   requires Kokkos::is_execution_space_v<ExecSpace>
@@ -46,7 +48,8 @@ auto copy_to_device(const ExecSpace& exec,
 
 template <typename HostVectorType, typename... Properties>
 auto copy_to_device(const Tensor<HostVectorType, Properties...>& tensor_host) {
-  const Kokkos::DefaultExecutionSpace exec{};
+  const Kokkos::DefaultExecutionSpace& exec =
+      Parallel::device_execution_space();
   auto tensor_device = copy_to_device(exec, tensor_host);
   exec.fence("copy_to_device");
   return tensor_device;
@@ -92,7 +95,7 @@ auto copy_to_host(
 template <typename DeviceVectorType, typename... Properties>
 auto copy_to_host(
     const Tensor<DeviceVectorType, Properties...>& tensor_device) {
-  return copy_to_host(Kokkos::DefaultExecutionSpace{}, tensor_device);
+  return copy_to_host(Parallel::device_execution_space(), tensor_device);
 }
 /// @}
 #endif  // SPECTRE_KOKKOS

@@ -56,6 +56,7 @@
 #include "Utilities/CallWithDynamicType.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
@@ -205,10 +206,12 @@ struct TimeDerivative {
     }
 
 #ifdef SPECTRE_KOKKOS
-    // All work on the device is enqueued on this instance. The FD
-    // reconstruction (`compute_conservatives_for_reconstruction`) still uses
-    // its own instance, until the reconstructors take one.
-    const Kokkos::DefaultExecutionSpace exec{};
+    // All work on the device is enqueued on the instance of this PE. The FD
+    // reconstruction gets the same instance from
+    // `Parallel::device_execution_space()`, since the reconstructors don't take
+    // one.
+    const Kokkos::DefaultExecutionSpace& exec =
+        Parallel::device_execution_space();
 #endif  // SPECTRE_KOKKOS
     call_with_dynamic_type<void, derived_boundary_corrections>(
         &boundary_correction, [&](const auto* derived_correction) {

@@ -12,6 +12,7 @@
 #include "DataStructures/Tensor/AtIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/TypeTraits/IsA.hpp"
 #include "Utilities/TypeTraits/IsDeviceCapable.hpp"
@@ -214,8 +215,8 @@ auto to_device_argument(const ExecSpace& exec, const Value& value) {
  * copies are enqueued on the execution space instance `exec`, so the kernel
  * that uses the arguments must run on the same instance (or fence it first),
  * and the host values must stay alive until `exec` is fenced. Without `exec`
- * the default instance is used and this function blocks until the copies are
- * complete.
+ * the instance of the calling thread (`Parallel::device_execution_space()`) is
+ * used and this function blocks until the copies are complete.
  *
  * \note `Tags::PerElement` arguments are staged in a temporary host buffer, so
  * with them this function fences `exec` (including any earlier work on it)
@@ -232,7 +233,8 @@ DeviceArguments<Tags...> make_device_arguments(const ExecSpace& exec,
 template <typename... Tags, typename... Values>
   requires(sizeof...(Tags) == sizeof...(Values))
 DeviceArguments<Tags...> make_device_arguments(const Values&... values) {
-  const Kokkos::DefaultExecutionSpace exec{};
+  const Kokkos::DefaultExecutionSpace& exec =
+      Parallel::device_execution_space();
   auto device_arguments = make_device_arguments<Tags...>(exec, values...);
   exec.fence("make_device_arguments");
   return device_arguments;

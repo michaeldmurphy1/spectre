@@ -17,6 +17,7 @@
 #include "DataStructures/Variables.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/PrettyType.hpp"
 #include "Utilities/TMPL.hpp"
@@ -305,8 +306,8 @@ auto apply_pointwise_on_device(
  * The results must already have the right number of grid points.
  *
  * All copies and the kernel are enqueued on the execution space instance
- * `exec` (the default instance if not given). The instance is fenced before
- * returning, so `results` are ready to use on the host.
+ * `exec` (`Parallel::device_execution_space()` if not given). The instance is
+ * fenced before returning, so `results` are ready to use on the host.
  *
  * If `Function::apply` returns a `bool` or a `PointwiseStatus`, this returns
  * its reduction over all grid points (see `apply_pointwise_on_device`).
@@ -393,7 +394,7 @@ auto copy_and_apply_pointwise_on_device(
     const ResultsType& results, tmpl::list<ResultTags...> result_tags,
     tmpl::list<ArgsTags...> args_tags, const typename ArgsTags::type&... args) {
   return copy_and_apply_pointwise_on_device<Function>(
-      Kokkos::DefaultExecutionSpace{}, results, result_tags, args_tags,
+      Parallel::device_execution_space(), results, result_tags, args_tags,
       args...);
 }
 /// @}

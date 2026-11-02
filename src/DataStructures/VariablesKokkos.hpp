@@ -12,6 +12,7 @@
 #include "DataStructures/Tensor/AtIndex.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/MakeSignalingNan.hpp"
 #include "Utilities/TMPL.hpp"
@@ -278,8 +279,9 @@ auto allocate_on_device(
  * The allocation and copy are enqueued on the execution space instance `exec`,
  * so work that uses the result must run on the same instance (or fence it
  * first), and `vars_host` must stay alive until `exec` is fenced. Without
- * `exec` the default instance is used and this function blocks until the copy
- * is complete, like `Kokkos::deep_copy`.
+ * `exec` the instance of the calling thread
+ * (`Parallel::device_execution_space()`) is used and this function blocks until
+ * the copy is complete.
  */
 template <typename ExecSpace, typename DeviceTags, typename... Tags>
   requires Kokkos::is_execution_space_v<ExecSpace>
@@ -302,7 +304,8 @@ void copy_to_device(const ExecSpace& exec,
 template <typename DeviceTags, typename... Tags>
 void copy_to_device(const gsl::not_null<Variables<DeviceTags>*> vars_device,
                     const Variables<tmpl::list<Tags...>>& vars_host) {
-  const Kokkos::DefaultExecutionSpace exec{};
+  const Kokkos::DefaultExecutionSpace& exec =
+      Parallel::device_execution_space();
   copy_to_device(exec, vars_device, vars_host);
   exec.fence("copy_to_device");
 }
@@ -366,7 +369,7 @@ void copy_to_host(const ExecSpace& exec,
 template <typename HostTags, typename DeviceTags>
 void copy_to_host(const gsl::not_null<Variables<HostTags>*> vars_host,
                   const Variables<DeviceTags>& vars_device) {
-  copy_to_host(Kokkos::DefaultExecutionSpace{}, vars_host, vars_device);
+  copy_to_host(Parallel::device_execution_space(), vars_host, vars_device);
 }
 /// @}
 

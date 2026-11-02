@@ -10,6 +10,7 @@
 #include "DataStructures/DeviceArgumentsKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Fluxes.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -28,8 +29,15 @@ void copy_tags(
         get<::Tags::BatchView<Tags, Kokkos::HostSpace>>(*destination);
     const auto& source_tensor =
         get<::Tags::BatchView<Tags, Kokkos::HostSpace>>(source);
+    // A host loop, since `Kokkos::deep_copy` without an execution space
+    // instance fences all instances.
     for (size_t i = 0; i < destination_tensor.size(); ++i) {
-      Kokkos::deep_copy(destination_tensor[i], source_tensor[i]);
+      for (size_t e = 0; e < destination_tensor[i].extent(1); ++e) {
+        for (size_t point = 0; point < destination_tensor[i].extent(0);
+             ++point) {
+          destination_tensor[i](point, e) = source_tensor[i](point, e);
+        }
+      }
     }
   }());
 }
@@ -76,8 +84,9 @@ void compute_fluxes_impl(
  *
  * Only the arguments of `ComputeFluxes` are copied to the device and only the
  * fluxes are copied back, each in one copy. The copies and the kernel are
- * enqueued on the execution space instance `exec` (the default instance if not
- * given), and this function blocks until they are complete.
+ * enqueued on the execution space instance `exec`
+ * (`Parallel::device_execution_space()` if not given), and this function blocks
+ * until they are complete.
  */
 template <typename ExecSpace, typename TagsList>
   requires Kokkos::is_execution_space_v<ExecSpace>
@@ -93,7 +102,7 @@ void compute_fluxes(
 template <typename TagsList>
 void compute_fluxes(
     const gsl::not_null<BatchedVariables<TagsList, Kokkos::HostSpace>*> vars) {
-  compute_fluxes(Kokkos::DefaultExecutionSpace{}, vars);
+  compute_fluxes(Parallel::device_execution_space(), vars);
 }
 /// @}
 }  // namespace grmhd::ValenciaDivClean::subcell

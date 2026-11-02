@@ -33,6 +33,7 @@
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -103,7 +104,8 @@ struct RecordTimeStepperDataOnDevice {
                "Moving the history between the host and the device (e.g., when "
                "switching between DG and FD) is not supported yet.");
     }
-    const Kokkos::DefaultExecutionSpace exec{};
+    const Kokkos::DefaultExecutionSpace& exec =
+        Parallel::device_execution_space();
     if (history->empty()) {
       history->set_number_of_values(vars.size());
     }
@@ -160,7 +162,8 @@ struct UpdateUOnDevice {
     if (::SelfStart::step_unused(time_step_id, next_time_step_id)) {
       return;
     }
-    const Kokkos::DefaultExecutionSpace exec{};
+    const Kokkos::DefaultExecutionSpace& exec =
+        Parallel::device_execution_space();
     const auto result = history->scratch();
     if (error_estimates_enabled) {
       // As in `UpdateU`, variable-order h-refinement needs low-order

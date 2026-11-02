@@ -11,6 +11,7 @@
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
 #ifdef SPECTRE_KOKKOS
@@ -155,7 +156,7 @@ void fix_to_atmosphere_on_device(
     const tnsr::ii<DataVector, 3, Frame::Inertial>& spatial_metric,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const FixToAtmosphere<3>& fix_to_atmosphere) {
-  fix_to_atmosphere_on_device(Kokkos::DefaultExecutionSpace{},
+  fix_to_atmosphere_on_device(Parallel::device_execution_space(),
                               rest_mass_density, specific_internal_energy,
                               spatial_velocity, lorentz_factor, pressure,
                               temperature, electron_fraction, spatial_metric,

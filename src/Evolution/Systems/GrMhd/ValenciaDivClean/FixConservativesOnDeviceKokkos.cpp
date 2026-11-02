@@ -13,6 +13,7 @@
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
 #ifdef SPECTRE_KOKKOS
@@ -79,7 +80,7 @@ bool fix_conservatives_on_device(
     const Scalar<DataVector>& sqrt_det_spatial_metric,
     const FixConservatives& fix_conservatives) {
   return fix_conservatives_on_device(
-      Kokkos::DefaultExecutionSpace{}, tilde_d, tilde_ye, tilde_tau, tilde_s,
+      Parallel::device_execution_space(), tilde_d, tilde_ye, tilde_tau, tilde_s,
       tilde_b, spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
       fix_conservatives);
 }

@@ -27,6 +27,7 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/VisitDeviceView.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace grmhd::ValenciaDivClean::BoundaryCorrections {
@@ -255,7 +256,7 @@ OnDevice<Rusanov>::OnDevice(Kokkos::DefaultExecutionSpace exec,
     : exec_(std::move(exec)) {}
 
 OnDevice<Rusanov>::OnDevice(const Rusanov& rusanov)
-    : OnDevice(Kokkos::DefaultExecutionSpace{}, rusanov) {}
+    : OnDevice(Parallel::device_execution_space(), rusanov) {}
 
 double OnDevice<Rusanov>::dg_package_data(
     const gsl::not_null<Scalar<DataVector>*> packaged_tilde_d,
@@ -390,7 +391,7 @@ OnDevice<Hll>::OnDevice(Kokkos::DefaultExecutionSpace exec, Hll hll)
     : hll_(std::move(hll)), exec_(std::move(exec)) {}
 
 OnDevice<Hll>::OnDevice(Hll hll)
-    : OnDevice(Kokkos::DefaultExecutionSpace{}, std::move(hll)) {}
+    : OnDevice(Parallel::device_execution_space(), std::move(hll)) {}
 
 double OnDevice<Hll>::dg_package_data(
     const gsl::not_null<Scalar<DataVector>*> packaged_tilde_d,

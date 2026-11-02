@@ -29,19 +29,20 @@ namespace evolution::dg::subcell {
 template <size_t Dim>
 DirectionMap<Dim, DataVector> slice_data_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    const DataVector& volume_subcell_vars, const Index<Dim>& subcell_extents,
-    const size_t number_of_ghost_points,
+    const Kokkos::View<const double*>& volume_subcell_vars,
+    const Index<Dim>& subcell_extents, const size_t number_of_ghost_points,
     const std::unordered_set<Direction<Dim>>& directions_to_slice,
     const size_t additional_buffer,
     const DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>&
         fd_to_neighbor_fd_interpolants) {
   const size_t number_of_points = subcell_extents.product();
   const size_t number_of_components =
-      volume_subcell_vars.size() / number_of_points;
-  ASSERT(volume_subcell_vars.size() == number_of_components * number_of_points,
-         "The volume data has " << volume_subcell_vars.size()
-                                << " values, which is not a multiple of the "
-                                << number_of_points << " points");
+      volume_subcell_vars.extent(0) / number_of_points;
+  ASSERT(
+      volume_subcell_vars.extent(0) == number_of_components * number_of_points,
+      "The volume data has " << volume_subcell_vars.extent(0)
+                             << " values, which is not a multiple of the "
+                             << number_of_points << " points");
 
   // As in `slice_data`: interpolate where there is an interpolant, leave
   // the directions with `std::nullopt` unfilled, and copy otherwise.
@@ -98,22 +99,17 @@ DirectionMap<Dim, DataVector> slice_data_on_device(
     buffer_size += sliced_points * number_of_components;
   }
   if (buffer_size == 0) {
+    // The caller may have enqueued work on `exec` that reads host data
+    exec.fence();
     return result;
   }
 
   // Slice on the device
   transfers.copy_to_device(exec);
-  const Kokkos::View<double*> volume(
-      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "volume data"),
-      volume_subcell_vars.size());
-  Kokkos::deep_copy(
-      exec, volume,
-      Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>(
-          volume_subcell_vars.data(), volume_subcell_vars.size()));
   const Kokkos::View<double*> sliced(
       Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "sliced data"),
       buffer_size);
-  transfers.apply(exec, sliced, volume, number_of_components);
+  transfers.apply(exec, sliced, volume_subcell_vars, number_of_components);
   const auto host_sliced =
       Kokkos::create_mirror_view(Kokkos::WithoutInitializing, sliced);
   Kokkos::deep_copy(exec, host_sliced, sliced);
@@ -130,12 +126,47 @@ DirectionMap<Dim, DataVector> slice_data_on_device(
   return result;
 }
 
+template <size_t Dim>
+DirectionMap<Dim, DataVector> slice_data_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const DataVector& volume_subcell_vars, const Index<Dim>& subcell_extents,
+    const size_t number_of_ghost_points,
+    const std::unordered_set<Direction<Dim>>& directions_to_slice,
+    const size_t additional_buffer,
+    const DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>&
+        fd_to_neighbor_fd_interpolants) {
+  const Kokkos::View<double*> volume(
+      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "volume data"),
+      volume_subcell_vars.size());
+  Kokkos::deep_copy(
+      exec, volume,
+      Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>(
+          volume_subcell_vars.data(), volume_subcell_vars.size()));
+  auto result = slice_data_on_device(exec, Kokkos::View<const double*>{volume},
+                                     subcell_extents, number_of_ghost_points,
+                                     directions_to_slice, additional_buffer,
+                                     fd_to_neighbor_fd_interpolants);
+  // `volume_subcell_vars` must stay valid until the copy is done
+  exec.fence();
+  return result;
+}
+
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
 
 #define INSTANTIATION(r, data)                                                \
   template DirectionMap<DIM(data), DataVector> slice_data_on_device(          \
       const Kokkos::DefaultExecutionSpace& exec,                              \
       const DataVector& volume_subcell_vars,                                  \
+      const Index<DIM(data)>& subcell_extents, size_t number_of_ghost_points, \
+      const std::unordered_set<Direction<DIM(data)>>& directions_to_slice,    \
+      size_t additional_buffer,                                               \
+      const DirectionalIdMap<DIM(data),                                       \
+                             std::optional<intrp::Irregular<DIM(data)>>>&     \
+          fd_to_neighbor_fd_interpolants);                                    \
+                                                                              \
+  template DirectionMap<DIM(data), DataVector> slice_data_on_device(          \
+      const Kokkos::DefaultExecutionSpace& exec,                              \
+      const Kokkos::View<const double*>& volume_subcell_vars,                 \
       const Index<DIM(data)>& subcell_extents, size_t number_of_ghost_points, \
       const std::unordered_set<Direction<DIM(data)>>& directions_to_slice,    \
       size_t additional_buffer,                                               \

@@ -72,6 +72,7 @@
 #ifdef SPECTRE_KOKKOS
 #include "Evolution/DgSubcell/SliceDataKokkos.hpp"
 #include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #endif  // SPECTRE_KOKKOS
 
 /// \cond
@@ -182,21 +183,6 @@ struct SendDataForReconstruction {
     // anyway, so no way to save an allocation through that.
     const auto& cell_centered_flux =
         db::get<Tags::CellCenteredFlux<flux_variables, Dim>>(box);
-    DataVector volume_data_to_slice = db::mutate_apply(
-        GhostDataMutator{}, make_not_null(&box),
-        cell_centered_flux.has_value() ? cell_centered_flux.value().size()
-                                       : 0_st);
-    if (cell_centered_flux.has_value()) {
-      std::copy(
-          cell_centered_flux.value().data(),
-          std::next(
-              cell_centered_flux.value().data(),
-              static_cast<std::ptrdiff_t>(cell_centered_flux.value().size())),
-          std::next(
-              volume_data_to_slice.data(),
-              static_cast<std::ptrdiff_t>(volume_data_to_slice.size() -
-                                          cell_centered_flux.value().size())));
-    }
 
     // When using enable_extension_directions, we send the ghost data
     // for problematic directions separately with the new action
@@ -214,20 +200,83 @@ struct SendDataForReconstruction {
       }
     }
 
+    const auto& fd_to_neighbor_fd_interpolants = db::get<
+        evolution::dg::subcell::Tags::InterpolatorsFromFdToNeighborFd<Dim>>(
+        box);
+    // Computes the ghost data with the `GhostDataMutator` on the host, followed
+    // by the cell-centered fluxes, and slices it
+    const auto slice_host_ghost_data = [&]() {
+      DataVector volume_data_to_slice = db::mutate_apply(
+          GhostDataMutator{}, make_not_null(&box),
+          cell_centered_flux.has_value() ? cell_centered_flux.value().size()
+                                         : 0_st);
+      if (cell_centered_flux.has_value()) {
+        std::copy(cell_centered_flux.value().data(),
+                  std::next(cell_centered_flux.value().data(),
+                            static_cast<std::ptrdiff_t>(
+                                cell_centered_flux.value().size())),
+                  std::next(volume_data_to_slice.data(),
+                            static_cast<std::ptrdiff_t>(
+                                volume_data_to_slice.size() -
+                                cell_centered_flux.value().size())));
+      }
 #ifdef SPECTRE_KOKKOS
-    const DirectionMap<Dim, DataVector> all_sliced_data = slice_data_on_device(
-        Parallel::device_execution_space(), volume_data_to_slice,
-        subcell_mesh.extents(), ghost_zone_size, directions_to_work, 0,
-        db::get<
-            evolution::dg::subcell::Tags::InterpolatorsFromFdToNeighborFd<Dim>>(
-            box));
+      return slice_data_on_device(Parallel::device_execution_space(),
+                                  volume_data_to_slice, subcell_mesh.extents(),
+                                  ghost_zone_size, directions_to_work, 0,
+                                  fd_to_neighbor_fd_interpolants);
 #else
-    const DirectionMap<Dim, DataVector> all_sliced_data = slice_data(
-        volume_data_to_slice, subcell_mesh.extents(), ghost_zone_size,
-        directions_to_work, 0,
-        db::get<
-            evolution::dg::subcell::Tags::InterpolatorsFromFdToNeighborFd<Dim>>(
-            box));
+      return slice_data(volume_data_to_slice, subcell_mesh.extents(),
+                        ghost_zone_size, directions_to_work, 0,
+                        fd_to_neighbor_fd_interpolants);
+#endif  // SPECTRE_KOKKOS
+    };
+#ifdef SPECTRE_KOKKOS
+    // If the `GhostDataMutator` can compute the ghost data on the device, the
+    // ghost data is sliced there directly
+    const DirectionMap<Dim, DataVector> all_sliced_data = [&]() {
+      if constexpr (requires { &GhostDataMutator::apply_on_device; }) {
+        const Kokkos::DefaultExecutionSpace& exec =
+            Parallel::device_execution_space();
+        const size_t number_of_ghost_values =
+            subcell_mesh.number_of_grid_points() *
+            Variables<typename GhostDataMutator::ghost_variables_tag_list>::
+                number_of_independent_components;
+        const size_t flux_size = cell_centered_flux.has_value()
+                                     ? cell_centered_flux.value().size()
+                                     : 0_st;
+        const Kokkos::View<double*> volume_data_to_slice(
+            Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "ghost data"),
+            number_of_ghost_values + flux_size);
+        db::apply<typename GhostDataMutator::argument_tags>(
+            [&exec, &volume_data_to_slice](const auto&... args) {
+              GhostDataMutator::apply_on_device(exec, volume_data_to_slice,
+                                                args...);
+            },
+            box);
+        if (cell_centered_flux.has_value()) {
+          Kokkos::deep_copy(
+              exec,
+              Kokkos::subview(
+                  volume_data_to_slice,
+                  Kokkos::make_pair(number_of_ghost_values,
+                                    number_of_ghost_values + flux_size)),
+              Kokkos::View<const double*, Kokkos::HostSpace,
+                           Kokkos::MemoryUnmanaged>(
+                  cell_centered_flux.value().data(), flux_size));
+        }
+        // This fences, so the host fluxes stay valid long enough
+        return slice_data_on_device(
+            exec, Kokkos::View<const double*>{volume_data_to_slice},
+            subcell_mesh.extents(), ghost_zone_size, directions_to_work, 0,
+            fd_to_neighbor_fd_interpolants);
+      } else {
+        return slice_host_ghost_data();
+      }
+    }();
+#else
+    const DirectionMap<Dim, DataVector> all_sliced_data =
+        slice_host_ghost_data();
 #endif  // SPECTRE_KOKKOS
 
     auto& receiver_proxy =

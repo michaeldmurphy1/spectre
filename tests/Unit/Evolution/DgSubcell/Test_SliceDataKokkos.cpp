@@ -69,24 +69,37 @@ void test(const gsl::not_null<std::mt19937*> generator,
   const auto expected = evolution::dg::subcell::slice_data(
       volume, mesh.extents(), ghost_points, directions, additional_buffer,
       interpolants);
-  const auto result = evolution::dg::subcell::slice_data_on_device(
-      Kokkos::DefaultExecutionSpace{}, volume, mesh.extents(), ghost_points,
-      directions, additional_buffer, interpolants);
-  REQUIRE(result.size() == expected.size());
-  for (const auto& [direction, expected_data] : expected) {
-    CAPTURE(direction);
-    const auto& result_data = result.at(direction);
-    REQUIRE(result_data.size() == expected_data.size());
-    // The additional buffer, and a direction left for DG interpolation, are
-    // not filled
-    if (use_interpolants and direction == Direction<Dim>::lower_xi()) {
-      continue;
+  const Kokkos::DefaultExecutionSpace exec{};
+  const auto check_result = [&](const auto& result) {
+    REQUIRE(result.size() == expected.size());
+    for (const auto& [direction, expected_data] : expected) {
+      CAPTURE(direction);
+      const auto& result_data = result.at(direction);
+      REQUIRE(result_data.size() == expected_data.size());
+      // The additional buffer, and a direction left for DG interpolation, are
+      // not filled
+      if (use_interpolants and direction == Direction<Dim>::lower_xi()) {
+        continue;
+      }
+      for (size_t i = 0; i < expected_data.size() - additional_buffer; ++i) {
+        CAPTURE(i);
+        CHECK(result_data[i] == approx(expected_data[i]));
+      }
     }
-    for (size_t i = 0; i < expected_data.size() - additional_buffer; ++i) {
-      CAPTURE(i);
-      CHECK(result_data[i] == approx(expected_data[i]));
-    }
-  }
+  };
+  check_result(evolution::dg::subcell::slice_data_on_device(
+      exec, volume, mesh.extents(), ghost_points, directions, additional_buffer,
+      interpolants));
+
+  // The volume data already on the device
+  const Kokkos::View<double*> device_volume("volume", volume.size());
+  Kokkos::deep_copy(
+      exec, device_volume,
+      Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>(
+          volume.data(), volume.size()));
+  check_result(evolution::dg::subcell::slice_data_on_device(
+      exec, Kokkos::View<const double*>{device_volume}, mesh.extents(),
+      ghost_points, directions, additional_buffer, interpolants));
 }
 }  // namespace
 

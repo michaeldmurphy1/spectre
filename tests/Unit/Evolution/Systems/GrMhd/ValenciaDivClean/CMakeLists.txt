@@ -55,6 +55,7 @@ if (SPECTRE_KOKKOS)
     FiniteDifference/Test_ConservativesOnDeviceKokkos.cpp
     FiniteDifference/Test_ReconstructWorkKokkos.cpp
     Subcell/Test_ComputeFluxesKokkos.cpp
+    Subcell/Test_PrimitiveGhostDataKokkos.cpp
     Test_ConservativeFromPrimitiveKokkos.cpp
     Test_FixConservativesKokkos.cpp
     Test_FluxesKokkos.cpp

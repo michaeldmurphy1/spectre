@@ -186,6 +186,7 @@
 
 #ifdef SPECTRE_KOKKOS
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitiveOnDeviceKokkos.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/PrimitiveGhostDataKokkos.hpp"
 #include "Time/TimeStepperOnDeviceKokkos.hpp"
 #endif  // SPECTRE_KOKKOS
 
@@ -461,6 +462,8 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
   using fd_clean_history = Actions::MutateApply<CleanHistoryOnDevice<system>>;
   using fd_update_conservatives = Actions::MutateApply<
       grmhd::ValenciaDivClean::ConservativeFromPrimitiveOnDevice>;
+  using fd_ghost_variables =
+      grmhd::ValenciaDivClean::subcell::PrimitiveGhostVariablesOnDevice;
   using initialize_device_time_stepper_history =
       Initialization::Actions::InitializeItems<
           Initialization::DeviceTimeStepperHistory<system>>;
@@ -470,6 +473,8 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
   using fd_update_u = Actions::MutateApply<UpdateU<system>>;
   using fd_clean_history = Actions::MutateApply<CleanHistory<system>>;
   using fd_update_conservatives = Actions::UpdateConservatives;
+  using fd_ghost_variables =
+      grmhd::ValenciaDivClean::subcell::PrimitiveGhostVariables;
   using initialize_device_time_stepper_history = tmpl::list<>;
 #endif  // SPECTRE_KOKKOS
 
@@ -489,11 +494,9 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
       Actions::MutateApply<evolution::dg::subcell::fd::CellCenteredFlux<
           system, grmhd::ValenciaDivClean::ComputeFluxes, volume_dim, false>>,
       evolution::dg::subcell::Actions::SendDataForReconstruction<
-          volume_dim, grmhd::ValenciaDivClean::subcell::PrimitiveGhostVariables,
-          use_dg_element_collection>,
+          volume_dim, fd_ghost_variables, use_dg_element_collection>,
       evolution::dg::subcell::Actions::ReceiveAndSendDataForReconstruction<
-          volume_dim, grmhd::ValenciaDivClean::subcell::PrimitiveGhostVariables,
-          use_dg_element_collection>,
+          volume_dim, fd_ghost_variables, use_dg_element_collection>,
       evolution::dg::subcell::Actions::ReceiveDataForReconstruction<volume_dim>,
       Actions::Label<
           evolution::dg::subcell::Actions::Labels::BeginSubcellAfterDgRollback>,

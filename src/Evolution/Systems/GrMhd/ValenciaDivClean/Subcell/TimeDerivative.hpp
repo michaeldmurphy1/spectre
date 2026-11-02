@@ -66,6 +66,8 @@
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/OnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/ComputeFluxesKokkos.hpp"
+#include "NumericalAlgorithms/FiniteDifference/FluxDivergenceKokkos.hpp"
+#include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #endif  // SPECTRE_KOKKOS
 
 namespace grmhd::ValenciaDivClean::subcell {
@@ -610,50 +612,119 @@ struct TimeDerivative {
     const auto& cell_centered_det_inv_jacobian = db::get<
         evolution::dg::subcell::fd::Tags::DetInverseJacobianLogicalToInertial>(
         *box);
-    for (size_t dim = 0; dim < comp_dim; ++dim) {
-      const auto& boundary_correction_in_axis =
-          high_order_corrections.has_value()
-              ? gsl::at(high_order_corrections.value(), dim)
-              : gsl::at(boundary_corrections, dim);
-      const double inverse_delta = gsl::at(one_over_delta_xi, dim);
-      tmpl::for_each<typename variables_tag::tags_list>(
-          [&dt_vars_ptr, &boundary_correction_in_axis,
-           &cell_centered_det_inv_jacobian, dim, inverse_delta, &subcell_mesh,
-           comp_dim, &box](auto evolved_var_tag_v) {
-            using evolved_var_tag =
-                tmpl::type_from<decltype(evolved_var_tag_v)>;
-            using dt_tag = ::Tags::dt<evolved_var_tag>;
-            auto& dt_var = get<dt_tag>(*dt_vars_ptr);
-            const auto& var_correction =
-                get<evolved_var_tag>(boundary_correction_in_axis);
-            for (size_t i = 0; i < dt_var.size(); ++i) {
-              if (comp_dim == 3) {
-                evolution::dg::subcell::add_cartesian_flux_divergence(
-                    make_not_null(&dt_var[i]), inverse_delta,
-                    get(cell_centered_det_inv_jacobian), var_correction[i],
-                    subcell_mesh.extents(), dim);
-              } else {
-                evolution::dg::subcell::add_cartoon_cartesian_flux_divergence(
-                    make_not_null(&dt_var[i]), inverse_delta,
-                    get(cell_centered_det_inv_jacobian), var_correction[i],
-                    subcell_mesh.extents(), dim,
-                    db::get<evolution::dg::subcell::Tags::Coordinates<
-                        3, Frame::Inertial>>(*box),
-                    get<domain::Tags::ElementMap<3, Frame::Grid>>(*box),
-                    get<domain::CoordinateMaps::Tags::CoordinateMap<
-                        3, Frame::Grid, Frame::Inertial>>(*box),
-                    get<::Tags::Time>(*box),
-                    get<domain::Tags::FunctionsOfTime>(*box));
+    const auto add_flux_divergence_on_host = [&]() {
+      for (size_t dim = 0; dim < comp_dim; ++dim) {
+        const auto& boundary_correction_in_axis =
+            high_order_corrections.has_value()
+                ? gsl::at(high_order_corrections.value(), dim)
+                : gsl::at(boundary_corrections, dim);
+        const double inverse_delta = gsl::at(one_over_delta_xi, dim);
+        tmpl::for_each<typename variables_tag::tags_list>(
+            [&dt_vars_ptr, &boundary_correction_in_axis,
+             &cell_centered_det_inv_jacobian, dim, inverse_delta, &subcell_mesh,
+             comp_dim, &box](auto evolved_var_tag_v) {
+              using evolved_var_tag =
+                  tmpl::type_from<decltype(evolved_var_tag_v)>;
+              using dt_tag = ::Tags::dt<evolved_var_tag>;
+              auto& dt_var = get<dt_tag>(*dt_vars_ptr);
+              const auto& var_correction =
+                  get<evolved_var_tag>(boundary_correction_in_axis);
+              for (size_t i = 0; i < dt_var.size(); ++i) {
+                if (comp_dim == 3) {
+                  evolution::dg::subcell::add_cartesian_flux_divergence(
+                      make_not_null(&dt_var[i]), inverse_delta,
+                      get(cell_centered_det_inv_jacobian), var_correction[i],
+                      subcell_mesh.extents(), dim);
+                } else {
+                  evolution::dg::subcell::add_cartoon_cartesian_flux_divergence(
+                      make_not_null(&dt_var[i]), inverse_delta,
+                      get(cell_centered_det_inv_jacobian), var_correction[i],
+                      subcell_mesh.extents(), dim,
+                      db::get<evolution::dg::subcell::Tags::Coordinates<
+                          3, Frame::Inertial>>(*box),
+                      get<domain::Tags::ElementMap<3, Frame::Grid>>(*box),
+                      get<domain::CoordinateMaps::Tags::CoordinateMap<
+                          3, Frame::Grid, Frame::Inertial>>(*box),
+                      get<::Tags::Time>(*box),
+                      get<domain::Tags::FunctionsOfTime>(*box));
+                }
               }
-            }
-          });
+            });
+      }
+    };
+#ifdef SPECTRE_KOKKOS
+    // Cartoon grids and high-order flux corrections still use the host.
+    if (comp_dim == 3 and not high_order_corrections.has_value()) {
+      add_flux_divergence_on_device(exec, dt_vars_ptr, boundary_corrections,
+                                    get(cell_centered_det_inv_jacobian),
+                                    one_over_delta_xi, subcell_mesh.extents());
+    } else {
+      add_flux_divergence_on_host();
     }
+#else
+    add_flux_divergence_on_host();
+#endif  // SPECTRE_KOKKOS
 
     evolution::dg::subcell::store_reconstruction_order_in_databox(
         box, reconstruction_order);
   }
 
  private:
+#ifdef SPECTRE_KOKKOS
+  // Adds the flux divergence of the boundary corrections to `dt_vars` on the
+  // device. The data is copied to and from the device, since it is still
+  // stored on the host.
+  template <typename DtVarsList, typename CorrectionTagsList>
+  static void add_flux_divergence_on_device(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const gsl::not_null<Variables<DtVarsList>*> dt_vars,
+      const std::array<Variables<CorrectionTagsList>, 3>& boundary_corrections,
+      const DataVector& det_inv_jacobian,
+      const std::array<double, 3>& one_over_delta_xi,
+      const Index<3>& volume_extents) {
+    constexpr size_t number_of_variables =
+        Variables<DtVarsList>::number_of_independent_components;
+    static_assert(
+        Variables<CorrectionTagsList>::number_of_independent_components ==
+        number_of_variables);
+    const auto to_device = [&exec](const double* const data,
+                                   const size_t number_of_vars,
+                                   const Index<3>& extents) {
+      const auto result = ::fd::device::make_volume_view(
+          exec, "flux divergence data", 1, number_of_vars, extents);
+      Kokkos::deep_copy(
+          exec, result,
+          Kokkos::View<const double*****, Kokkos::LayoutRight,
+                       Kokkos::HostSpace, Kokkos::MemoryUnmanaged>(
+              data, 1, number_of_vars, extents[2], extents[1], extents[0]));
+      return result;
+    };
+    const auto device_dt_vars =
+        to_device(dt_vars->data(), number_of_variables, volume_extents);
+    std::array<::fd::device::ConstVolumeView, 3> device_corrections{};
+    for (size_t d = 0; d < 3; ++d) {
+      Index<3> face_extents = volume_extents;
+      ++face_extents[d];
+      gsl::at(device_corrections, d) =
+          to_device(gsl::at(boundary_corrections, d).data(),
+                    number_of_variables, face_extents);
+    }
+    ::fd::device::add_cartesian_flux_divergence(
+        exec, device_dt_vars, device_corrections,
+        to_device(det_inv_jacobian.data(), 1, volume_extents),
+        one_over_delta_xi, volume_extents);
+    Kokkos::deep_copy(
+        exec,
+        Kokkos::View<double*****, Kokkos::LayoutRight, Kokkos::HostSpace,
+                     Kokkos::MemoryUnmanaged>(
+            dt_vars->data(), 1, number_of_variables, volume_extents[2],
+            volume_extents[1], volume_extents[0]),
+        device_dt_vars);
+    // The host data must stay valid until the copies are done
+    exec.fence();
+  }
+#endif  // SPECTRE_KOKKOS
+
   template <typename DtVarsList, typename DbTagsList, typename... SourcedTags,
             typename... ArgsTags>
   static void sources_impl(

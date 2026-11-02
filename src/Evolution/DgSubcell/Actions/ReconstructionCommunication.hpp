@@ -69,6 +69,11 @@
 #include "Utilities/MakeArray.hpp"
 #include "Utilities/TMPL.hpp"
 
+#ifdef SPECTRE_KOKKOS
+#include "Evolution/DgSubcell/SliceDataKokkos.hpp"
+#include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
+#endif  // SPECTRE_KOKKOS
+
 /// \cond
 namespace Tags {
 struct TimeStepId;
@@ -209,12 +214,21 @@ struct SendDataForReconstruction {
       }
     }
 
+#ifdef SPECTRE_KOKKOS
+    const DirectionMap<Dim, DataVector> all_sliced_data = slice_data_on_device(
+        Parallel::device_execution_space(), volume_data_to_slice,
+        subcell_mesh.extents(), ghost_zone_size, directions_to_work, 0,
+        db::get<
+            evolution::dg::subcell::Tags::InterpolatorsFromFdToNeighborFd<Dim>>(
+            box));
+#else
     const DirectionMap<Dim, DataVector> all_sliced_data = slice_data(
         volume_data_to_slice, subcell_mesh.extents(), ghost_zone_size,
         directions_to_work, 0,
         db::get<
             evolution::dg::subcell::Tags::InterpolatorsFromFdToNeighborFd<Dim>>(
             box));
+#endif  // SPECTRE_KOKKOS
 
     auto& receiver_proxy =
         Parallel::get_parallel_component<ParallelComponent>(cache);

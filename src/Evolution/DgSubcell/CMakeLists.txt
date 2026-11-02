@@ -40,6 +40,7 @@ spectre_target_headers(
   ReconstructionOrder.hpp
   SetInterpolators.hpp
   SliceData.hpp
+  SliceDataKokkos.hpp
   SliceTensor.hpp
   SliceVariable.hpp
   SubcellAndNonconformingEqualRateRegions.hpp
@@ -69,6 +70,7 @@ spectre_target_sources(
   Reconstruction.cpp
   ReconstructionMethod.cpp
   SliceData.cpp
+  SliceDataKokkos.cpp
   SubcellAndNonconformingEqualRateRegions.cpp
   SubcellEqualRateRegion.cpp
   SubcellOptions.cpp
@@ -94,6 +96,7 @@ target_link_libraries(
   PRIVATE
   BLAS::BLAS
   ErrorHandling
+  FiniteDifference
   Serialization
   Utilities
   )

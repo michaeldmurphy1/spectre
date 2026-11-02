@@ -88,6 +88,11 @@ class Irregular {
                    const gsl::span<const float>& input) const;
   /// @}
 
+  /// The interpolation matrix, with a row for each target point and a column
+  /// for each source point. Interpolating applies it to each variable, e.g.,
+  /// to apply the interpolation in a different way such as on a device.
+  const Matrix& matrix() const { return interpolation_matrix_; }
+
  private:
   friend bool operator==(const Irregular& lhs, const Irregular& rhs) {
     return lhs.interpolation_matrix_ == rhs.interpolation_matrix_;

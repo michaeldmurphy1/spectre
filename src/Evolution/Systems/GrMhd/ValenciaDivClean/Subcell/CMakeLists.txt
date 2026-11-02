@@ -8,6 +8,7 @@ spectre_target_sources(
   FixToAtmosphere.cpp
   NeighborPackagedData.cpp
   PrimitiveGhostData.cpp
+  PrimitiveGhostDataKokkos.cpp
   PrimsAfterRollback.cpp
   ResizeAndComputePrimitives.cpp
   SetInitialRdmpData.cpp
@@ -27,6 +28,7 @@ spectre_target_headers(
   FixToAtmosphere.hpp
   NeighborPackagedData.hpp
   PrimitiveGhostData.hpp
+  PrimitiveGhostDataKokkos.hpp
   PrimsAfterRollback.hpp
   ResizeAndComputePrimitives.hpp
   SetInitialRdmpData.hpp

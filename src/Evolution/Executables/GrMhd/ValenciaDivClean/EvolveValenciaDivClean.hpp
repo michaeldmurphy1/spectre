@@ -97,6 +97,7 @@
 #include "Options/Protocols/FactoryCreation.hpp"
 #include "Options/String.hpp"
 #include "Parallel/Algorithms/AlgorithmSingleton.hpp"
+#include "Parallel/ArrayCollection/DgElementCollection.hpp"
 #include "Parallel/Local.hpp"
 #include "Parallel/Phase.hpp"
 #include "Parallel/PhaseControl/CheckpointAndExitAfterWallclock.hpp"
@@ -232,7 +233,7 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
   using system = grmhd::ValenciaDivClean::System;
   using temporal_id = Tags::TimeStepId;
 
-  static constexpr bool use_dg_element_collection = false;
+  static constexpr bool use_dg_element_collection = true;
 
   using analytic_variables_tags =
       typename system::primitive_variables_tag::tags_list;
@@ -612,46 +613,49 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
                                               interpolation_target_tags>,
       Parallel::Actions::TerminatePhase>>;
 
-  using dg_element_array_component = DgElementArray<
-      EvolutionMetavars,
-      tmpl::list<Parallel::PhaseActions<Parallel::Phase::Initialization,
-                                        initialization_actions>,
+  using dg_element_pdal = tmpl::list<
+      Parallel::PhaseActions<Parallel::Phase::Initialization,
+                             initialization_actions>,
 
-                 Parallel::PhaseActions<
-                     Parallel::Phase::InitializeTimeStepperHistory,
-                     SelfStart::self_start_procedure<step_actions, system>>,
+      Parallel::PhaseActions<
+          Parallel::Phase::InitializeTimeStepperHistory,
+          SelfStart::self_start_procedure<step_actions, system>>,
 
-                 Parallel::PhaseActions<
-                     Parallel::Phase::Register,
-                     tmpl::push_back<dg_registration_list,
-                                     Parallel::Actions::TerminatePhase>>,
+      Parallel::PhaseActions<
+          Parallel::Phase::Register,
+          tmpl::push_back<dg_registration_list,
+                          Parallel::Actions::TerminatePhase>>,
 
-                 Parallel::PhaseActions<
-                     Parallel::Phase::Restart,
-                     tmpl::push_back<dg_registration_list,
-                                     Parallel::Actions::TerminatePhase>>,
+      Parallel::PhaseActions<
+          Parallel::Phase::Restart,
+          tmpl::push_back<dg_registration_list,
+                          Parallel::Actions::TerminatePhase>>,
 
-                 Parallel::PhaseActions<
-                     Parallel::Phase::WriteCheckpoint,
-                     tmpl::list<evolution::Actions::RunEventsAndTriggers<
-                                    Triggers::WhenToCheck::AtCheckpoints>,
-                                Parallel::Actions::TerminatePhase>>,
+      Parallel::PhaseActions<
+          Parallel::Phase::WriteCheckpoint,
+          tmpl::list<evolution::Actions::RunEventsAndTriggers<
+                         Triggers::WhenToCheck::AtCheckpoints>,
+                     Parallel::Actions::TerminatePhase>>,
 
-                 Parallel::PhaseActions<
-                     Parallel::Phase::Evolve,
-                     tmpl::flatten<tmpl::list<
-                         evolution::Actions::RunEventsAndTriggers<
-                             Triggers::WhenToCheck::AtSteps>,
-                         evolution::Actions::RunEventsAndTriggers<
-                             Triggers::WhenToCheck::AtSlabs>,
-                         Actions::ChangeSlabSize,
-                         evolution::dg::Actions::ChangeFixedLtsRatio,
-                         step_actions, Actions::MutateApply<AdvanceTime<>>,
-                         PhaseControl::Actions::ExecutePhaseChange>>>,
-                 Parallel::PhaseActions<
-                     Parallel::Phase::PostFailureCleanup,
-                     tmpl::list<Actions::RunEventsOnFailure<Tags::Time>,
-                                Parallel::Actions::TerminatePhase>>>>;
+      Parallel::PhaseActions<
+          Parallel::Phase::Evolve,
+          tmpl::flatten<tmpl::list<evolution::Actions::RunEventsAndTriggers<
+                                       Triggers::WhenToCheck::AtSteps>,
+                                   evolution::Actions::RunEventsAndTriggers<
+                                       Triggers::WhenToCheck::AtSlabs>,
+                                   Actions::ChangeSlabSize,
+                                   evolution::dg::Actions::ChangeFixedLtsRatio,
+                                   step_actions,
+                                   Actions::MutateApply<AdvanceTime<>>,
+                                   PhaseControl::Actions::ExecutePhaseChange>>>,
+      Parallel::PhaseActions<Parallel::Phase::PostFailureCleanup,
+                             tmpl::list<Actions::RunEventsOnFailure<Tags::Time>,
+                                        Parallel::Actions::TerminatePhase>>>;
+  using dg_element_array_component =
+      tmpl::conditional_t<use_dg_element_collection,
+                          Parallel::DgElementCollection<
+                              volume_dim, EvolutionMetavars, dg_element_pdal>,
+                          DgElementArray<EvolutionMetavars, dg_element_pdal>>;
 
   struct registration
       : tt::ConformsTo<Parallel::protocols::RegistrationMetavariables> {

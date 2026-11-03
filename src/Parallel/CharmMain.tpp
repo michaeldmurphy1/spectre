@@ -8,6 +8,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdlib>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -20,6 +21,7 @@
 #include "Utilities/Blas.hpp"
 #include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/ErrorHandling/SegfaultHandler.hpp"
+#include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/MemoryHelpers.hpp"
 #include "Utilities/NoSuchType.hpp"
 
@@ -103,6 +105,36 @@ inline void register_custom_reducer_functions() {
   }
 }
 
+#ifdef SPECTRE_KOKKOS
+/*!
+ * \ingroup CharmExtensionsGroup
+ * \brief Initialize Kokkos on this node (process) and finalize it at exit.
+ *
+ * Every process that runs device code needs its own Kokkos initialization.
+ * Kokkos removes its own command-line arguments (`--kokkos-...`) before `Main`
+ * parses the rest. Kokkos chooses the GPU of the process: from
+ * `--kokkos-device-id` or `KOKKOS_DEVICE_ID` if given, else from the rank of
+ * the process on its physical node if the launcher (e.g., MPI or Slurm)
+ * provides it, else the first GPU. With more processes than GPUs on a physical
+ * node, processes share GPUs, and without NVIDIA MPS their kernels don't run
+ * concurrently, so one process per GPU is preferable.
+ *
+ * Kokkos is finalized by an `std::atexit` handler. It is registered after
+ * `Kokkos::initialize` so that it runs before the exit handlers of the device
+ * runtime that Kokkos initialized.
+ */
+inline void initialize_kokkos() {
+  char** argv = CkGetArgv();
+  int argc = CmiGetArgc(argv);
+  Kokkos::initialize(argc, argv);
+  std::atexit([]() {
+    if (Kokkos::is_initialized()) {
+      Kokkos::finalize();
+    }
+  });
+}
+#endif  // SPECTRE_KOKKOS
+
 /*!
  * \ingroup CharmExtensionsGroup
  * \brief Register all init_node and init_proc functions with Charm++
@@ -130,6 +162,9 @@ inline void register_init_node_and_proc(
         &disable_openblas_multithreading}) {
     _registerInitCall(*init_node_func, 1);
   }
+#ifdef SPECTRE_KOKKOS
+  _registerInitCall(initialize_kokkos, 1);
+#endif  // SPECTRE_KOKKOS
   for (const auto& init_node_func : charm_init_node_funcs) {
     _registerInitCall(*init_node_func, 1);
   }

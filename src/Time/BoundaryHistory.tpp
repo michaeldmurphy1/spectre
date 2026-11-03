@@ -545,4 +545,7 @@ std::ostream& operator<<(
       std::ostream & os, const size_t padding_size) const;                     \
   template std::ostream&                                                       \
   TimeSteppers::BoundaryHistory<__VA_ARGS__>::print<true>(                     \
-      std::ostream & os, const size_t padding_size) const;
+      std::ostream & os, const size_t padding_size) const;                     \
+  template std::ostream& TimeSteppers::operator<<(                             \
+      std::ostream& os,                                                        \
+      const TimeSteppers::BoundaryHistory<__VA_ARGS__>& history);

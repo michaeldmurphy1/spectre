@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
+#include "Time/BoundaryHistory.hpp"
 #include "Time/Slab.hpp"
 #include "Time/Time.hpp"
 #include "Time/TimeStepId.hpp"
@@ -354,12 +356,28 @@ void test_p_project() {
                               std::optional(final_volume_mesh)});
 }
 
+// The BoundaryHistory of MortarData is explicitly instantiated in the
+// Evolution library, so this checks that its stream operator is too (only
+// BoundaryHistory.hpp is included here).
+template <size_t Dim>
+void test_print_boundary_history() {
+  TimeSteppers::BoundaryHistory<MortarData<Dim>, MortarData<Dim>, DataVector>
+      history{};
+  const Slab slab(0.0, 1.0);
+  history.local().insert(TimeStepId(true, 0, slab.start()), 1, {});
+  history.remote().insert(TimeStepId(true, 0, slab.start()), 1, {});
+  std::ostringstream expected_output{};
+  history.template print<true>(expected_output);
+  CHECK(get_output(history) == expected_output.str());
+}
+
 template <size_t Dim>
 void test() {
   test_global_time_stepping_usage<Dim>();
   test_local_time_stepping_usage<Dim>(true);
   test_local_time_stepping_usage<Dim>(false);
   test_p_project<Dim>();
+  test_print_boundary_history<Dim>();
 }
 }  // namespace
 

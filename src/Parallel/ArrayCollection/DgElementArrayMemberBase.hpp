@@ -105,12 +105,6 @@ class DgElementArrayMemberBase : PUP::able {
   /// This should always be managed by `std::unique_lock` or `std::lock_guard`.
   Parallel::NodeLock& element_lock();
 
-  /// \brief Set which core this element should pretend to be bound to.
-  void set_core(size_t core);
-
-  /// \brief Get which core this element should pretend to be bound to.
-  size_t get_core() const;
-
   /// Returns the name of the last "next iterable action" to be run before a
   /// deadlock occurred.
   const std::string& deadlock_analysis_next_iterable_action() const {
@@ -137,9 +131,5 @@ class DgElementArrayMemberBase : PUP::able {
   std::string deadlock_analysis_next_iterable_action_{};
   ElementId<Dim> element_id_;
   size_t my_node_{std::numeric_limits<size_t>::max()};
-  // There is no associated core. However, we use this as a method of
-  // interoperating with core-aware concepts like the interpolation
-  // framework. Once that framework is core-agnostic we will remove my_core_.
-  size_t my_core_{std::numeric_limits<size_t>::max()};
 };
 }  // namespace Parallel

@@ -124,18 +124,18 @@ struct CreateElementCollection {
       }
       return result;
     }();
-    std::vector<std::pair<ElementId<Dim>, size_t>> my_elements_and_cores{};
-    my_elements_and_cores.reserve(total_num_elements / number_of_nodes + 1);
+    std::vector<ElementId<Dim>> my_elements{};
+    my_elements.reserve(total_num_elements / number_of_nodes + 1);
     std::unordered_map<ElementId<Dim>, size_t> node_of_elements{};
     const size_t my_node = Parallel::my_node<size_t>(local_cache);
 
     Parallel::create_elements_using_distribution(
-        [&my_elements_and_cores, my_node, &node_of_elements](
-            const ElementId<Dim>& element_id, const size_t target_proc,
+        [&my_elements, my_node, &node_of_elements](
+            const ElementId<Dim>& element_id, const size_t /*target_proc*/,
             const size_t target_node) {
           node_of_elements.insert(std::pair{element_id, target_node});
           if (target_node == my_node) {
-            my_elements_and_cores.push_back(std::pair{element_id, target_proc});
+            my_elements.push_back(element_id);
           }
         },
         element_weight, blocks, initial_extents, initial_refinement_levels,
@@ -156,17 +156,14 @@ struct CreateElementCollection {
                Tags::ElementCollection<Dim, Metavariables, PhaseDepActionList,
                                        SimpleTagsFromOptions>,
                Tags::NumberOfElementsTerminated>(
-        [&local_cache, &initialization_items, &my_elements_and_cores,
-         &node_of_elements](
+        [&local_cache, &initialization_items, &my_elements, &node_of_elements](
             const auto element_locations_ptr, const auto collection_ptr,
             const gsl::not_null<size_t*> number_of_elements_terminated) {
           *number_of_elements_terminated = 0;
           const auto serialized_initialization_items =
               serialize(initialization_items);
           *element_locations_ptr = std::move(node_of_elements);
-          for (const auto& element_id_and_core : my_elements_and_cores) {
-            const auto& element_id = element_id_and_core.first;
-            const auto core = element_id_and_core.second;
+          for (const auto& element_id : my_elements) {
             if (not collection_ptr
                         ->emplace(
                             std::piecewise_construct,
@@ -188,7 +185,6 @@ struct CreateElementCollection {
                     << " was not initialized in a terminated state. This is a "
                        "bug.");
             }
-            collection_ptr->at(element_id).set_core(core);
           }
           if (*number_of_elements_terminated != collection_ptr->size()) {
             ERROR(

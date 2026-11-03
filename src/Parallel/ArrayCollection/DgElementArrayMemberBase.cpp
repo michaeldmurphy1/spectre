@@ -93,16 +93,6 @@ Parallel::NodeLock& DgElementArrayMemberBase<Dim>::element_lock() {
 }
 
 template <size_t Dim>
-void DgElementArrayMemberBase<Dim>::set_core(size_t core) {
-  my_core_ = core;
-}
-
-template <size_t Dim>
-size_t DgElementArrayMemberBase<Dim>::get_core() const {
-  return my_core_;
-}
-
-template <size_t Dim>
 void DgElementArrayMemberBase<Dim>::pup(PUP::er& p) {
   PUP::able::pup(p);
   p | performing_action_;
@@ -113,7 +103,6 @@ void DgElementArrayMemberBase<Dim>::pup(PUP::er& p) {
   p | halt_algorithm_until_next_phase_;
   p | deadlock_analysis_next_iterable_action_;
   p | element_id_;
-  p | my_core_;
   if (p.isUnpacking()) {
     // Node locks are default-constructed, which is fine
     //

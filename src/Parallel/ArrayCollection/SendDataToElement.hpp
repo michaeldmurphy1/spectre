@@ -95,8 +95,10 @@ struct SendDataToElement {
       }
     } else {
       Parallel::threaded_action<Parallel::Actions::ReceiveDataForElement<>>(
-          my_proxy[node_of_element], ReceiveTag{}, element_to_execute_on,
-          instance, std::forward<ReceiveData>(receive_data));
+          my_proxy[node_of_element],
+          Parallel::Actions::ReceiveTagWrapper<ReceiveTag>{},
+          element_to_execute_on, instance,
+          std::forward<ReceiveData>(receive_data));
     }
   }
 };

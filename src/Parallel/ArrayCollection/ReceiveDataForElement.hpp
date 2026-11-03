@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <mutex>
+#include <pup.h>
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/TaggedTuple.hpp"
@@ -18,6 +19,17 @@
 #include "Utilities/Gsl.hpp"
 
 namespace Parallel::Actions {
+/// \brief Identifies the inbox tag `ReceiveTag` in messages to another node.
+///
+/// Inbox tags aren't serializable, so messages carry this empty wrapper
+/// instead.
+template <typename ReceiveTag>
+struct ReceiveTagWrapper {
+  using type = ReceiveTag;
+  // NOLINTNEXTLINE(google-runtime-references)
+  void pup(PUP::er& /*p*/) {}
+};
+
 /// \brief Receive data for a specific element on the nodegroup.
 ///
 /// If `StartPhase` is `true` then `start_phase(phase)` is called on the
@@ -34,7 +46,7 @@ struct ReceiveDataForElement {
                     const ArrayIndex& /*array_index*/,
                     const gsl::not_null<Parallel::NodeLock*> /*node_lock*/,
                     const DistributedObject* /*distributed_object*/,
-                    const ReceiveTag& /*meta*/,
+                    const ReceiveTagWrapper<ReceiveTag>& /*meta*/,
                     const ElementId<Dim>& element_to_execute_on,
                     typename ReceiveTag::temporal_id instance,
                     ReceiveData receive_data) {

@@ -14,6 +14,7 @@
 #include "Evolution/DiscontinuousGalerkin/EqualRateLts/Tags/EqualRateRegionId.hpp"
 #include "Evolution/DiscontinuousGalerkin/EqualRateLts/Tags/EqualRateRegions.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
+#include "Parallel/ArrayCollection/IsDgElementCollection.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Parallel/Invoke.hpp"
 #include "Parallel/Section.hpp"
@@ -22,6 +23,7 @@
 #include "Time/LtsMode.hpp"
 #include "Time/Tags/FixedLtsRatio.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -123,8 +125,10 @@ struct SectionsToCreate {
 template <typename Metavariables, size_t Dim, typename RegionGenerators>
 struct SetupEqualRateRegions {
  private:
-  using array_components = tmpl::filter<typename Metavariables::component_list,
-                                        Parallel::is_array<tmpl::_1>>;
+  using array_components =
+      tmpl::filter<typename Metavariables::component_list,
+                   tmpl::or_<Parallel::is_array<tmpl::_1>,
+                             Parallel::is_dg_element_collection<tmpl::_1>>>;
   static_assert(tmpl::size<array_components>::value == 1,
                 "Cannot identify element array.");
 
@@ -133,9 +137,14 @@ struct SetupEqualRateRegions {
 
   using const_global_cache_tags = tmpl::list<
       evolution::dg::Tags::ConcreteEqualRateRegions<Dim, RegionGenerators>>;
-  using simple_tags = tmpl::list<
-      ::Tags::FixedLtsRatio,
-      Parallel::Tags::Section<ParallelComponent, Tags::EqualRateRegionId>>;
+  // Charm++ sections only exist for array chares, so a DgElementCollection
+  // has no equal-rate section.
+  using simple_tags = tmpl::conditional_t<
+      Parallel::is_dg_element_collection_v<ParallelComponent>,
+      tmpl::list<::Tags::FixedLtsRatio>,
+      tmpl::list<
+          ::Tags::FixedLtsRatio,
+          Parallel::Tags::Section<ParallelComponent, Tags::EqualRateRegionId>>>;
   using compute_tags = tmpl::list<
       evolution::dg::Tags::EqualRateRegionsRef<Dim, RegionGenerators>>;
 
@@ -151,31 +160,39 @@ struct SetupEqualRateRegions {
       return {Parallel::AlgorithmExecution::Continue, std::nullopt};
     }
 
-    db::mutate_apply<SetupLocalEqualRateRegion<Dim>>(make_not_null(&box));
+    if constexpr (Parallel::is_dg_element_collection_v<ParallelComponent>) {
+      (void)cache;
+      ERROR(
+          "Local time stepping is not yet supported with the "
+          "DgElementCollection because it requires Charm++ array sections for "
+          "the equal-rate regions.");
+    } else {
+      db::mutate_apply<SetupLocalEqualRateRegion<Dim>>(make_not_null(&box));
 
-    // Set up sections.  This will be empty everywhere except element 0.
-    const auto sections_to_create =
-        db::apply<SetupEqualRateRegions_detail::SectionsToCreate<Dim>>(box);
-    for (const auto& [region_id, section_elements] : sections_to_create) {
-      auto& component =
-          Parallel::get_parallel_component<ParallelComponent>(cache);
-      using Section =
-          Parallel::Section<ParallelComponent, Tags::EqualRateRegionId>;
-      const Section section{
-          region_id, Section::cproxy_section::ckNew(component.ckGetArrayID(),
-                                                    section_elements)};
+      // Set up sections.  This will be empty everywhere except element 0.
+      const auto sections_to_create =
+          db::apply<SetupEqualRateRegions_detail::SectionsToCreate<Dim>>(box);
+      for (const auto& [region_id, section_elements] : sections_to_create) {
+        auto& component =
+            Parallel::get_parallel_component<ParallelComponent>(cache);
+        using Section =
+            Parallel::Section<ParallelComponent, Tags::EqualRateRegionId>;
+        const Section section{
+            region_id, Section::cproxy_section::ckNew(component.ckGetArrayID(),
+                                                      section_elements)};
 
-      // Charm sections are buggy.  Most of their features only work
-      // when manually sending charm messages.  The higher-level
-      // interfaces exist, but fail to actually transmit data to the
-      // receiving end and pass in garbage instead.  This is mentioned
-      // in an offhand remark in a section of the charm documentation
-      // on "optimized multicast".  As a result we avoid doing
-      // anything other than reductions (which seem to work) on
-      // sections.  Here we use an array broadcast and ignore the
-      // message on most of the elements because section broadcasts
-      // don't work.
-      Parallel::simple_action<SetEqualRateSection<Dim>>(component, section);
+        // Charm sections are buggy.  Most of their features only work
+        // when manually sending charm messages.  The higher-level
+        // interfaces exist, but fail to actually transmit data to the
+        // receiving end and pass in garbage instead.  This is mentioned
+        // in an offhand remark in a section of the charm documentation
+        // on "optimized multicast".  As a result we avoid doing
+        // anything other than reductions (which seem to work) on
+        // sections.  Here we use an array broadcast and ignore the
+        // message on most of the elements because section broadcasts
+        // don't work.
+        Parallel::simple_action<SetEqualRateSection<Dim>>(component, section);
+      }
     }
 
     return {Parallel::AlgorithmExecution::Continue, std::nullopt};

@@ -58,6 +58,7 @@
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Parallel/ArrayCollection/IsDgElementCollection.hpp"
+#include "Parallel/ArrayCollection/SendDataToElement.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Time/LtsMode.hpp"
 #include "Time/Tags/HistoryEvolvedVariables.hpp"
@@ -279,8 +280,6 @@ struct SendDataForReconstruction {
         slice_host_ghost_data();
 #endif  // SPECTRE_KOKKOS
 
-    auto& receiver_proxy =
-        Parallel::get_parallel_component<ParallelComponent>(cache);
     const RdmpTciData& rdmp_tci_data = db::get<Tags::DataForRdmpTci>(box);
     const TimeStepId& time_step_id = db::get<::Tags::TimeStepId>(box);
     const TimeStepId& next_time_step_id =
@@ -361,11 +360,11 @@ struct SendDataForReconstruction {
               std::nullopt, next_time_step_id,
               tci_decision, integration_order};
 
-          Parallel::receive_data<
+          Parallel::send_data_to_element<
               evolution::dg::Tags::BoundaryCorrectionAndGhostCellsInbox<
-                  Dim,
-                  Parallel::is_dg_element_collection_v<ParallelComponent>>>(
-              receiver_proxy[neighbor], time_step_id,
+                  Dim, Parallel::is_dg_element_collection_v<ParallelComponent>>,
+              ParallelComponent>(
+              cache, neighbor, time_step_id,
               std::pair{
                   DirectionalId<Dim>{direction_from_neighbor, element.id()},
                   std::move(data)});
@@ -548,8 +547,6 @@ struct ReceiveAndSendDataForReconstruction {
                                           cell_centered_flux.value().size())));
     }
 
-    auto& receiver_proxy =
-        Parallel::get_parallel_component<ParallelComponent>(cache);
     const RdmpTciData& rdmp_tci_data = db::get<Tags::DataForRdmpTci>(box);
     const TimeStepId& time_step_id = db::get<::Tags::TimeStepId>(box);
     const TimeStepId& next_time_step_id =
@@ -688,10 +685,11 @@ struct ReceiveAndSendDataForReconstruction {
           std::nullopt, std::move(subcell_data_to_send),
           std::nullopt, next_time_step_id,
           tci_decision, integration_order};
-      Parallel::receive_data<
+      Parallel::send_data_to_element<
           evolution::dg::Tags::BoundaryCorrectionAndGhostCellsInbox<
-              Dim, Parallel::is_dg_element_collection_v<ParallelComponent>>>(
-          receiver_proxy[problematic_neighbor_id], time_step_id,
+              Dim, Parallel::is_dg_element_collection_v<ParallelComponent>>,
+          ParallelComponent>(
+          cache, problematic_neighbor_id, time_step_id,
           std::pair{DirectionalId<Dim>{direction_from_neighbor, element.id()},
                     std::move(data)});
     }

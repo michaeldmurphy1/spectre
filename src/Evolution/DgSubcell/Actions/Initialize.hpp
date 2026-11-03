@@ -46,6 +46,7 @@
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
+#include "Parallel/ArrayCollection/SendDataToElement.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Utilities/Algorithm.hpp"
 #include "Utilities/CallWithDynamicType.hpp"
@@ -325,8 +326,6 @@ struct SetAndCommunicateInitialRdmpData {
     const auto& element = db::get<domain::Tags::Element<Dim>>(box);
     const auto& rdmp_data =
         db::get<evolution::dg::subcell::Tags::DataForRdmpTci>(box);
-    auto& receiver_proxy =
-        Parallel::get_parallel_component<ParallelComponent>(cache);
     for (const auto& [direction, neighbors] : element.neighbors()) {
       for (const auto& neighbor : neighbors) {
         const auto& orientation = neighbors.orientation(neighbor);
@@ -334,9 +333,10 @@ struct SetAndCommunicateInitialRdmpData {
         evolution::dg::subcell::InitialTciData data{{}, rdmp_data};
         // We use temporal ID 0 for sending RDMP data
         const int temporal_id = 0;
-        Parallel::receive_data<
-            evolution::dg::subcell::Tags::InitialTciData<Dim>>(
-            receiver_proxy[neighbor], temporal_id,
+        Parallel::send_data_to_element<
+            evolution::dg::subcell::Tags::InitialTciData<Dim>,
+            ParallelComponent>(
+            cache, neighbor, temporal_id,
             std::make_pair(
                 DirectionalId<Dim>{direction_from_neighbor, element.id()},
                 std::move(data)));
@@ -459,8 +459,6 @@ struct ComputeAndSendTciOnInitialGrid {
       if (UNLIKELY(element.number_of_neighbors() == 0)) {
         return;
       }
-      auto& receiver_proxy =
-          Parallel::get_parallel_component<ParallelComponent>(cache);
       for (const auto& [direction, neighbors] : element.neighbors()) {
         for (const auto& neighbor : neighbors) {
           const auto& orientation = neighbors.orientation(neighbor);
@@ -469,9 +467,10 @@ struct ComputeAndSendTciOnInitialGrid {
           evolution::dg::subcell::InitialTciData data{tci_decision, {}};
           // We use temporal ID 1 for ending the TCI decision.
           const int temporal_id = 1;
-          Parallel::receive_data<
-              evolution::dg::subcell::Tags::InitialTciData<Dim>>(
-              receiver_proxy[neighbor], temporal_id,
+          Parallel::send_data_to_element<
+              evolution::dg::subcell::Tags::InitialTciData<Dim>,
+              ParallelComponent>(
+              cache, neighbor, temporal_id,
               std::make_pair(
                   DirectionalId<Dim>{direction_from_neighbor, element.id()},
                   std::move(data)));

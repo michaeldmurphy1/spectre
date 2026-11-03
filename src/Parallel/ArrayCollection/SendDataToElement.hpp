@@ -12,15 +12,18 @@
 #include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Evolution/DiscontinuousGalerkin/AtomicInboxBoundaryData.hpp"
+#include "Parallel/ArrayCollection/IsDgElementCollection.hpp"
 #include "Parallel/ArrayCollection/ReceiveDataForElement.hpp"
 #include "Parallel/ArrayCollection/Tags/ElementLocations.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Parallel/Info.hpp"
+#include "Parallel/Invoke.hpp"
 #include "Parallel/NodeLock.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
 
-namespace Parallel::Actions {
+namespace Parallel {
+namespace Actions {
 /*!
  * \brief A local synchronous action where data is communicated to neighbor
  * elements.
@@ -102,4 +105,31 @@ struct SendDataToElement {
     }
   }
 };
-}  // namespace Parallel::Actions
+}  // namespace Actions
+
+/*!
+ * \brief Send `data` to the inbox `ReceiveTag` of the element `element_id`
+ * of `ParallelComponent`.
+ *
+ * For a `Parallel::DgElementCollection` this uses
+ * `Parallel::Actions::SendDataToElement` (direct insertion for elements on the
+ * same node), otherwise `Parallel::receive_data` to the array element.
+ */
+template <typename ReceiveTag, typename ParallelComponent, size_t Dim,
+          typename Metavariables, typename ReceiveData>
+void send_data_to_element(Parallel::GlobalCache<Metavariables>& cache,
+                          const ElementId<Dim>& element_id,
+                          typename ReceiveTag::temporal_id temporal_id,
+                          ReceiveData&& data) {
+  auto& proxy = Parallel::get_parallel_component<ParallelComponent>(cache);
+  if constexpr (Parallel::is_dg_element_collection_v<ParallelComponent>) {
+    Parallel::local_synchronous_action<Parallel::Actions::SendDataToElement>(
+        proxy, make_not_null(&cache), ReceiveTag{}, element_id,
+        std::move(temporal_id), std::forward<ReceiveData>(data));
+  } else {
+    Parallel::receive_data<ReceiveTag>(proxy[element_id],
+                                       std::move(temporal_id),
+                                       std::forward<ReceiveData>(data));
+  }
+}
+}  // namespace Parallel

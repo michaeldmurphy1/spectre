@@ -175,8 +175,25 @@ class ChangeFixedLtsRatio : public Event,
   void operator()(const gsl::not_null<db::DataBox<DbTags>*> box,
                   Parallel::GlobalCache<Metavariables>& cache,
                   const ArrayIndex& array_index,
-                  const ParallelComponent* const /*meta*/,
+                  const ParallelComponent* const meta,
                   const ObservationValue& /*observation_value*/) const {
+    // The equal-rate regions are Charm++ array sections, which a
+    // DgElementCollection doesn't have.
+    if constexpr (Parallel::is_dg_element_collection_v<ParallelComponent>) {
+      (void)box, (void)cache, (void)array_index, (void)meta;
+      ERROR("ChangeFixedLtsRatio is not implemented for DgElementCollection.");
+    } else {
+      apply_on_array(box, cache, array_index, meta);
+    }
+  }
+
+ private:
+  template <typename DbTags, typename Metavariables, typename ArrayIndex,
+            typename ParallelComponent>
+  void apply_on_array(const gsl::not_null<db::DataBox<DbTags>*> box,
+                      Parallel::GlobalCache<Metavariables>& cache,
+                      const ArrayIndex& array_index,
+                      const ParallelComponent* const /*meta*/) const {
     const auto& time_step_id = db::get<::Tags::TimeStepId>(*box);
     if (time_step_id.substep() != 0) {
       ERROR("Changing step ratio on a substep not implemented.");
@@ -247,10 +264,7 @@ class ChangeFixedLtsRatio : public Event,
         },
         box);
 
-    if constexpr (Parallel::is_dg_element_collection_v<ParallelComponent>) {
-      (void)cache, (void)array_index;
-      ERROR("Reductions not implemented for DgElementCollection.");
-    } else {
+    {
       if (synchronization_required) {
         const auto& component_proxy =
             Parallel::get_parallel_component<ParallelComponent>(cache);
@@ -272,6 +286,7 @@ class ChangeFixedLtsRatio : public Event,
     }
   }
 
+ public:
   using is_ready_argument_tags = tmpl::list<>;
 
   template <typename Metavariables, typename ArrayIndex, typename Component>

@@ -51,6 +51,12 @@ namespace Parallel::Actions {
  * to communicate with each other during their initialization. The reduction
  * target is `Parallel::Actions::SpawnInitializeElementsInCollection`.
  *
+ * The distribution skips the procs that `Parallel::ResourceInfo` reserves
+ * (e.g., for singletons or `AvoidGlobalProc0`), as for a `DgElementArray`, so
+ * a node with reserved procs gets fewer elements. Since any thread of a node
+ * may run the actions of the node's elements, the reserved procs still run
+ * element actions.
+ *
  * Uses:
  * - DataBox:
  *   - `domain::Tags::Domain<Dim>`
@@ -91,7 +97,8 @@ struct CreateElementCollection {
       Parallel::GlobalCache<Metavariables>& local_cache,
       const ArrayIndex& /*array_index*/, const ActionList /*meta*/,
       const ParallelComponent* const /*meta*/) {
-    const std::unordered_set<size_t> procs_to_ignore{};
+    const std::unordered_set<size_t>& procs_to_ignore =
+        local_cache.get_resource_info().procs_to_ignore();
 
     const auto& domain = Parallel::get<domain::Tags::Domain<Dim>>(local_cache);
     const auto& initial_refinement_levels =

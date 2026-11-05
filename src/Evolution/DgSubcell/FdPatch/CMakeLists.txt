@@ -10,6 +10,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   FdPatches.hpp
+  GhostZonesKokkos.hpp
   Tags.hpp
   )
 
@@ -17,6 +18,7 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   FdPatches.cpp
+  GhostZonesKokkos.cpp
   )
 
 target_link_libraries(
@@ -28,6 +30,7 @@ target_link_libraries(
   DomainCreators
   DomainStructure
   Evolution
+  FiniteDifference
   Options
   Serialization
   Spectral

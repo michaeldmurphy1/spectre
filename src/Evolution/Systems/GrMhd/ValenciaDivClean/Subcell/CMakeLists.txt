@@ -7,6 +7,7 @@ spectre_target_sources(
   FixConservativesAndComputePrims.cpp
   NeighborPackagedData.cpp
   PrimitiveGhostData.cpp
+  PrimitiveGhostDataKokkos.cpp
   PrimsAfterRollback.cpp
   ResizeAndComputePrimitives.cpp
   SetInitialRdmpData.cpp
@@ -25,6 +26,7 @@ spectre_target_headers(
   FixConservativesAndComputePrims.hpp
   NeighborPackagedData.hpp
   PrimitiveGhostData.hpp
+  PrimitiveGhostDataKokkos.hpp
   PrimsAfterRollback.hpp
   ResizeAndComputePrimitives.hpp
   SetInitialRdmpData.hpp

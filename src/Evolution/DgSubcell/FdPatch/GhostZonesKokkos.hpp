@@ -4,14 +4,17 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 #include "DataStructures/Index.hpp"
 #include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/DirectionMap.hpp"
+#include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "NumericalAlgorithms/FiniteDifference/TransfersKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
+#include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
 #ifdef SPECTRE_KOKKOS
@@ -54,6 +57,14 @@ namespace evolution::dg::subcell::fd_patch {
  *   dimension. The projection is only supported for DG neighbors in the same
  *   block, and not for `Spectral::Basis::ZernikeB1`.
  *
+ * `slice_for_external()` computes the ghost data to send to the neighbors of
+ * the external faces, as `evolution::dg::subcell::slice_data` does on the host:
+ * the cells next to the face are copied, or, where there is an interpolant in
+ * `fd_to_neighbor_fd_interpolants` (see
+ * `evolution::dg::subcell::Tags::InterpolatorsFromFdToNeighborFd`),
+ * interpolated to the ghost zone of the neighbor. Directions whose interpolant
+ * is `std::nullopt` are left unfilled, as on the host.
+ *
  * External boundaries aren't supported (only periodic boundaries, which are
  * faces between elements).
  *
@@ -87,14 +98,23 @@ class GhostZones {
     /// data takes `data_size` values, variable by variable.
     size_t data_offset;
     size_t data_size;
+    /// Where the ghost data to send to the neighbor starts in the buffer
+    /// filled by `slice_for_external()`. The data takes `send_size` values,
+    /// variable by variable, in the layout of `slice_data`.
+    size_t send_offset;
+    size_t send_size;
   };
 
   GhostZones() = default;
 
-  /// `elements` are the elements of the `patch` in slot order. The transfers
-  /// are copied to the device on `exec`.
+  /// `elements` are the elements of the `patch` and
+  /// `fd_to_neighbor_fd_interpolants` their interpolants, in slot order. The
+  /// transfers are copied to the device on `exec`.
   GhostZones(const Kokkos::DefaultExecutionSpace& exec,
              const std::vector<Element<Dim>>& elements,
+             const std::vector<
+                 DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>>&
+                 fd_to_neighbor_fd_interpolants,
              const FdPatches<Dim>& fd_patches, size_t patch, size_t ghost_width,
              size_t number_of_variables);
 
@@ -135,13 +155,26 @@ class GhostZones {
       const ::fd::device::VolumeView& padded_vars,
       const Kokkos::View<const double*>& external_data) const;
 
+  /// The size of the buffer that holds the ghost data to send for all
+  /// `external_faces()`.
+  size_t send_data_size() const { return send_data_size_; }
+
+  /// Compute the ghost data to send for all `external_faces()` from the
+  /// unpadded `ghost_variables` of the patch into `send_data`, laid out as
+  /// described by `ExternalFace`. Enqueued on `exec`.
+  void slice_for_external(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const Kokkos::View<double*>& send_data,
+      const Kokkos::View<const double*>& ghost_variables) const;
+
  private:
-  void add_external_face(const Element<Dim>& element, size_t slot,
-                         size_t number_of_padded_cells,
-                         const Direction<Dim>& direction,
-                         const ElementId<Dim>& neighbor_id, bool neighbor_is_dg,
-                         const std::vector<size_t>& ghost_zone_points,
-                         const Mesh<Dim>& dg_mesh);
+  void add_external_face(
+      const Element<Dim>& element, size_t slot, size_t number_of_padded_cells,
+      const Direction<Dim>& direction, const ElementId<Dim>& neighbor_id,
+      bool neighbor_is_dg, const std::vector<size_t>& ghost_zone_points,
+      const Mesh<Dim>& dg_mesh,
+      const DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>&
+          fd_to_neighbor_fd_interpolants);
 
   size_t number_of_elements_ = 0;
   Index<Dim> subcell_extents_{};
@@ -153,6 +186,8 @@ class GhostZones {
   ::fd::device::Transfers from_external_{};
   // The matrix ids in `from_external_` of the projections from DG neighbors
   DirectionMap<Dim, size_t> dg_projections_{};
+  size_t send_data_size_ = 0;
+  ::fd::device::Transfers to_external_{};
 };
 }  // namespace evolution::dg::subcell::fd_patch
 #endif  // SPECTRE_KOKKOS

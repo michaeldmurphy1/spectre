@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <numeric>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -14,6 +15,8 @@
 #include "DataStructures/Matrix.hpp"
 #include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/DirectionMap.hpp"
+#include "Domain/Structure/DirectionalId.hpp"
+#include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/Side.hpp"
@@ -22,6 +25,7 @@
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "NumericalAlgorithms/FiniteDifference/TransfersKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
+#include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Parity.hpp"
@@ -77,11 +81,14 @@ Matrix dg_to_ghost_zone_projection(const Mesh<Dim>& dg_mesh,
 }  // namespace
 
 template <size_t Dim>
-GhostZones<Dim>::GhostZones(const Kokkos::DefaultExecutionSpace& exec,
-                            const std::vector<Element<Dim>>& elements,
-                            const FdPatches<Dim>& fd_patches,
-                            const size_t patch, const size_t ghost_width,
-                            const size_t number_of_variables)
+GhostZones<Dim>::GhostZones(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const std::vector<Element<Dim>>& elements,
+    const std::vector<
+        DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>>&
+        fd_to_neighbor_fd_interpolants,
+    const FdPatches<Dim>& fd_patches, const size_t patch,
+    const size_t ghost_width, const size_t number_of_variables)
     : number_of_elements_(elements.size()),
       subcell_extents_(fd::mesh(fd_patches.dg_mesh(patch)).extents()),
       ghost_width_(ghost_width),
@@ -91,6 +98,11 @@ GhostZones<Dim>::GhostZones(const Kokkos::DefaultExecutionSpace& exec,
   if (elements.size() != element_ids.size()) {
     ERROR("Got " << elements.size() << " elements for patch " << patch
                  << ", which has " << element_ids.size() << " elements");
+  }
+  if (fd_to_neighbor_fd_interpolants.size() != elements.size()) {
+    ERROR("Got the interpolants of " << fd_to_neighbor_fd_interpolants.size()
+                                     << " elements for the " << elements.size()
+                                     << " elements of patch " << patch);
   }
   const size_t number_of_cells = subcell_extents_.product();
   size_t number_of_padded_cells = 1;
@@ -146,7 +158,8 @@ GhostZones<Dim>::GhostZones(const Kokkos::DefaultExecutionSpace& exec,
       if (not location.has_value() or location->patch != patch) {
         add_external_face(element, slot, number_of_padded_cells, direction,
                           neighbor_id, not location.has_value(),
-                          ghost_zone_points, dg_mesh);
+                          ghost_zone_points, dg_mesh,
+                          fd_to_neighbor_fd_interpolants[slot]);
         continue;
       }
       // Within a block, so the neighbor is aligned and has the same extents
@@ -166,6 +179,7 @@ GhostZones<Dim>::GhostZones(const Kokkos::DefaultExecutionSpace& exec,
   }
   from_patch_.copy_to_device(exec);
   from_external_.copy_to_device(exec);
+  to_external_.copy_to_device(exec);
 }
 
 template <size_t Dim>
@@ -173,7 +187,9 @@ void GhostZones<Dim>::add_external_face(
     const Element<Dim>& element, const size_t slot,
     const size_t number_of_padded_cells, const Direction<Dim>& direction,
     const ElementId<Dim>& neighbor_id, const bool neighbor_is_dg,
-    const std::vector<size_t>& ghost_zone_points, const Mesh<Dim>& dg_mesh) {
+    const std::vector<size_t>& ghost_zone_points, const Mesh<Dim>& dg_mesh,
+    const DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>&
+        fd_to_neighbor_fd_interpolants) {
   const size_t number_of_ghost_points = ghost_zone_points.size();
   const size_t padded_element_offset =
       slot * number_of_variables_ * number_of_padded_cells;
@@ -187,7 +203,9 @@ void GhostZones<Dim>::add_external_face(
       .data_offset = external_data_size_,
       .data_size = number_of_variables_ * (neighbor_is_dg
                                                ? dg_mesh.number_of_grid_points()
-                                               : number_of_ghost_points)};
+                                               : number_of_ghost_points),
+      .send_offset = send_data_size_,
+      .send_size = number_of_variables_ * number_of_ghost_points};
   if (neighbor_is_dg) {
     if (neighbor_id.block_id() != element.id().block_id()) {
       ERROR(
@@ -216,6 +234,38 @@ void GhostZones<Dim>::add_external_face(
                             received_points, ghost_zone_points);
   }
   external_data_size_ += face.data_size;
+
+  // The ghost data to send, as in `slice_data`
+  const size_t number_of_cells = subcell_extents_.product();
+  const size_t element_offset = slot * number_of_variables_ * number_of_cells;
+  std::vector<size_t> sent_points(number_of_ghost_points);
+  std::iota(sent_points.begin(), sent_points.end(), 0_st);
+  if (const auto interpolant = fd_to_neighbor_fd_interpolants.find(
+          DirectionalId<Dim>{direction, neighbor_id});
+      interpolant != fd_to_neighbor_fd_interpolants.end()) {
+    if (interpolant->second.has_value()) {
+      to_external_.add_matrix(element_offset, number_of_cells, face.send_offset,
+                              number_of_ghost_points,
+                              interpolant->second->matrix(), sent_points);
+    }
+  } else {
+    ASSERT(
+        element.neighbors().at(direction).orientation(neighbor_id).is_aligned(),
+        "Slicing the ghost data for the neighbor "
+            << neighbor_id << " of element " << element.id()
+            << " requires an aligned orientation or an interpolant");
+    const size_t dimension = direction.dimension();
+    const size_t first = direction.side() == Side::Lower
+                             ? 0
+                             : subcell_extents_[dimension] - ghost_width_;
+    to_external_.add_copy(
+        element_offset, number_of_cells, face.send_offset,
+        number_of_ghost_points,
+        ::fd::device::slab_points(subcell_extents_, dimension, first,
+                                  first + ghost_width_),
+        sent_points);
+  }
+  send_data_size_ += face.send_size;
   external_faces_.push_back(std::move(face));
 }
 
@@ -266,6 +316,24 @@ void GhostZones<Dim>::fill_from_external(
   from_external_.apply(
       exec, Kokkos::View<double*>(padded_vars.data(), padded_vars.span()),
       external_data, number_of_variables_);
+}
+
+template <size_t Dim>
+void GhostZones<Dim>::slice_for_external(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const Kokkos::View<double*>& send_data,
+    const Kokkos::View<const double*>& ghost_variables) const {
+  ASSERT(send_data.extent(0) == send_data_size_,
+         "The send buffer has " << send_data.extent(0)
+                                << " values but expected " << send_data_size_);
+  ASSERT(ghost_variables.extent(0) == number_of_elements_ *
+                                          number_of_variables_ *
+                                          subcell_extents_.product(),
+         "The ghost variables have "
+             << ghost_variables.extent(0) << " values but expected "
+             << number_of_elements_ * number_of_variables_ *
+                    subcell_extents_.product());
+  to_external_.apply(exec, send_data, ghost_variables, number_of_variables_);
 }
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)

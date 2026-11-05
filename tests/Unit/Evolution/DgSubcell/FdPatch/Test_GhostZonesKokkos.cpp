@@ -6,11 +6,13 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <random>
 #include <vector>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Index.hpp"
+#include "DataStructures/Tensor/Tensor.hpp"
 #include "Domain/CreateInitialElement.hpp"
 #include "Domain/Domain.hpp"
 #include "Domain/DomainHelpers.hpp"
@@ -25,9 +27,11 @@
 #include "Evolution/DgSubcell/GhostData.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/NeighborRdmpAndVolumeData.hpp"
+#include "Evolution/DgSubcell/SliceData.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
+#include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "Utilities/ConstantExpressions.hpp"
@@ -39,6 +43,9 @@
 namespace {
 using evolution::dg::subcell::fd_patch::FdPatches;
 using evolution::dg::subcell::fd_patch::GhostZones;
+template <size_t Dim>
+using Interpolants =
+    DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>;
 
 template <size_t Dim>
 std::vector<Element<Dim>> patch_elements(
@@ -248,6 +255,51 @@ void check_fill_from_external(const GhostZones<Dim>& ghost_zones,
   CHECK(expected_offset == ghost_zones.external_data_size());
 }
 
+// Slices random ghost variables of the patch for the external faces and
+// checks the result against `slice_data` on the host.
+template <size_t Dim>
+void check_slice_for_external(
+    const GhostZones<Dim>& ghost_zones,
+    const std::vector<Interpolants<Dim>>& interpolants,
+    const gsl::not_null<std::mt19937*> generator) {
+  const Kokkos::DefaultExecutionSpace exec{};
+  const size_t number_of_variables = ghost_zones.number_of_variables();
+  const Index<Dim>& extents = ghost_zones.subcell_extents();
+  const size_t element_size = number_of_variables * extents.product();
+  std::uniform_real_distribution<double> dist(-1.0, 1.0);
+  const auto host_ghost_variables = make_with_random_values<DataVector>(
+      generator, make_not_null(&dist),
+      DataVector(interpolants.size() * element_size));
+  const auto ghost_variables = Kokkos::create_mirror_view_and_copy(
+      Kokkos::DefaultExecutionSpace::memory_space{},
+      Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>(
+          host_ghost_variables.data(), host_ghost_variables.size()));
+  const Kokkos::View<double*> send_data("send data",
+                                        ghost_zones.send_data_size());
+  ghost_zones.slice_for_external(exec, send_data, ghost_variables);
+  const auto host_send_data =
+      Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, send_data);
+
+  size_t expected_offset = 0;
+  for (const auto& face : ghost_zones.external_faces()) {
+    CAPTURE(face.neighbor);
+    CAPTURE(face.direction);
+    CHECK(face.send_offset == expected_offset);
+    expected_offset += face.send_size;
+    const DataVector volume_vars(
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        const_cast<double*>(&host_ghost_variables[face.slot * element_size]),
+        element_size);
+    const auto expected = evolution::dg::subcell::slice_data(
+        volume_vars, extents, ghost_zones.ghost_width(), {face.direction}, 0,
+        interpolants[face.slot]);
+    REQUIRE(expected.at(face.direction).size() == face.send_size);
+    const DataVector sent(&host_send_data(face.send_offset), face.send_size);
+    CHECK_ITERABLE_APPROX(sent, expected.at(face.direction));
+  }
+  CHECK(expected_offset == ghost_zones.send_data_size());
+}
+
 // A single periodic block, so all faces are inside the patch. With refinement
 // level 0 each element is its own neighbor.
 template <size_t Dim>
@@ -274,8 +326,10 @@ void test_periodic_block() {
     const auto elements = patch_elements(patches, 0, domain, refinement);
     for (const size_t ghost_width : {1_st, 2_st}) {
       CAPTURE(ghost_width);
-      const GhostZones<Dim> ghost_zones{exec, elements,    patches,
-                                        0,    ghost_width, 2};
+      const GhostZones<Dim> ghost_zones{
+          exec,    elements, std::vector<Interpolants<Dim>>(elements.size()),
+          patches, 0,        ghost_width,
+          2};
       CHECK(ghost_zones.subcell_extents() == Index<Dim>{7});
       CHECK(ghost_zones.external_faces().empty());
       const auto cells_in_block =
@@ -303,7 +357,19 @@ void test_external_faces(const gsl::not_null<std::mt19937*> generator) {
                              false};
   REQUIRE(patches.number_of_patches() == 3);
   const auto elements = patch_elements(patches, 1, domain, refinement);
-  const GhostZones<1> ghost_zones{exec, elements, patches, 1, 2, 3};
+  // Interpolate the data sent to the lower neighbor to random points, and
+  // copy the data sent to the upper neighbor.
+  std::vector<Interpolants<1>> interpolants(2);
+  std::uniform_real_distribution<double> dist(-1.0, 1.0);
+  interpolants[0][DirectionalId<1>{Direction<1>::lower_xi(),
+                                   ElementId<1>{0, {{SegmentId{1, 1}}}}}] =
+      intrp::Irregular<1>{
+          evolution::dg::subcell::fd::mesh(patches.dg_mesh(1)),
+          tnsr::I<DataVector, 1, Frame::ElementLogical>{
+              make_with_random_values<DataVector>(
+                  generator, make_not_null(&dist), DataVector(2))}};
+  const GhostZones<1> ghost_zones{exec, elements, interpolants, patches, 1,
+                                  2,    3};
   const auto& external_faces = ghost_zones.external_faces();
   REQUIRE(external_faces.size() == 2);
   CHECK(external_faces[0].slot == 0);
@@ -321,6 +387,8 @@ void test_external_faces(const gsl::not_null<std::mt19937*> generator) {
   CHECK(check_fill_from_patch(ghost_zones, patches, 1, std::array{14L}) == 2);
   check_fill_from_external(ghost_zones, elements, patches.dg_mesh(1),
                            generator);
+  CHECK(external_faces[0].send_size == 6);
+  check_slice_for_external(ghost_zones, interpolants, generator);
 }
 
 // 3x3 blocks with DG-only outer blocks and 4x4 elements per block, so the
@@ -343,7 +411,9 @@ void test_dg_neighbors(const gsl::not_null<std::mt19937*> generator) {
   const auto elements = patch_elements(patches, 0, domain, refinement);
   for (const size_t ghost_width : {2_st, 3_st}) {
     CAPTURE(ghost_width);
-    const GhostZones<2> ghost_zones{exec, elements, patches, 0, ghost_width, 2};
+    const std::vector<Interpolants<2>> interpolants(elements.size());
+    const GhostZones<2> ghost_zones{
+        exec, elements, interpolants, patches, 0, ghost_width, 2};
     // Each element has two DG neighbors
     REQUIRE(ghost_zones.external_faces().size() == 8);
     for (const auto& face : ghost_zones.external_faces()) {
@@ -352,6 +422,7 @@ void test_dg_neighbors(const gsl::not_null<std::mt19937*> generator) {
     }
     check_fill_from_external(ghost_zones, elements, patches.dg_mesh(0),
                              generator);
+    check_slice_for_external(ghost_zones, interpolants, generator);
   }
 }
 }  // namespace

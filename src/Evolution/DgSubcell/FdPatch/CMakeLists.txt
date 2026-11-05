@@ -31,6 +31,7 @@ target_link_libraries(
   DomainStructure
   Evolution
   FiniteDifference
+  Interpolation
   Options
   Serialization
   Spectral

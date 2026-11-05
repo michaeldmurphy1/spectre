@@ -8,6 +8,7 @@
 
 #include "DataStructures/Index.hpp"
 #include "Domain/Structure/Direction.hpp"
+#include "Domain/Structure/DirectionMap.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "NumericalAlgorithms/FiniteDifference/TransfersKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
@@ -17,6 +18,8 @@
 /// \cond
 template <size_t VolumeDim>
 class Element;
+template <size_t Dim>
+class Mesh;
 namespace evolution::dg::subcell::fd_patch {
 template <size_t Dim>
 class FdPatches;
@@ -41,7 +44,16 @@ namespace evolution::dg::subcell::fd_patch {
  * All elements of a patch are in one block, so all neighbors in the patch are
  * aligned and conforming. The ghost zones of the faces whose neighbor isn't in
  * the patch, i.e. a DG element or an element of another patch, are listed in
- * `external_faces()` and are filled from the data received from the neighbor.
+ * `external_faces()`. They are filled by `fill_from_external()` from the data
+ * received from the neighbors, with the same treatment as on the host (see
+ * `evolution::dg::subcell::insert_or_update_neighbor_volume_data`):
+ * - An FD neighbor sends the ghost data already sliced, reoriented and
+ *   interpolated for this element, so it is copied.
+ * - A DG neighbor sends its whole volume data, which is projected onto the
+ *   ghost zone with `evolution::dg::subcell::fd::projection_matrix` in each
+ *   dimension. The projection is only supported for DG neighbors in the same
+ *   block, and not for `Spectral::Basis::ZernikeB1`.
+ *
  * External boundaries aren't supported (only periodic boundaries, which are
  * faces between elements).
  *
@@ -65,6 +77,16 @@ class GhostZones {
     size_t slot;
     Direction<Dim> direction;
     ElementId<Dim> neighbor;
+    /// The direction from the neighbor to the element in the neighbor's frame
+    Direction<Dim> direction_from_neighbor;
+    /// Whether the neighbor is a DG element, so it sends its volume data,
+    /// or an FD element of another patch, so it sends the ghost zone.
+    bool neighbor_is_dg;
+    /// Where the ghost data received from the neighbor (without the RDMP
+    /// data) starts in the buffer passed to `fill_from_external()`. The
+    /// data takes `data_size` values, variable by variable.
+    size_t data_offset;
+    size_t data_size;
   };
 
   GhostZones() = default;
@@ -101,13 +123,36 @@ class GhostZones {
     return external_faces_;
   }
 
+  /// The size of the buffer that holds the ghost data received for all
+  /// `external_faces()`.
+  size_t external_data_size() const { return external_data_size_; }
+
+  /// Fill the ghost zones of the `external_faces()` in `padded_vars` from the
+  /// received ghost data in `external_data`, laid out as described by
+  /// `ExternalFace`. Enqueued on `exec`.
+  void fill_from_external(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const ::fd::device::VolumeView& padded_vars,
+      const Kokkos::View<const double*>& external_data) const;
+
  private:
+  void add_external_face(const Element<Dim>& element, size_t slot,
+                         size_t number_of_padded_cells,
+                         const Direction<Dim>& direction,
+                         const ElementId<Dim>& neighbor_id, bool neighbor_is_dg,
+                         const std::vector<size_t>& ghost_zone_points,
+                         const Mesh<Dim>& dg_mesh);
+
   size_t number_of_elements_ = 0;
   Index<Dim> subcell_extents_{};
   size_t ghost_width_ = 0;
   size_t number_of_variables_ = 0;
   ::fd::device::Transfers from_patch_{};
   std::vector<ExternalFace> external_faces_{};
+  size_t external_data_size_ = 0;
+  ::fd::device::Transfers from_external_{};
+  // The matrix ids in `from_external_` of the projections from DG neighbors
+  DirectionMap<Dim, size_t> dg_projections_{};
 };
 }  // namespace evolution::dg::subcell::fd_patch
 #endif  // SPECTRE_KOKKOS

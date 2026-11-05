@@ -3,21 +3,32 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <random>
 #include <vector>
 
+#include "DataStructures/DataVector.hpp"
 #include "DataStructures/Index.hpp"
 #include "Domain/CreateInitialElement.hpp"
 #include "Domain/Domain.hpp"
 #include "Domain/DomainHelpers.hpp"
 #include "Domain/Structure/Direction.hpp"
+#include "Domain/Structure/DirectionalId.hpp"
+#include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/SegmentId.hpp"
 #include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/FdPatch/GhostZonesKokkos.hpp"
+#include "Evolution/DgSubcell/GhostData.hpp"
+#include "Evolution/DgSubcell/Mesh.hpp"
+#include "Evolution/DgSubcell/NeighborRdmpAndVolumeData.hpp"
+#include "Framework/TestHelpers.hpp"
+#include "Helpers/DataStructures/MakeWithRandomValues.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
+#include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/Gsl.hpp"
@@ -172,6 +183,71 @@ size_t check_fill_from_patch(const GhostZones<Dim>& ghost_zones,
   return number_of_checked_faces;
 }
 
+// Fills the ghost zones of the external faces from random received data and
+// checks them against the ghost data computed on the host.
+template <size_t Dim>
+void check_fill_from_external(const GhostZones<Dim>& ghost_zones,
+                              const std::vector<Element<Dim>>& elements,
+                              const Mesh<Dim>& dg_mesh,
+                              const gsl::not_null<std::mt19937*> generator) {
+  const Kokkos::DefaultExecutionSpace exec{};
+  const size_t number_of_variables = ghost_zones.number_of_variables();
+  const Mesh<Dim> subcell_mesh = evolution::dg::subcell::fd::mesh(dg_mesh);
+  const size_t ghost_width = ghost_zones.ghost_width();
+  std::uniform_real_distribution<double> dist(-1.0, 1.0);
+  const auto host_external_data = make_with_random_values<DataVector>(
+      generator, make_not_null(&dist),
+      DataVector(ghost_zones.external_data_size()));
+  const auto external_data = Kokkos::create_mirror_view_and_copy(
+      Kokkos::DefaultExecutionSpace::memory_space{},
+      Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>(
+          host_external_data.data(), host_external_data.size()));
+  const auto padded_vars = fd::device::make_volume_view(
+      exec, "padded", elements.size(), number_of_variables,
+      subcell_mesh.extents(), ghost_width);
+  ghost_zones.fill_from_external(exec, padded_vars, external_data);
+  const auto host_padded =
+      Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, padded_vars);
+
+  size_t expected_offset = 0;
+  for (const auto& face : ghost_zones.external_faces()) {
+    CAPTURE(face.neighbor);
+    CAPTURE(face.direction);
+    CHECK(face.data_offset == expected_offset);
+    expected_offset += face.data_size;
+    // The received data with one RDMP variable appended
+    DataVector received(face.data_size + 2);
+    std::copy_n(&host_external_data[face.data_offset], face.data_size,
+                received.begin());
+    received[face.data_size] = 1.0;
+    received[face.data_size + 1] = -1.0;
+    DirectionalIdMap<Dim, evolution::dg::subcell::GhostData> ghost_data{};
+    const DirectionalId<Dim> directional_id{face.direction, face.neighbor};
+    evolution::dg::subcell::detail::insert_or_update_neighbor_volume_data_impl<
+        true>(make_not_null(&ghost_data), received, 1, directional_id,
+              face.neighbor_is_dg ? dg_mesh : subcell_mesh, elements[face.slot],
+              subcell_mesh, ghost_width, {}, {}, 0, 0);
+    const DataVector& expected =
+        ghost_data.at(directional_id).neighbor_ghost_data_for_reconstruction();
+    const auto points = fd::device::padded_ghost_zone_points(
+        subcell_mesh.extents(), ghost_width, face.direction.dimension(),
+        face.direction.side() == Side::Upper);
+    REQUIRE(expected.size() == number_of_variables * points.size());
+    const size_t nx = host_padded.extent(4);
+    const size_t ny = host_padded.extent(3);
+    DataVector filled(expected.size());
+    for (size_t v = 0; v < number_of_variables; ++v) {
+      for (size_t i = 0; i < points.size(); ++i) {
+        filled[v * points.size() + i] =
+            host_padded(face.slot, v, points[i] / (nx * ny),
+                        (points[i] / nx) % ny, points[i] % nx);
+      }
+    }
+    CHECK_ITERABLE_APPROX(filled, expected);
+  }
+  CHECK(expected_offset == ghost_zones.external_data_size());
+}
+
 // A single periodic block, so all faces are inside the patch. With refinement
 // level 0 each element is its own neighbor.
 template <size_t Dim>
@@ -212,7 +288,7 @@ void test_periodic_block() {
 
 // Three periodic blocks in a row, each with two elements, so each element
 // has a neighbor in its own patch and one in another patch.
-void test_external_faces() {
+void test_external_faces(const gsl::not_null<std::mt19937*> generator) {
   const Kokkos::DefaultExecutionSpace exec{};
   const auto domain = rectilinear_domain<1>(
       Index<1>{3}, std::array<std::vector<double>, 1>{{{0.0, 1.0, 2.0, 3.0}}},
@@ -236,8 +312,47 @@ void test_external_faces() {
   CHECK(external_faces[1].slot == 1);
   CHECK(external_faces[1].direction == Direction<1>::upper_xi());
   CHECK(external_faces[1].neighbor == ElementId<1>{2, {{SegmentId{1, 0}}}});
-  // Only the face between the two elements is filled
+  CHECK_FALSE(external_faces[0].neighbor_is_dg);
+  CHECK_FALSE(external_faces[1].neighbor_is_dg);
+  // The ghost zone of 2 cells, for 3 variables
+  CHECK(external_faces[0].data_size == 6);
+  CHECK(external_faces[1].data_size == 6);
+  // Only the face between the two elements is filled from the patch
   CHECK(check_fill_from_patch(ghost_zones, patches, 1, std::array{14L}) == 2);
+  check_fill_from_external(ghost_zones, elements, patches.dg_mesh(1),
+                           generator);
+}
+
+// 3x3 blocks with DG-only outer blocks and 4x4 elements per block, so the
+// 2x2 interior elements of the central block are FD and border DG elements of
+// the same block.
+void test_dg_neighbors(const gsl::not_null<std::mt19937*> generator) {
+  const Kokkos::DefaultExecutionSpace exec{};
+  const auto domain = rectilinear_domain<2>(
+      Index<2>{3, 3}, std::array<std::vector<double>, 2>{
+                          {{0.0, 1.0, 2.0, 3.0}, {0.0, 1.0, 2.0, 3.0}}});
+  const std::vector<std::array<size_t, 2>> refinement(9, {{2, 2}});
+  const std::vector<std::array<size_t, 2>> extents(9, {{5, 5}});
+  const FdPatches<2> patches{domain.blocks(),
+                             refinement,
+                             extents,
+                             Spectral::Quadrature::GaussLobatto,
+                             {0, 1, 2, 3, 5, 6, 7, 8},
+                             true};
+  REQUIRE(patches.number_of_patches() == 1);
+  const auto elements = patch_elements(patches, 0, domain, refinement);
+  for (const size_t ghost_width : {2_st, 3_st}) {
+    CAPTURE(ghost_width);
+    const GhostZones<2> ghost_zones{exec, elements, patches, 0, ghost_width, 2};
+    // Each element has two DG neighbors
+    REQUIRE(ghost_zones.external_faces().size() == 8);
+    for (const auto& face : ghost_zones.external_faces()) {
+      CHECK(face.neighbor_is_dg);
+      CHECK(face.data_size == 2_st * 25_st);
+    }
+    check_fill_from_external(ghost_zones, elements, patches.dg_mesh(0),
+                             generator);
+  }
 }
 }  // namespace
 
@@ -246,5 +361,7 @@ SPECTRE_TEST_CASE("Unit.Evolution.Subcell.FdPatch.GhostZonesKokkos",
   test_periodic_block<1>();
   test_periodic_block<2>();
   test_periodic_block<3>();
-  test_external_faces();
+  MAKE_GENERATOR(generator);
+  test_external_faces(make_not_null(&generator));
+  test_dg_neighbors(make_not_null(&generator));
 }

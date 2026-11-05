@@ -10,6 +10,7 @@ set(LIBRARY_SOURCES
   Actions/Test_TakeTimeStep.cpp
   Actions/Test_TciAndRollback.cpp
   Actions/Test_TciAndSwitchToDg.cpp
+  FdPatch/Test_FdPatches.cpp
   Test_ActiveGrid.cpp
   Test_BackgroundGrVars.cpp
   Test_CartesianFluxDivergence.cpp
@@ -43,6 +44,7 @@ set(LIBRARY_SOURCES
   Test_SliceData.cpp
   Test_SliceTensor.cpp
   Test_SliceVariable.cpp
+  Test_SubcellAllowed.cpp
   Test_SubcellAndNonconformingEqualRateRegions.cpp
   Test_SubcellEqualRateRegion.cpp
   Test_SubcellOptions.cpp
@@ -68,6 +70,7 @@ target_link_libraries(
   DgSubcellHelpers
   ErrorHandling
   Evolution
+  FdPatch
   FiniteDifference
   GeneralRelativitySolutions
   Hydro

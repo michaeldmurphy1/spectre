@@ -53,7 +53,10 @@ set(LIBRARY_SOURCES
   )
 
 if (SPECTRE_KOKKOS)
-  list(APPEND LIBRARY_SOURCES FdPatch/Test_GhostZonesKokkos.cpp)
+  list(APPEND LIBRARY_SOURCES
+    FdPatch/Test_GeometryKokkos.cpp
+    FdPatch/Test_GhostZonesKokkos.cpp
+    )
 endif()
 
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")

@@ -663,17 +663,22 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
           Parallel::PhaseActions<Parallel::Phase::InitializeTimeStepperHistory,
                                  tmpl::list<Actions::MutateApply<AdvanceTime<>>,
                                             Parallel::Actions::TerminatePhase>>,
-          Parallel::PhaseActions<Parallel::Phase::Register,
-                                 tmpl::list<Parallel::Actions::TerminatePhase>>,
+          Parallel::PhaseActions<
+              Parallel::Phase::Register,
+              tmpl::list<evolution::dg::subcell::fd_patch::Actions::
+                             RegisterWithObservers<fd_patch_tag>,
+                         Parallel::Actions::TerminatePhase>>,
           Parallel::PhaseActions<Parallel::Phase::Restart,
                                  tmpl::list<Parallel::Actions::TerminatePhase>>,
           Parallel::PhaseActions<
               Parallel::Phase::Evolve,
               tmpl::list<
-                  evolution::dg::subcell::fd_patch::Actions::CheckForCompletion<
-                      Triggers::WhenToCheck::AtSteps, fd_patch_tag>,
-                  evolution::dg::subcell::fd_patch::Actions::CheckForCompletion<
-                      Triggers::WhenToCheck::AtSlabs, fd_patch_tag>,
+                  evolution::dg::subcell::fd_patch::Actions::
+                      RunEventsAndTriggers<Triggers::WhenToCheck::AtSteps,
+                                           fd_patch_tag>,
+                  evolution::dg::subcell::fd_patch::Actions::
+                      RunEventsAndTriggers<Triggers::WhenToCheck::AtSlabs,
+                                           fd_patch_tag>,
                   evolution::dg::subcell::fd_patch::Actions::SendBoundaryData<
                       fd_patch_tag, dg_element_array_component>,
                   evolution::dg::subcell::fd_patch::Actions::

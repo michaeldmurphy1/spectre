@@ -13,6 +13,7 @@
 #include <pup.h>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -110,6 +111,7 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
     const double constraint_damping_parameter, const TimeStepper& time_stepper)
     : patch_(patch),
       dg_mesh_(fd_patches.dg_mesh(patch)),
+      subcell_mesh_(evolution::dg::subcell::fd::mesh(dg_mesh_)),
       element_ids_(fd_patches.element_ids(patch)),
       equation_of_state_(equation_of_state.get_clone()),
       fix_to_atmosphere_(fix_to_atmosphere.device_view()),
@@ -235,9 +237,9 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
   std::vector<Variables<subcell::face_spacetime_tags>> face_spacetime(
       3 * number_of_elements);
   for (size_t slot = 0; slot < number_of_elements; ++slot) {
-    const auto inertial_coords =
-        grid_to_inertial_map(element_maps[slot](cell_logical_coords),
-                             initial_time, functions_of_time);
+    cell_grid_coordinates_.push_back(element_maps[slot](cell_logical_coords));
+    const auto inertial_coords = grid_to_inertial_map(
+        cell_grid_coordinates_.back(), initial_time, functions_of_time);
     cell_data.push_back(initial_data(inertial_coords));
     auto& spacetime = cell_spacetime.emplace_back(number_of_cells);
     spacetime.assign_subset(cell_data.back());
@@ -516,6 +518,55 @@ std::string Patch<OrderedListOfPrimitiveRecoverySchemes>::norms(
     }
   });
   return result.str();
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+std::vector<std::unordered_map<std::string, DataVector>>
+Patch<OrderedListOfPrimitiveRecoverySchemes>::observation_data(
+    const Kokkos::DefaultExecutionSpace& exec, const double time,
+    const domain::FunctionsOfTimeMap& functions_of_time) const {
+  const auto to_host = [&exec](const auto& batch) {
+    using TagsList = typename std::decay_t<decltype(batch)>::tags_list;
+    BatchedVariables<TagsList, Kokkos::HostSpace> host{
+        Kokkos::DefaultHostExecutionSpace{}, batch.number_of_grid_points(),
+        batch.number_of_elements()};
+    deep_copy(exec, make_not_null(&host), batch);
+    return host;
+  };
+  auto host_evolved = to_host(evolved_variables_);
+  auto host_primitives = to_host(primitives_);
+  auto host_spacetime = to_host(cell_spacetime_variables_);
+  exec.fence("grmhd::ValenciaDivClean::fd_patch::Patch::observation_data");
+
+  std::vector<std::unordered_map<std::string, DataVector>> result(
+      number_of_elements());
+  const auto add_components = [&result](auto& host_batch, const size_t slot) {
+    using TagsList = typename std::decay_t<decltype(host_batch)>::tags_list;
+    Variables<TagsList> element{};
+    set_data_ref_to_element(make_not_null(&element), host_batch, slot);
+    tmpl::for_each<TagsList>([&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+      const auto& tensor = get<Tag>(element);
+      for (size_t i = 0; i < tensor.size(); ++i) {
+        // Copied, since the batch is deallocated on return
+        result[slot].insert_or_assign(
+            db::tag_name<Tag>() + tensor.component_suffix(i),
+            DataVector{tensor[i]});
+      }
+    });
+  };
+  for (size_t slot = 0; slot < number_of_elements(); ++slot) {
+    add_components(host_evolved, slot);
+    add_components(host_primitives, slot);
+    add_components(host_spacetime, slot);
+    const auto inertial_coords = (*grid_to_inertial_map_)(
+        cell_grid_coordinates_[slot], time, functions_of_time);
+    for (size_t d = 0; d < 3; ++d) {
+      result[slot].insert_or_assign(
+          "InertialCoordinates" + inertial_coords.component_suffix(d),
+          inertial_coords.get(d));
+    }
+  }
+  return result;
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>

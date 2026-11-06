@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -167,6 +168,21 @@ class Patch {
     return primitives_;
   }
 
+  /// The subcell mesh of the elements
+  const Mesh<3>& subcell_mesh() const { return subcell_mesh_; }
+
+  /*!
+   * \brief The data of each element that can be observed, by the name of each
+   * tensor component as `dg::Events::ObserveFields` names it (e.g.
+   * `TildeS_x`): the evolved variables, the primitive variables, the
+   * spacetime variables, and the `InertialCoordinates` at `time`.
+   *
+   * The data is copied from the device on `exec`, which is fenced.
+   */
+  std::vector<std::unordered_map<std::string, DataVector>> observation_data(
+      const Kokkos::DefaultExecutionSpace& exec, double time,
+      const domain::FunctionsOfTimeMap& functions_of_time) const;
+
   /// The maximum and the root mean square of each component of the evolved
   /// variables over the elements of the patch, as `Events::ObserveNorms`
   /// computes them with `Max` and `L2Norm`, as text. A diagnostic until
@@ -225,6 +241,7 @@ class Patch {
 
   size_t patch_ = 0;
   Mesh<3> dg_mesh_{};
+  Mesh<3> subcell_mesh_{};
   std::vector<ElementId<3>> element_ids_{};
   std::vector<Element<3>> elements_{};
 
@@ -255,6 +272,9 @@ class Patch {
   // Geometry
   std::unique_ptr<domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>>
       grid_to_inertial_map_{};
+  // The grid coordinates of the cell centers of each element, for
+  // observations
+  std::vector<tnsr::I<DataVector, 3, Frame::Grid>> cell_grid_coordinates_{};
   evolution::dg::subcell::fd_patch::LogicalToGrid logical_to_grid_{};
   std::optional<evolution::dg::subcell::fd_patch::AffineGridToInertial>
       grid_to_inertial_{};

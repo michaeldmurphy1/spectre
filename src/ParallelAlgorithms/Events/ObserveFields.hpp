@@ -412,6 +412,29 @@ class ObserveFields<VolumeDim, tmpl::list<Tensors...>,
 
   bool needs_evolved_variables() const override { return true; }
 
+  /// \name Options
+  /// For components that observe their elements' data without running the
+  /// event, e.g. `evolution::dg::subcell::fd_patch::FdPatchArray`.
+  /// @{
+  const std::string& subfile_path() const { return subfile_path_; }
+  const std::unordered_map<std::string, FloatingPointType>&
+  variables_to_observe() const {
+    return variables_to_observe_;
+  }
+  const std::optional<Mesh<VolumeDim>>& interpolation_mesh() const {
+    return interpolation_mesh_;
+  }
+  const std::optional<Mesh<VolumeDim>>& projection_mesh() const {
+    return projection_mesh_;
+  }
+  const std::optional<std::string>& dependency() const { return dependency_; }
+  /// Whether the element is in a block that is observed
+  bool observes_element(const Domain<VolumeDim>& domain,
+                        const ElementId<VolumeDim>& element_id) const {
+    return active_block(domain, element_id);
+  }
+  /// @}
+
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& p) override {
     Event::pup(p);

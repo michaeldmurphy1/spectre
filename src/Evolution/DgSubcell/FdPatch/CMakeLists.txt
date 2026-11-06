@@ -9,7 +9,9 @@ spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
+  ActionsKokkos.hpp
   BoundaryMessagesKokkos.hpp
+  FdPatchArray.hpp
   FdPatches.hpp
   GeometryKokkos.hpp
   GhostZonesKokkos.hpp

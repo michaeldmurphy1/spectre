@@ -7,10 +7,12 @@
 #include <charm++.h>
 #include <cstddef>
 #include <optional>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "DataStructures/DataBox/DataBox.hpp"
+#include "Domain/Structure/ElementId.hpp"
 #include "Evolution/DiscontinuousGalerkin/EqualRateLts/Tags/EqualRateRegionId.hpp"
 #include "Evolution/DiscontinuousGalerkin/EqualRateLts/Tags/EqualRateRegions.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
@@ -116,6 +118,16 @@ struct SectionsToCreate {
         const EqualRateRegionsBase<Dim>& equal_rate_regions,
         const std::vector<std::array<size_t, Dim>>& initial_refinement_levels);
 };
+// Whether `Component` is the array of the elements, e.g. not an array of FD
+// patches
+template <typename Component, typename Dim>
+struct IsElementArray : std::false_type {};
+
+template <typename Component, typename Dim>
+  requires(
+      Parallel::is_array<Component>::value and
+      std::is_same_v<typename Component::array_index, ElementId<Dim::value>>)
+struct IsElementArray<Component, Dim> : std::true_type {};
 }  // namespace SetupEqualRateRegions_detail
 
 /// Set up `FixedLtsRatio` and mortar time-stepping policies to
@@ -123,8 +135,10 @@ struct SectionsToCreate {
 template <typename Metavariables, size_t Dim, typename RegionGenerators>
 struct SetupEqualRateRegions {
  private:
-  using array_components = tmpl::filter<typename Metavariables::component_list,
-                                        Parallel::is_array<tmpl::_1>>;
+  using array_components =
+      tmpl::filter<typename Metavariables::component_list,
+                   SetupEqualRateRegions_detail::IsElementArray<
+                       tmpl::_1, tmpl::size_t<Dim>>>;
   static_assert(tmpl::size<array_components>::value == 1,
                 "Cannot identify element array.");
 

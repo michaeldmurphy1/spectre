@@ -17,6 +17,7 @@ spectre_target_headers(
   GhostZonesKokkos.hpp
   InboxTags.hpp
   PackagedDataFromDgKokkos.hpp
+  SendToPatch.hpp
   Tags.hpp
   )
 

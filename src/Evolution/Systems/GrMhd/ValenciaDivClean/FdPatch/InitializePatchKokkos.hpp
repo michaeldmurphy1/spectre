@@ -25,6 +25,7 @@
 #include "Evolution/BoundaryCorrectionTags.hpp"
 #include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/FdPatch/Tags.hpp"
+#include "Evolution/DgSubcell/Tags/SubcellOptions.hpp"
 #include "Evolution/Initialization/InitialData.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FdPatch/PatchKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Tag.hpp"
@@ -83,7 +84,8 @@ struct InitializePatch {
                  ::Tags::VariableFixer<FixConservatives>,
                  ValenciaDivClean::Tags::PrimitiveFromConservativeOptions,
                  ValenciaDivClean::Tags::ConstraintDampingParameter,
-                 evolution::initial_data::Tags::InitialData>;
+                 evolution::initial_data::Tags::InitialData,
+                 evolution::dg::subcell::Tags::SubcellOptions<3>>;
 
   template <typename DbTagsList, typename... InboxTags, typename Metavariables,
             typename ActionList, typename ParallelComponent>
@@ -92,6 +94,12 @@ struct InitializePatch {
       const tuples::TaggedTuple<InboxTags...>& /*inboxes*/,
       const Parallel::GlobalCache<Metavariables>& cache, const int array_index,
       ActionList /*meta*/, const ParallelComponent* const /*meta*/) {
+    // Patches assume that the elements that start on the subcell grid stay
+    // there and the others stay on the DG grid (see `FdPatches`)
+    if (not db::get<evolution::dg::subcell::Tags::SubcellOptions<3>>(box)
+                .always_use_subcells()) {
+      ERROR("FD patches need AlwaysUseSubcells.");
+    }
     const auto patch = static_cast<size_t>(array_index);
     const Domain<3>& domain = db::get<domain::Tags::Domain<3>>(box);
     const auto& fd_patches =

@@ -106,15 +106,17 @@ using InitialDataFunction = std::function<Variables<initial_data_tags>(
  * `evolution::dg::subcell::fd_patch::AffineGridToInertial`). Anything else is
  * an error.
  *
- * The elements of the patch never switch to DG, so no TCI runs and the
- * elements send the TCI status `tci_status_sent` to their neighbors, which
- * flags them as troubled.
+ * The elements of the patch never switch to DG, so no TCI runs. They send the
+ * TCI status `tci_status_sent` to their neighbors, which is what FD elements
+ * send on the host with `AlwaysUseSubcells` (the only option FD patches
+ * support), since their TCI decision is reset to 0 at initialization and
+ * never recomputed.
  */
 template <typename OrderedListOfPrimitiveRecoverySchemes>
 class Patch {
  public:
   /// The TCI status that the elements of the patch send to their neighbors
-  static constexpr int tci_status_sent = 1;
+  static constexpr int tci_status_sent = 0;
   /// The number of RDMP values that every element sends and receives
   static constexpr size_t number_of_rdmp_values = 8;
 
@@ -177,6 +179,14 @@ class Patch {
   std::vector<evolution::dg::subcell::fd_patch::OutgoingBoundaryData<3>>
   prepare_send(const Kokkos::DefaultExecutionSpace& exec,
                const TimeStepId& next_time_step_id);
+
+  /// The RDMP data that the elements send to their DG neighbors during
+  /// initialization (see `initial_rdmp_data_for_dg_neighbors`)
+  std::vector<evolution::dg::subcell::fd_patch::OutgoingInitialRdmpData<3>>
+  initial_rdmp_data(const Kokkos::DefaultExecutionSpace& exec) const;
+
+  /// The number of faces of the elements with a DG neighbor
+  size_t number_of_dg_faces() const;
 
   /// Whether `messages` hold all the data the patch receives in a substep
   bool received_all(

@@ -91,5 +91,30 @@ std::vector<OutgoingBoundaryData<Dim>> pack_boundary_data(
     const std::vector<RdmpTciData>& rdmp_tci_data,
     const TimeStepId& next_time_step_id, int tci_status,
     size_t integration_order);
+
+/// The initial RDMP data that an element of a patch sends to a DG neighbor
+template <size_t Dim>
+struct OutgoingInitialRdmpData {
+  ElementId<Dim> receiver;
+  /// The key of the data in the receiver's inbox (see `OutgoingBoundaryData`)
+  DirectionalId<Dim> sender;
+  RdmpTciData rdmp_tci_data;
+};
+
+/*!
+ * \brief The RDMP data that the elements of a patch send to their DG neighbors
+ * during initialization, as `SetAndCommunicateInitialRdmpData` does on the
+ * host. Elements of other patches don't take part in the initial TCI.
+ */
+template <size_t Dim>
+std::vector<OutgoingInitialRdmpData<Dim>> initial_rdmp_data_for_dg_neighbors(
+    const GhostZones<Dim>& ghost_zones,
+    const std::vector<ElementId<Dim>>& element_ids,
+    const std::vector<RdmpTciData>& rdmp_tci_data);
+
+/// The number of faces of a patch with a DG neighbor, i.e. the number of
+/// messages that the patch receives for each temporal id of the initial TCI
+template <size_t Dim>
+size_t number_of_dg_faces(const GhostZones<Dim>& ghost_zones);
 }  // namespace evolution::dg::subcell::fd_patch
 #endif  // SPECTRE_KOKKOS

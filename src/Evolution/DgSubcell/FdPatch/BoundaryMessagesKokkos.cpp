@@ -186,6 +186,36 @@ std::vector<OutgoingBoundaryData<Dim>> pack_boundary_data(
   return result;
 }
 
+template <size_t Dim>
+std::vector<OutgoingInitialRdmpData<Dim>> initial_rdmp_data_for_dg_neighbors(
+    const GhostZones<Dim>& ghost_zones,
+    const std::vector<ElementId<Dim>>& element_ids,
+    const std::vector<RdmpTciData>& rdmp_tci_data) {
+  if (rdmp_tci_data.size() != element_ids.size()) {
+    ERROR("Got the RDMP data of " << rdmp_tci_data.size()
+                                  << " elements but expected "
+                                  << element_ids.size());
+  }
+  std::vector<OutgoingInitialRdmpData<Dim>> result{};
+  for (const auto& face : ghost_zones.external_faces()) {
+    if (face.neighbor_is_dg) {
+      result.push_back(OutgoingInitialRdmpData<Dim>{
+          .receiver = face.neighbor,
+          .sender = DirectionalId<Dim>{face.direction_from_neighbor,
+                                       element_ids[face.slot]},
+          .rdmp_tci_data = rdmp_tci_data[face.slot]});
+    }
+  }
+  return result;
+}
+
+template <size_t Dim>
+size_t number_of_dg_faces(const GhostZones<Dim>& ghost_zones) {
+  return static_cast<size_t>(std::count_if(
+      ghost_zones.external_faces().begin(), ghost_zones.external_faces().end(),
+      [](const auto& face) { return face.neighbor_is_dg; }));
+}
+
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
 
 #define INSTANTIATION(r, data)                                              \
@@ -209,7 +239,13 @@ std::vector<OutgoingBoundaryData<Dim>> pack_boundary_data(
       const Mesh<DIM(data)>& dg_mesh,                                       \
       const std::vector<RdmpTciData>& rdmp_tci_data,                        \
       const TimeStepId& next_time_step_id, int tci_status,                  \
-      size_t integration_order);
+      size_t integration_order);                                            \
+  template std::vector<OutgoingInitialRdmpData<DIM(data)>>                  \
+  initial_rdmp_data_for_dg_neighbors(                                       \
+      const GhostZones<DIM(data)>& ghost_zones,                             \
+      const std::vector<ElementId<DIM(data)>>& element_ids,                 \
+      const std::vector<RdmpTciData>& rdmp_tci_data);                       \
+  template size_t number_of_dg_faces(const GhostZones<DIM(data)>& ghost_zones);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))
 

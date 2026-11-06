@@ -336,6 +336,26 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::prepare_send(
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>
+std::vector<patch_ns::OutgoingInitialRdmpData<3>>
+Patch<OrderedListOfPrimitiveRecoverySchemes>::initial_rdmp_data(
+    const Kokkos::DefaultExecutionSpace& exec) const {
+  // As `subcell::SetInitialRdmpData` on the subcell grid
+  return patch_ns::initial_rdmp_data_for_dg_neighbors(
+      ghost_zones_, element_ids_,
+      subcell::rdmp_tci_data_on_device(
+          exec, get<::Tags::BatchView<Tags::TildeD>>(evolved_variables_),
+          get<::Tags::BatchView<Tags::TildeYe>>(evolved_variables_),
+          get<::Tags::BatchView<Tags::TildeTau>>(evolved_variables_),
+          get<::Tags::BatchView<Tags::TildeB<>>>(evolved_variables_)));
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+size_t Patch<OrderedListOfPrimitiveRecoverySchemes>::number_of_dg_faces()
+    const {
+  return patch_ns::number_of_dg_faces(ghost_zones_);
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
 bool Patch<OrderedListOfPrimitiveRecoverySchemes>::received_all(
     const patch_ns::Tags::BoundaryDataInbox<3>::messages_type& messages) const {
   return patch_ns::received_all_boundary_data(ghost_zones_, element_ids_,

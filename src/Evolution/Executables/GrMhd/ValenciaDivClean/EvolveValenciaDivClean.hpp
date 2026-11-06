@@ -653,6 +653,10 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
                                                    TimeStepper, false, true>>,
                   grmhd::ValenciaDivClean::fd_patch::Actions::InitializePatch<
                       ordered_list_of_primitive_recovery_schemes>,
+                  evolution::dg::subcell::fd_patch::Actions::SendInitialTciData<
+                      fd_patch_tag, dg_element_array_component>,
+                  evolution::dg::subcell::fd_patch::Actions::
+                      ReceiveInitialTciData<volume_dim, fd_patch_tag>,
                   Parallel::Actions::TerminatePhase>>,
           // Patches only support time steppers without past steps, for which
           // the self start only advances the time

@@ -159,6 +159,12 @@ void test_exchange_between_patches() {
         std::vector<RdmpTciData>{make_rdmp(0), make_rdmp(1)}, next_time_step_id,
         3, 2);
     REQUIRE(outgoing.size() == 2);
+    // Neighbors in other patches don't take part in the initial TCI
+    CHECK(fd_patch::number_of_dg_faces(ghost_zones[patch]) == 0);
+    CHECK(fd_patch::initial_rdmp_data_for_dg_neighbors(
+              ghost_zones[patch], patches.element_ids(patch),
+              std::vector<RdmpTciData>{make_rdmp(0), make_rdmp(1)})
+              .empty());
     for (const auto& message : outgoing) {
       CHECK_FALSE(message.receiver_is_dg);
       CHECK(message.data.volume_mesh == dg_mesh);
@@ -332,9 +338,8 @@ void test_dg_neighbors(const gsl::not_null<std::mt19937*> generator) {
   // A DG neighbor with a different mesh
   auto wrong_messages = messages;
   const auto& face = ghost_zones.external_faces()[0];
-  auto& wrong_data = std::get<2>(*std::find_if(
-      wrong_messages.begin(), wrong_messages.end(),
-      [&face, &element_ids](const auto& message) {
+  auto& wrong_data = std::get<2>(*std::ranges::find_if(
+      wrong_messages, [&face, &element_ids](const auto& message) {
         return std::get<0>(message) == element_ids[face.slot] and
                std::get<1>(message) ==
                    DirectionalId<2>{face.direction, face.neighbor};
@@ -364,6 +369,24 @@ void test_dg_neighbors(const gsl::not_null<std::mt19937*> generator) {
     CHECK(outgoing[i].sender ==
           DirectionalId<2>{external_face.direction.opposite(),
                            element_ids[external_face.slot]});
+  }
+
+  // The initial RDMP data goes to the DG neighbors only
+  CHECK(fd_patch::number_of_dg_faces(ghost_zones) ==
+        ghost_zones.external_faces().size());
+  std::vector<RdmpTciData> rdmp_tci_data{};
+  rdmp_tci_data.reserve(element_ids.size());
+  for (size_t slot = 0; slot < element_ids.size(); ++slot) {
+    rdmp_tci_data.push_back(make_rdmp(slot));
+  }
+  const auto initial_rdmp_data = fd_patch::initial_rdmp_data_for_dg_neighbors(
+      ghost_zones, element_ids, rdmp_tci_data);
+  REQUIRE(initial_rdmp_data.size() == ghost_zones.external_faces().size());
+  for (size_t i = 0; i < initial_rdmp_data.size(); ++i) {
+    const auto& external_face = ghost_zones.external_faces()[i];
+    CHECK(initial_rdmp_data[i].receiver == external_face.neighbor);
+    CHECK(initial_rdmp_data[i].sender == outgoing[i].sender);
+    CHECK(initial_rdmp_data[i].rdmp_tci_data == make_rdmp(external_face.slot));
   }
 }
 }  // namespace

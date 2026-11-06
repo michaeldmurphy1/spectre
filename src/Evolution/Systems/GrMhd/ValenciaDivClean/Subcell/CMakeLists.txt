@@ -16,6 +16,7 @@ spectre_target_sources(
   TciOnDgGrid.cpp
   TciOnFdGrid.cpp
   TciOptions.cpp
+  TimeDerivativeKokkos.cpp
   )
 
 spectre_target_headers(
@@ -38,4 +39,5 @@ spectre_target_headers(
   TciOnFdGrid.hpp
   TciOptions.hpp
   TimeDerivative.hpp
+  TimeDerivativeKokkos.hpp
   )

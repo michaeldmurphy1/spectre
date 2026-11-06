@@ -12,6 +12,7 @@ spectre_target_headers(
   FdPatches.hpp
   GeometryKokkos.hpp
   GhostZonesKokkos.hpp
+  PackagedDataFromDgKokkos.hpp
   Tags.hpp
   )
 
@@ -21,6 +22,7 @@ spectre_target_sources(
   FdPatches.cpp
   GeometryKokkos.cpp
   GhostZonesKokkos.cpp
+  PackagedDataFromDgKokkos.cpp
   )
 
 target_link_libraries(

@@ -972,15 +972,27 @@ void Main<Metavariables>::check_if_component_terminated_correctly() {
   auto* global_cache = Parallel::local_branch(global_cache_proxy_);
   ASSERT(global_cache != nullptr, "Could not retrieve the local global cache.");
 
-  tmpl::for_each<component_list>([global_cache, this](auto component_tag_v) {
-    using component_tag = tmpl::type_from<decltype(component_tag_v)>;
-    if (tmpl::index_of<component_list, component_tag>::value ==
-        current_termination_check_index_) {
-      Parallel::get_parallel_component<component_tag>(*global_cache)
-          .contribute_termination_status_to_main();
-    }
-  });
+  bool component_is_empty = false;
+  tmpl::for_each<component_list>(
+      [global_cache, &component_is_empty, this](auto component_tag_v) {
+        using component_tag = tmpl::type_from<decltype(component_tag_v)>;
+        if (tmpl::index_of<component_list, component_tag>::value ==
+            current_termination_check_index_) {
+          // An array without elements can't contribute to a reduction, so a
+          // component that may be empty can say so with `is_empty`
+          if constexpr (requires { component_tag::is_empty(*global_cache); }) {
+            component_is_empty = component_tag::is_empty(*global_cache);
+          }
+          if (not component_is_empty) {
+            Parallel::get_parallel_component<component_tag>(*global_cache)
+                .contribute_termination_status_to_main();
+          }
+        }
+      });
   current_termination_check_index_++;
+  if (component_is_empty) {
+    did_all_elements_terminate(true);
+  }
 }
 
 namespace detail {

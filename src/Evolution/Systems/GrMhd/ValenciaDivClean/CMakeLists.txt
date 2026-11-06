@@ -90,6 +90,7 @@ target_link_libraries(
 add_subdirectory(Actions)
 add_subdirectory(BoundaryConditions)
 add_subdirectory(BoundaryCorrections)
+add_subdirectory(FdPatch)
 add_subdirectory(FiniteDifference)
 add_subdirectory(Instantiations)
 add_subdirectory(Subcell)

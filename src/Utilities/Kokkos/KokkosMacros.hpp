@@ -36,6 +36,7 @@
 #else  // SPECTRE_KOKKOS
 #define KOKKOS_FUNCTION
 #define KOKKOS_INLINE_FUNCTION inline
+#define KOKKOS_RELOCATABLE_FUNCTION
 // Without Kokkos all code runs on the host. The argument is wrapped in
 // parentheses, e.g. `KOKKOS_IF_ON_HOST((io_call(...);))`, like in Kokkos.
 #define SPECTRE_KOKKOS_STRIP_PARENS(...) __VA_ARGS__

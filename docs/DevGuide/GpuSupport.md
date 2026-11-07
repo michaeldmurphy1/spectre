@@ -77,7 +77,7 @@ following configuration options:
   the host backend in CI, which has no GPUs.
 - `ASSERT` and `ERROR` work in device code. On the device the message is
   streamed into a `DeviceMessage` (`Utilities/ErrorHandling/DeviceMessage.hpp`)
-  and printed with `Kokkos::printf` before the program aborts. It supports
-  strings, characters, integers, floating-point numbers, enums and
-  `std::array`s of these, and prints values of other types as `<?>`.
-
+  and passed to `Kokkos::abort`. Only the first failing GPU thread prints its
+  message. `DeviceMessage` supports strings, characters, integers,
+  floating-point numbers, enums and `std::array`s of these, and prints values of
+  other types as `<?>`.

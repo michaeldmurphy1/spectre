@@ -76,8 +76,10 @@
 #define ASSERT(a, m)                                                        \
   do {                                                                      \
     KOKKOS_IF_ON_HOST((SPECTRE_ASSERT_ON_HOST(a, m);))                      \
-    KOKKOS_IF_ON_DEVICE(                                                    \
-        (if (not(a)) { SPECTRE_ABORT_ON_DEVICE("ASSERT FAILED", #a, m); })) \
+    KOKKOS_IF_ON_DEVICE((if (not(a)) {                                      \
+      SPECTRE_ABORT_ON_DEVICE("DEVICE ASSERT FAILED", "'" #a "' violated!", \
+                              m);                                           \
+    }))                                                                     \
   } while (false)
 #else
 #define ASSERT(a, m)                                   \

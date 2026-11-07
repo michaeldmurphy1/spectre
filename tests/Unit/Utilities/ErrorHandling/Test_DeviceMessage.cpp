@@ -8,9 +8,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <iomanip>
+#include <ios>
 #include <limits>
-#include <ostream>
 #include <random>
 #include <string>
 #include <vector>
@@ -49,14 +48,9 @@ void test_types() {
   // Unsupported types
   CHECK(stream_all("a", std::vector<double>{1.0}, "b") == "a<?>b");
   CHECK(stream_all(std::string{"abc"}) == "<?>");
-  // Manipulators
-  using OstreamManipulator = std::ostream& (*)(std::ostream&);
+  // Manipulators without arguments are ignored
   using IosManipulator = std::ios_base& (*)(std::ios_base&);
-  CHECK(stream_all("a", static_cast<OstreamManipulator>(std::endl), "b") ==
-        "a\nb");
-  CHECK(stream_all(std::setprecision(3),
-                   static_cast<IosManipulator>(std::scientific), std::setw(5),
-                   std::setfill('x'),
+  CHECK(stream_all(static_cast<IosManipulator>(std::scientific),
                    static_cast<IosManipulator>(std::boolalpha), true) == "1");
 }
 

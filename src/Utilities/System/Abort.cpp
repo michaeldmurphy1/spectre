@@ -7,6 +7,8 @@
 #include <exception>
 #include <string>
 
+#include "Utilities/System/Exit.hpp"
+
 namespace sys {
 void abort(const std::string& message) {
 #pragma GCC diagnostic push
@@ -14,6 +16,7 @@ void abort(const std::string& message) {
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
   CkPrintf("%s\n", message.c_str());
 #pragma GCC diagnostic pop
+  Exit_detail::mark_exit_in_progress();
   CkExit(1);
   // the following call is never reached, but suppresses the warning that
   // a 'noreturn' function does return

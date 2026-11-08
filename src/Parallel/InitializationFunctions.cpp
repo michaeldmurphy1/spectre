@@ -4,14 +4,19 @@
 #include "Parallel/InitializationFunctions.hpp"
 
 #include <charm++.h>
+#include <cstdlib>
 #include <exception>
 #include <sstream>
 
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/System/Abort.hpp"
+#include "Utilities/System/Exit.hpp"
 
 void setup_error_handling() {
   std::set_terminate([]() {
+    // Read before printing, so that we only exit immediately if the program
+    // was already exiting before this exception
+    const bool exiting = sys::exit_in_progress();
     std::exception_ptr exception = std::current_exception();
     if (exception) {
       try {
@@ -31,6 +36,14 @@ void setup_error_handling() {
           "Terminate was called for an unknown reason (not an uncaught "
           "exception), calling Charm++'s abort function to properly "
           "terminate execution.");
+    }
+    if (exiting) {
+      // The exception was thrown while the program was already exiting, e.g.
+      // by the destructor of a static object. Exiting through Charm++ again
+      // would hang, so exit immediately.
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
+      CkError("The program was already exiting, so exiting immediately.\n");
+      std::_Exit(1);
     }
     sys::abort("");
   });

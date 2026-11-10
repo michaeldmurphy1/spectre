@@ -42,6 +42,7 @@ spectre_target_headers(
   SliceData.hpp
   SliceTensor.hpp
   SliceVariable.hpp
+  SubcellAllowed.hpp
   SubcellAndNonconformingEqualRateRegions.hpp
   SubcellEqualRateRegion.hpp
   SubcellOptions.hpp
@@ -69,6 +70,7 @@ spectre_target_sources(
   Reconstruction.cpp
   ReconstructionMethod.cpp
   SliceData.cpp
+  SubcellAllowed.cpp
   SubcellAndNonconformingEqualRateRegions.cpp
   SubcellEqualRateRegion.cpp
   SubcellOptions.cpp

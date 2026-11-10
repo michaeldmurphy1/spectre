@@ -3,10 +3,15 @@
 
 #pragma once
 
+#include <cmath>
+#include <optional>
+
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Options/String.hpp"
 #include "PointwiseFunctions/Hydro/TagsDeclarations.hpp"
+#include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
@@ -82,6 +87,28 @@ class LimitLorentzFactor {
       gsl::not_null<Scalar<DataVector>*> lorentz_factor,
       gsl::not_null<tnsr::I<DataVector, 3, Frame::Inertial>*> spatial_velocity,
       const Scalar<DataVector>& rest_mass_density) const;
+
+  /// Whether the limiting is applied
+  KOKKOS_FUNCTION bool enabled() const { return enable_; }
+
+  /// The largest Lorentz factor allowed
+  KOKKOS_FUNCTION double lorentz_factor_cap() const {
+    return lorentz_factor_cap_;
+  }
+
+  /// The factor by which the spatial velocity is multiplied at a grid point
+  /// with the `lorentz_factor` and the `rest_mass_density` (if the limiting is
+  /// enabled), whose Lorentz factor is then set to `lorentz_factor_cap()`, or
+  /// `std::nullopt` if the grid point isn't limited.
+  KOKKOS_FUNCTION std::optional<double> velocity_rescaling(
+      const double lorentz_factor, const double rest_mass_density) const {
+    if (lorentz_factor > lorentz_factor_cap_ and
+        rest_mass_density < max_density_cuttoff_) {
+      return sqrt((1. - 1. / square(lorentz_factor_cap_)) /
+                  (1. - 1. / square(lorentz_factor)));
+    }
+    return std::nullopt;
+  }
 
  private:
   friend bool operator==(const LimitLorentzFactor& lhs,

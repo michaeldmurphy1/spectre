@@ -38,15 +38,12 @@ void LimitLorentzFactor::operator()(
   constexpr size_t dim = 3;
   const size_t number_of_grid_points = get(rest_mass_density).size();
   for (size_t s = 0; s < number_of_grid_points; ++s) {
-    if (get(*lorentz_factor)[s] > lorentz_factor_cap_ and
-        get(rest_mass_density)[s] < max_density_cuttoff_) {
-      const double velocity_renorm_factor =
-          sqrt((1. - 1. / square(lorentz_factor_cap_)) /
-               (1. - 1. / square(get(*lorentz_factor)[s])));
-
+    if (const auto velocity_renorm_factor = velocity_rescaling(
+            get(*lorentz_factor)[s], get(rest_mass_density)[s]);
+        velocity_renorm_factor.has_value()) {
       get(*lorentz_factor)[s] = lorentz_factor_cap_;
       for (size_t d = 0; d < dim; ++d) {
-        spatial_velocity->get(d)[s] *= velocity_renorm_factor;
+        spatial_velocity->get(d)[s] *= *velocity_renorm_factor;
       }
     }
   }

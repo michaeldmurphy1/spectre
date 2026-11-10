@@ -373,7 +373,8 @@ different design.
 ## Current limitations
 
 Patches support global time stepping (Runge-Kutta and multistep time steppers
-with self start), analytic initial data, monotonised central reconstruction,
+with self start), analytic initial data, monotonised central and
+positivity-preserving adaptive-order reconstruction,
 the Rusanov and HLL boundary corrections, affine or time-independent grid to
 inertial maps, and blocks whose cells line up across block boundaries (patches
 copy ghost data between blocks instead of interpolating). They don't support

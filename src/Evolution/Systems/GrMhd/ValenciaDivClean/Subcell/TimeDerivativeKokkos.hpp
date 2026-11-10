@@ -16,6 +16,7 @@
 #include "Evolution/DgSubcell/Tags/Coordinates.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/OnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ReconstructorOnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
@@ -79,15 +80,17 @@ using cell_spacetime_tags =
  * elements whose data is on the device, as `subcell::TimeDerivative` computes
  * it for one element on the host.
  *
- * \details This supports what FD patches need: monotonised central
- * reconstruction of the temperature (not \f$\rho T\f$), finite difference
+ * \details This supports what FD patches need: monotonised central or
+ * positivity-preserving adaptive-order reconstruction of the temperature (not
+ * \f$\rho T\f$), finite difference
  * derivative order 2 (no high-order flux corrections), the boundary correction
  * `Correction` (`Rusanov` or `Hll`), and an affine grid to inertial map (see
  * `evolution::dg::subcell::fd_patch::AffineGridToInertial`). Unlike the host,
  * it supports a moving mesh, following `GhValenciaDivClean`.
  *
  * The time derivative is computed as on the host:
- * 1. reconstruct the ghost variables to both sides of all faces,
+ * 1. reconstruct the ghost variables to both sides of all faces (see
+ *    `fd::ReconstructorOnDevice`),
  * 2. compute the other primitive variables, with the fix to the atmosphere if
  *    given, and the conserved variables on the faces,
  * 3. compute the fluxes on the faces, including the mesh velocity terms,
@@ -127,9 +130,10 @@ class TimeDerivativeOnDevice {
   TimeDerivativeOnDevice() = default;
 
   /// Allocate the face data for `number_of_elements` elements with the
-  /// `dg_mesh` on `exec`.
+  /// `dg_mesh` on `exec`, reconstructing with the `reconstructor`.
   TimeDerivativeOnDevice(const Kokkos::DefaultExecutionSpace& exec,
-                         size_t number_of_elements, const Mesh<3>& dg_mesh);
+                         size_t number_of_elements, const Mesh<3>& dg_mesh,
+                         fd::ReconstructorOnDevice reconstructor);
 
   /// Copy the spacetime variables on the faces (a batch of \f$3N\f$ face
   /// sets) to both sides of the faces. They aren't modified by `apply()`, so
@@ -205,6 +209,7 @@ class TimeDerivativeOnDevice {
 
  private:
   size_t number_of_elements_ = 0;
+  fd::ReconstructorOnDevice reconstructor_{};
   Mesh<3> dg_mesh_{};
   Index<3> subcell_extents_{};
   std::array<double, 3> one_over_delta_xi_{};

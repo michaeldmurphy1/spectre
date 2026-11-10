@@ -17,9 +17,14 @@
 #include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "DataStructures/Variables.hpp"
+#include "Domain/Domain.hpp"
+#include "Domain/ElementMap.hpp"
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
+#include "Domain/Structure/Element.hpp"
 #include "Evolution/DgSubcell/FdPatch/BoundaryMessagesKokkos.hpp"
+#include "Evolution/DgSubcell/FdPatch/ElementBox.hpp"
 #include "Evolution/DgSubcell/FdPatch/FdPatchElementsKokkos.hpp"
+#include "Evolution/Patches/InboxTags.hpp"
 #include "Evolution/Patches/SavedBatchesKokkos.hpp"
 #include "Evolution/Patches/TagsKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hll.hpp"
@@ -31,18 +36,18 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/TimeDerivativeKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/System.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
+#include "Parallel/GlobalCache.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Time/DeviceHistoryKokkos.hpp"
 #include "Time/StepperErrorEstimate.hpp"
+#include "Time/TimeStepId.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/TMPL.hpp"
 
 #ifdef SPECTRE_KOKKOS
 /// \cond
-template <size_t Dim>
-class Domain;
 namespace PUP {
 class er;
 }  // namespace PUP
@@ -222,6 +227,49 @@ class Patch {
       const PrimitiveVariables& primitives,
       const CellSpacetimeVariables& cell_spacetime_variables,
       const FaceSpacetimeVariables& face_spacetime_variables) const;
+
+  /// Host variables of each element with the right size but no meaningful
+  /// values, for events that don't read them (see `element_variables()`)
+  std::vector<ElementVariables> element_variables_without_values() const;
+
+  /*!
+   * \brief The DataBox of the element in `slot` for events, as that of an FD
+   * element of the `DgElementArray` (see
+   * `evolution::dg::subcell::fd_patch::make_element_box`), at the time
+   * `time` of the substep `time_step_id` with the step `time_step`, holding
+   * the element's `variables`.
+   */
+  template <typename Metavariables>
+  auto make_element_box(Parallel::GlobalCache<Metavariables>& cache,
+                        const Domain<3>& domain, const size_t slot,
+                        const double time, const TimeStepId& time_step_id,
+                        const TimeDelta& time_step,
+                        ElementVariables variables) const {
+    const Element<3>& element = patch_elements_.elements()[slot];
+    return evolution::dg::subcell::fd_patch::make_element_box<Metavariables>(
+        cache, element, patch_elements_.dg_mesh(),
+        ElementMap<3, Frame::Grid>{element.id(),
+                                   domain.blocks()[element.id().block_id()]},
+        patch_elements_.grid_to_inertial_map().get_clone(), time, time_step_id,
+        time_step, tci_status_sent, std::move(variables.evolved),
+        std::move(variables.primitives), std::move(variables.spacetime));
+  }
+
+  /// Whether `messages` hold all the boundary data that the patch receives in
+  /// a substep (see `FdPatchElements::received_all()`)
+  bool received_all(
+      const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
+          messages) const {
+    return patch_elements_.received_all(messages);
+  }
+
+  /// Receive the boundary data of a substep (see `FdPatchElements::receive()`)
+  void receive(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
+          messages) {
+    patch_elements_.receive(exec, messages, number_of_rdmp_values);
+  }
 
   /// The number of evolved values of each element, i.e., the number of
   /// cells times the number of independent components of the evolved

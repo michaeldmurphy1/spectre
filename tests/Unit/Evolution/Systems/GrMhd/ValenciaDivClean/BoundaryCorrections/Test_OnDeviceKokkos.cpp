@@ -33,8 +33,8 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/Barotropic3D.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Equilibrium3D.hpp"
-#include "PointwiseFunctions/Hydro/EquationsOfState/HybridEos.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/IdealFluid.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/PiecewisePolytropicFluid.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/Gsl.hpp"
@@ -405,9 +405,10 @@ void check_fused(const gsl::not_null<std::mt19937*> generator,
 // EOSs without a `DeviceView` are an error rather than evaluated on the host
 void check_error_without_device_view(
     const gsl::not_null<std::mt19937*> generator) {
-  const EoS::Equilibrium3D<EoS::HybridEos<EoS::PolytropicFluid<true>>> eos{
-      EoS::HybridEos<EoS::PolytropicFluid<true>>{
-          EoS::PolytropicFluid<true>{100.0, 2.0}, 1.5}};
+  const auto eos_ptr =
+      EoS::PiecewisePolytropicFluid<true>{1.0e-4, 100.0, 1.5, 2.0}
+          .promote_to_3d_eos();
+  const auto& eos = *eos_ptr;
   BatchedVariables<BoundaryCorrections::Hll::dg_package_field_tags> packaged{
       num_points, 1};
   CHECK_THROWS_WITH(

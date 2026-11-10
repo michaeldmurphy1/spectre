@@ -15,6 +15,7 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/IdealFluid.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/PiecewisePolytropicFluid.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/Spectral.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/VisitDeviceView.hpp"
 
 namespace {
@@ -28,8 +29,11 @@ static_assert(
     EoS::has_device_view_v<EoS::Barotropic3D<EoS::PolytropicFluid<true>>>);
 static_assert(not EoS::has_device_view_v<EoS::PiecewisePolytropicFluid<true>>);
 // The 3D wrappers only have a `device_view()` if the wrapped EOS has one
-static_assert(not EoS::has_device_view_v<
-              EoS::Equilibrium3D<EoS::HybridEos<EoS::PolytropicFluid<true>>>>);
+static_assert(
+    EoS::has_device_view_v<EoS::HybridEos<EoS::PolytropicFluid<true>>>);
+static_assert(EoS::has_device_view_v<EoS::Spectral>);
+static_assert(
+    EoS::has_device_view_v<EoS::Equilibrium3D<EoS::HybridEos<EoS::Spectral>>>);
 
 // Checks that `visit_device_view` calls the function with the `DeviceView` of
 // the concrete type of `eos`, and compares it with `check`
@@ -93,15 +97,22 @@ void test() {
 
   check_error(EoS::PiecewisePolytropicFluid<true>{1.0e-4, 100.0, 1.5, 2.0},
               "EquationsOfState::PiecewisePolytropicFluid<true>");
-  check_error(
+  check_visited<EoS::HybridEos<EoS::PolytropicFluid<true>>>(
       EoS::HybridEos<EoS::PolytropicFluid<true>>{
           EoS::PolytropicFluid<true>{100.0, 2.0}, 1.5},
-      "EquationsOfState::HybridEos<");
-  check_error(
-      EoS::Equilibrium3D<EoS::HybridEos<EoS::PolytropicFluid<true>>>{
-          EoS::HybridEos<EoS::PolytropicFluid<true>>{
-              EoS::PolytropicFluid<true>{100.0, 2.0}, 1.5}},
-      "EquationsOfState::Equilibrium3D<EquationsOfState::HybridEos<");
+      [](const auto& device_view) {
+        CHECK(device_view.cold_eos.polytropic_constant == 100.0);
+        CHECK(device_view.thermal_adiabatic_index == 1.5);
+      });
+  const EoS::Spectral spectral{1.0e-4, 3.0e-7, {2.0, 0.0, 0.4, -0.1}, 5.0e-3};
+  check_visited<EoS::Equilibrium3D<EoS::HybridEos<EoS::Spectral>>>(
+      EoS::Equilibrium3D<EoS::HybridEos<EoS::Spectral>>{
+          EoS::HybridEos<EoS::Spectral>{spectral, 1.75}},
+      [](const auto& device_view) {
+        CHECK(device_view.underlying.cold_eos.reference_density == 1.0e-4);
+        CHECK(device_view.underlying.cold_eos.gamma_coefficients.size() == 4);
+        CHECK(device_view.underlying.thermal_adiabatic_index == 1.75);
+      });
 }
 }  // namespace
 

@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <string>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -183,17 +184,18 @@ auto apply_on_batch(
   const Kokkos::RangePolicy<ExecSpace, Kokkos::IndexType<size_t>> policy(
       exec, 0, number_of_grid_points * number_of_elements);
   using return_type = typename decltype(functor)::return_type;
+  // The name of the kernel for profiling tools, built once
+  static const std::string label =
+      "apply_pointwise_on_device<" + pretty_type::short_name<Function>() + ">";
   if constexpr (std::is_void_v<return_type>) {
-    Kokkos::parallel_for("apply_pointwise_on_device", policy, functor);
+    Kokkos::parallel_for(label, policy, functor);
   } else if constexpr (std::is_same_v<return_type, bool>) {
     bool result = false;
-    Kokkos::parallel_reduce("apply_pointwise_on_device", policy, functor,
-                            Kokkos::LOr<bool>(result));
+    Kokkos::parallel_reduce(label, policy, functor, Kokkos::LOr<bool>(result));
     return result;
   } else {
     StatusValue result{};
-    Kokkos::parallel_reduce("apply_pointwise_on_device", policy, functor,
-                            StatusReducer(result));
+    Kokkos::parallel_reduce(label, policy, functor, StatusReducer(result));
     PointwiseStatusSummary summary{result.any_flag, result.number_of_failures,
                                    0, 0};
     if (result.number_of_failures > 0) {

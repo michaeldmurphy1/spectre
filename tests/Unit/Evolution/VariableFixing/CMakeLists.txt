@@ -14,6 +14,7 @@ set(LIBRARY_SOURCES
 if (SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
     Test_FixToAtmosphereKokkos.cpp
+    Test_LimitLorentzFactorKokkos.cpp
     )
 endif()
 

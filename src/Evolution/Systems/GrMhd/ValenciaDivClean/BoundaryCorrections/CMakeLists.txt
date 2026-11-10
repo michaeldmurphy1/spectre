@@ -20,4 +20,5 @@ spectre_target_headers(
   NamespaceDocs.hpp
   OnDeviceKokkos.hpp
   Rusanov.hpp
+  Rusanov.tpp
   )

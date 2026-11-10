@@ -27,6 +27,7 @@ if(SPECTRE_KOKKOS)
     Test_FluxDivergenceKokkos.cpp
     Test_MonotonisedCentralKokkos.cpp
     Test_PartialDerivativesKokkos.cpp
+    Test_PositivityPreservingAdaptiveOrderKokkos.cpp
     Test_TransfersKokkos.cpp
     Test_VolumeViewKokkos.cpp
     )

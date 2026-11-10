@@ -21,6 +21,7 @@ spectre_target_sources(
   PartialDerivatives.cpp
   PartialDerivativesKokkos.cpp
   PositivityPreservingAdaptiveOrder.cpp
+  PositivityPreservingAdaptiveOrderKokkos.cpp
   SecondPartialDerivatives.cpp
   TransfersKokkos.cpp
   Unlimited.cpp
@@ -50,6 +51,7 @@ spectre_target_headers(
   PartialDerivatives.tpp
   PartialDerivativesKokkos.hpp
   PositivityPreservingAdaptiveOrder.hpp
+  PositivityPreservingAdaptiveOrderKokkos.hpp
   Reconstruct.hpp
   Reconstruct.tpp
   ReconstructKokkos.hpp

@@ -16,6 +16,7 @@
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ForceInline.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/Math.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -35,7 +36,7 @@ template <typename LowOrderReconstructor, bool PositivityPreserving,
           bool Use9thOrder, bool Use7thOrder>
 struct PositivityPreservingAdaptiveOrderReconstructor {
   using ReturnType = std::tuple<double, double, std::uint8_t>;
-  SPECTRE_ALWAYS_INLINE static ReturnType pointwise(
+  KOKKOS_FUNCTION SPECTRE_ALWAYS_INLINE static ReturnType pointwise(
       const double* const u, const int stride, const double four_to_the_alpha_5,
       // GCC9 complains that six_to_the_alpha_7 and eight_to_the_alpha_9
       // are unused because if-constexpr
@@ -221,7 +222,8 @@ struct PositivityPreservingAdaptiveOrderReconstructor {
     return {u[0], u[0], 1};
   }
 
-  SPECTRE_ALWAYS_INLINE static constexpr size_t stencil_width() {
+  KOKKOS_FUNCTION SPECTRE_ALWAYS_INLINE static constexpr size_t
+  stencil_width() {
     return Use9thOrder ? 9 : (Use7thOrder ? 7 : 5);
   }
 };

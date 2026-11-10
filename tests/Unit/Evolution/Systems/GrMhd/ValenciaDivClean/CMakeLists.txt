@@ -52,6 +52,7 @@ if (SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
     BoundaryCorrections/Test_OnDeviceKokkos.cpp
     FiniteDifference/Test_ConservativesOnDeviceKokkos.cpp
+    FiniteDifference/Test_FaceViewsKokkos.cpp
     Subcell/Test_ComputeFluxesKokkos.cpp
     Subcell/Test_PrimitiveGhostDataKokkos.cpp
     Test_ConservativeFromPrimitiveKokkos.cpp

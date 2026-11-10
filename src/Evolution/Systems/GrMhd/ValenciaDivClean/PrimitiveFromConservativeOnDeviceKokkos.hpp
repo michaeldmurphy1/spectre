@@ -61,6 +61,10 @@ namespace grmhd::ValenciaDivClean {
  * The `primitives` are overwritten in place. Nothing is copied between the
  * host and the device, but since the failures are needed on the host, this
  * function waits for the kernels on `exec` to complete.
+ *
+ * `per_element_scratch`, if given, holds the per-element decision whether
+ * \f$\tilde{D}\f$ is below the cutoff between calls (see `scratch_view`), so
+ * that it isn't allocated every time.
  */
 template <typename OrderedListOfPrimitiveRecoverySchemes,
           bool EnforcePhysicality>
@@ -82,8 +86,8 @@ PointwiseStatusSummary primitive_from_conservative_on_device(
         gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
         sqrt_det_spatial_metric,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
-    const PrimitiveFromConservativeOptions&
-        primitive_from_conservative_options);
+    const PrimitiveFromConservativeOptions& primitive_from_conservative_options,
+    Kokkos::View<bool*>* per_element_scratch = nullptr);
 
 /*!
  * \brief ERRORs with the variables at the first grid point where

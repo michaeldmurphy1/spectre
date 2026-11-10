@@ -12,6 +12,7 @@ spectre_target_headers(
   ExecutionSpaceKokkos.hpp
   KokkosCore.hpp
   KokkosMacros.hpp
+  ScratchViewKokkos.hpp
 )
 
 if(SPECTRE_KOKKOS)

@@ -9,6 +9,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
@@ -24,11 +25,13 @@
 #include "Domain/CoordinateMaps/ProductMaps.tpp"
 #include "Domain/CoordinateMaps/Rotation.hpp"
 #include "Domain/CoordinateMaps/TimeDependent/CubicScale.hpp"
+#include "Domain/CoordinateMaps/TimeDependent/RotScaleTrans.hpp"
 #include "Domain/CoordinateMaps/TimeDependent/Translation.hpp"
 #include "Domain/CoordinateMaps/Wedge.hpp"
 #include "Domain/ElementMap.hpp"
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Domain/FunctionsOfTime/PiecewisePolynomial.hpp"
+#include "Domain/FunctionsOfTime/QuaternionFunctionOfTime.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/OrientationMap.hpp"
 #include "Domain/Structure/SegmentId.hpp"
@@ -114,6 +117,30 @@ std::unique_ptr<GridToInertial> make_grid_to_inertial() {
       domain::CoordinateMaps::TimeDependent::CubicScale<3>{10.0, "ExpansionA",
                                                            "ExpansionB"},
       domain::CoordinateMaps::TimeDependent::Translation<3>{"Translation"});
+}
+
+// The grid to inertial map of the cubes of the BNS domain creator: a rotation
+// by a quaternion function of time, an expansion and a translation inside the
+// inner radius, all depending on time
+std::unique_ptr<GridToInertial> make_rot_scale_trans() {
+  using Map = domain::CoordinateMaps::TimeDependent::RotScaleTrans<3>;
+  return domain::make_coordinate_map_base<Frame::Grid, Frame::Inertial>(
+      Map{std::pair<std::string, std::string>{"ExpansionA", "ExpansionB"},
+          "Rotation", "Translation", 20.0, 100.0, Map::BlockRegion::Inner});
+}
+
+domain::FunctionsOfTimeMap make_rot_scale_trans_functions_of_time(
+    const double time) {
+  auto result = make_functions_of_time(time, false);
+  result["Rotation"] =
+      std::make_unique<domain::FunctionsOfTime::QuaternionFunctionOfTime<3>>(
+          0.0, std::array<DataVector, 1>{DataVector{{1.0, 0.0, 0.0, 0.0}}},
+          std::array<DataVector, 4>{{{0.1, -0.2, 0.3},
+                                     {0.2, 0.1, 0.5},
+                                     {0.0, 0.0, 0.01},
+                                     {0.0, 0.0, 0.0}}},
+          time + 1.0);
+  return result;
 }
 
 // Compares the inertial geometry on the device with the host computation of
@@ -262,6 +289,9 @@ void test_geometry() {
         time, {}, curved);
     check_inertial_geometry(element_maps, dg_mesh, *make_grid_to_inertial(),
                             time, make_functions_of_time(time, true), curved);
+    check_inertial_geometry(element_maps, dg_mesh, *make_rot_scale_trans(),
+                            time, make_rot_scale_trans_functions_of_time(time),
+                            curved);
   }
 }
 

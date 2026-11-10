@@ -11,6 +11,7 @@ set(LIBS_TO_LINK
   EventsAndDenseTriggers
   EventsAndTriggers
   Evolution
+  FdPatch
   FiniteDifference
   GeneralRelativitySolutions
   GrMhdAnalyticData
@@ -66,3 +67,17 @@ add_grmhd_executable(
   ""
   true
 )
+
+# The FD elements on the device in FD patches
+if (SPECTRE_KOKKOS)
+  add_grmhd_executable(
+    FdPatches
+    ""
+    false
+  )
+  target_compile_definitions(
+    EvolveValenciaDivCleanFdPatches
+    PRIVATE
+    USE_FD_PATCHES=true
+    )
+endif()

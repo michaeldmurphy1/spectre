@@ -26,6 +26,10 @@
 #include "Evolution/DgSubcell/CellCenteredFlux.hpp"
 #include "Evolution/DgSubcell/ComputeBoundaryTerms.hpp"
 #include "Evolution/DgSubcell/CorrectPackagedData.hpp"
+#include "Evolution/DgSubcell/FdPatch/ActionsKokkos.hpp"
+#include "Evolution/DgSubcell/FdPatch/FdPatchArray.hpp"
+#include "Evolution/DgSubcell/FdPatch/SlabSize.hpp"
+#include "Evolution/DgSubcell/FdPatch/Tags.hpp"
 #include "Evolution/DgSubcell/GetTciDecision.hpp"
 #include "Evolution/DgSubcell/GhostZoneInverseJacobian.hpp"
 #include "Evolution/DgSubcell/NeighborReconstructedFaceSolution.hpp"
@@ -59,6 +63,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryConditions/Factory.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Factory.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ComovingMagneticFieldMagnitude.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FdPatch/InitializePatchKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Factory.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/RegisterDerivedWithCharm.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Tag.hpp"
@@ -196,18 +201,24 @@ class CProxy_GlobalCache;
 }  // namespace Parallel
 /// \endcond
 
-template <typename InterpolationTargetTags, bool UseParametrizedDeleptonization>
+/// `UseFdPatches`: evolve the FD elements on the device with
+/// `evolution::dg::subcell::fd_patch::FdPatchArray` (see
+/// `grmhd::ValenciaDivClean::fd_patch::Patch` for what is supported). Only with
+/// Kokkos.
+template <typename InterpolationTargetTags, bool UseParametrizedDeleptonization,
+          bool UseFdPatches = false>
 struct EvolutionMetavars;
 
 template <typename... InterpolationTargetTags,
-          bool UseParametrizedDeleptonization>
+          bool UseParametrizedDeleptonization, bool UseFdPatches>
 struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
-                         UseParametrizedDeleptonization> {
+                         UseParametrizedDeleptonization, UseFdPatches> {
   // The use_dg_subcell flag controls whether to use unlimited DG (false)
   // or a DG-FD hybrid scheme (true).
   static constexpr bool use_parametrized_deleptonization =
       UseParametrizedDeleptonization;
   static constexpr bool use_dg_subcell = true;
+  static constexpr bool use_fd_patches = UseFdPatches;
   static constexpr size_t volume_dim = 3;
   using initial_data_list =
       grmhd::ValenciaDivClean::InitialData::initial_data_list;
@@ -629,11 +640,86 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
         tmpl::map<tmpl::pair<dg_element_array_component, dg_registration_list>>;
   };
 
-  using component_list = tmpl::list<
-      observers::Observer<EvolutionMetavars>,
-      observers::ObserverWriter<EvolutionMetavars>,
-      intrp::InterpolationTarget<EvolutionMetavars, InterpolationTargetTags>...,
-      dg_element_array_component>;
+#ifdef SPECTRE_KOKKOS
+  using fd_patch_tag = grmhd::ValenciaDivClean::fd_patch::Tags::Patch<
+      ordered_list_of_primitive_recovery_schemes>;
+  using fd_patch_step_actions = tmpl::list<
+      evolution::dg::subcell::fd_patch::Actions::SendBoundaryData<
+          fd_patch_tag, dg_element_array_component>,
+      evolution::dg::subcell::fd_patch::Actions::ReceiveBoundaryData<
+          volume_dim, fd_patch_tag>,
+      evolution::dg::subcell::fd_patch::Actions::TakeStep<fd_patch_tag>>;
+  using fd_patch_component = evolution::dg::subcell::fd_patch::FdPatchArray<
+      EvolutionMetavars,
+      tmpl::list<
+          Parallel::PhaseActions<
+              Parallel::Phase::Initialization,
+              tmpl::list<
+                  Initialization::Actions::InitializeItems<
+                      Initialization::TimeStepping<EvolutionMetavars,
+                                                   TimeStepper, false, true>>,
+                  grmhd::ValenciaDivClean::fd_patch::Actions::InitializePatch<
+                      ordered_list_of_primitive_recovery_schemes>,
+                  evolution::dg::subcell::fd_patch::Actions::SendInitialTciData<
+                      fd_patch_tag, dg_element_array_component>,
+                  evolution::dg::subcell::fd_patch::Actions::
+                      ReceiveInitialTciData<volume_dim, fd_patch_tag>,
+                  Parallel::Actions::TerminatePhase>>,
+          Parallel::PhaseActions<
+              Parallel::Phase::InitializeTimeStepperHistory,
+              evolution::dg::subcell::fd_patch::Actions::self_start_procedure<
+                  fd_patch_tag, fd_patch_step_actions>>,
+          Parallel::PhaseActions<
+              Parallel::Phase::Register,
+              tmpl::list<evolution::dg::subcell::fd_patch::Actions::
+                             RegisterWithObservers<fd_patch_tag>,
+                         Parallel::Actions::TerminatePhase>>,
+          // The observers don't keep the registrations across checkpoints
+          Parallel::PhaseActions<
+              Parallel::Phase::Restart,
+              tmpl::list<
+                  grmhd::ValenciaDivClean::fd_patch::Actions::RebuildPatch<
+                      ordered_list_of_primitive_recovery_schemes>,
+                  evolution::dg::subcell::fd_patch::Actions::
+                      RegisterWithObservers<fd_patch_tag>,
+                  Parallel::Actions::TerminatePhase>>,
+          Parallel::PhaseActions<
+              Parallel::Phase::Evolve,
+              tmpl::flatten<tmpl::list<
+                  evolution::dg::subcell::fd_patch::Actions::
+                      RunEventsAndTriggers<Triggers::WhenToCheck::AtSteps,
+                                           fd_patch_tag>,
+                  evolution::dg::subcell::fd_patch::Actions::
+                      RunEventsAndTriggers<Triggers::WhenToCheck::AtSlabs,
+                                           fd_patch_tag>,
+                  Actions::ChangeSlabSize, fd_patch_step_actions,
+                  Actions::MutateApply<AdvanceTime<>>,
+                  // As for the DG elements, so that all elements halt for
+                  // phase changes (e.g. checkpoints) at the same slab
+                  PhaseControl::Actions::ExecutePhaseChange>>>>>;
+  using fd_patches_tag = tmpl::conditional_t<
+      UseFdPatches, evolution::dg::subcell::fd_patch::Tags::FdPatches<3>, void>;
+  // The DG elements and the patches agree on the slab size
+  using slab_size_reduction =
+      tmpl::conditional_t<UseFdPatches,
+                          evolution::dg::subcell::fd_patch::SlabSizeReduction<
+                              fd_patch_component, dg_element_array_component>,
+                          void>;
+  using fd_patch_components =
+      tmpl::conditional_t<UseFdPatches, tmpl::list<fd_patch_component>,
+                          tmpl::list<>>;
+#else
+  static_assert(not UseFdPatches, "FD patches need Kokkos.");
+  using fd_patch_components = tmpl::list<>;
+#endif  // SPECTRE_KOKKOS
+
+  using component_list = tmpl::append<
+      tmpl::list<observers::Observer<EvolutionMetavars>,
+                 observers::ObserverWriter<EvolutionMetavars>,
+                 intrp::InterpolationTarget<EvolutionMetavars,
+                                            InterpolationTargetTags>...,
+                 dg_element_array_component>,
+      fd_patch_components>;
 
   using const_global_cache_tags = tmpl::push_back<
       tmpl::conditional_t<

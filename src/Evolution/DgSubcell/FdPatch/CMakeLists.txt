@@ -10,6 +10,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   BoundaryMessagesKokkos.hpp
+  FdPatchElementsKokkos.hpp
   GeometryKokkos.hpp
   GhostZonesKokkos.hpp
   InboxTags.hpp
@@ -21,6 +22,7 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   BoundaryMessagesKokkos.cpp
+  FdPatchElementsKokkos.cpp
   GeometryKokkos.cpp
   GhostZonesKokkos.cpp
   PackagedDataFromDgKokkos.cpp

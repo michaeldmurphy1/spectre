@@ -11,13 +11,17 @@ spectre_target_headers(
   HEADERS
   GridToInertial.hpp
   InboxTags.hpp
+  PatchElementsKokkos.hpp
   PatchTable.hpp
+  SavedBatchesKokkos.hpp
+  TagsKokkos.hpp
   )
 
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   GridToInertial.cpp
+  PatchElementsKokkos.cpp
   PatchTable.cpp
   )
 

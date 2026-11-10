@@ -53,6 +53,15 @@ struct DgElementArray {
   static constexpr size_t volume_dim = Metavariables::volume_dim;
 
   using chare_type = Parallel::Algorithms::Array;
+  /// Whether the FD elements are in FD patches instead of this array (see
+  /// `evolution::dg::subcell::fd_patch::FdPatchArray`)
+  static constexpr bool uses_fd_patches = []() {
+    if constexpr (requires { Metavariables::use_fd_patches; }) {
+      return Metavariables::use_fd_patches;
+    } else {
+      return false;
+    }
+  }();
   static constexpr bool checkpoint_data = true;
   using metavariables = Metavariables;
   using phase_dependent_action_list = PhaseDepActionList;
@@ -73,6 +82,18 @@ struct DgElementArray {
       const tuples::tagged_tuple_from_typelist<array_allocation_tags>&
           array_allocation_items = {},
       const std::unordered_set<size_t>& procs_to_ignore = {});
+
+  /// Whether the array has no elements, because all elements are in FD
+  /// patches (see `evolution::dg::subcell::fd_patch::FdPatchArray`)
+  static bool is_empty(Parallel::GlobalCache<Metavariables>& cache) {
+    if constexpr (uses_fd_patches) {
+      return Parallel::get<typename Metavariables::fd_patches_tag>(cache)
+                 .number_of_dg_elements() == 0;
+    } else {
+      (void)cache;
+      return false;
+    }
+  }
 
   static void execute_next_phase(
       const Parallel::Phase next_phase,
@@ -120,9 +141,20 @@ void DgElementArray<Metavariables, PhaseDepActionList>::allocate_array(
           local_cache, initial_refinement_levels, initial_extents);
 
   Parallel::create_elements_using_distribution(
-      [&dg_element_array, &global_cache, &initialization_items](
+      [&dg_element_array, &global_cache, &initialization_items, &local_cache](
           const ElementId<volume_dim>& element_id, const size_t target_proc,
           const size_t /*target_node*/) {
+        // The FD elements of FD patches belong to the patch component (see
+        // `evolution::dg::subcell::fd_patch::FdPatchArray`)
+        if constexpr (uses_fd_patches) {
+          if (Parallel::get<typename Metavariables::fd_patches_tag>(local_cache)
+                  .location(element_id)
+                  .has_value()) {
+            return;
+          }
+        } else {
+          (void)local_cache;
+        }
         dg_element_array(element_id)
             .insert(global_cache, initialization_items, target_proc);
       },

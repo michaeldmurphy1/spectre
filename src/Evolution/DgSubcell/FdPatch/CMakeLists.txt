@@ -19,6 +19,7 @@ spectre_target_headers(
   InboxTags.hpp
   PackagedDataFromDgKokkos.hpp
   PatchElementsKokkos.hpp
+  SendToPatch.hpp
   SlabSize.hpp
   Tags.hpp
   TagsKokkos.hpp

@@ -61,6 +61,9 @@ using ConstVolumeView = Kokkos::View<const double*****, Kokkos::LayoutRight>;
  * A `VolumeView` converts to a `StridedVolumeView`.
  */
 using StridedVolumeView = Kokkos::View<double*****, Kokkos::LayoutStride>;
+/// \copydoc StridedVolumeView
+using ConstStridedVolumeView =
+    Kokkos::View<const double*****, Kokkos::LayoutStride>;
 
 /*!
  * \brief Allocate a `VolumeView` for `number_of_elements` elements with

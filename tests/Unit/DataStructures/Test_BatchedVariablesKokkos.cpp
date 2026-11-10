@@ -12,6 +12,7 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "DataStructures/VariablesKokkos.hpp"
+#include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/TestTags.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
@@ -152,6 +153,31 @@ void test_nan_init() {
   }
 #endif  // SPECTRE_NAN_INIT
 }
+
+// Serialization copies the data through the host into new memory
+void test_serialization() {
+  const BatchedVariables<tags> batch{num_points, num_elements};
+  fill_on_device(batch);
+  const auto deserialized = serialize_and_deserialize(batch);
+  CHECK(deserialized.number_of_grid_points() == num_points);
+  CHECK(deserialized.number_of_elements() == num_elements);
+  CHECK(deserialized.view().data() != batch.view().data());
+  for (size_t e = 0; e < num_elements; ++e) {
+    Variables<tags> host_element{};
+    copy_to_host(make_not_null(&host_element), deserialized.element(e));
+    for (size_t i = 0; i < num_points; ++i) {
+      CHECK(get(get<ScalarTag>(host_element))[i] == value(i, 0, e));
+      for (size_t d = 0; d < 3; ++d) {
+        CHECK(get<VectorTag>(host_element).get(d)[i] == value(i, d + 1, e));
+      }
+    }
+  }
+  // The views of the tensors refer to the new memory
+  CHECK(get(get<Tags::BatchView<ScalarTag>>(deserialized)).data() ==
+        deserialized.view().data());
+  const auto empty = serialize_and_deserialize(BatchedVariables<tags>{});
+  CHECK(empty.number_of_elements() == 0);
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.DataStructures.BatchedVariables",
@@ -160,4 +186,5 @@ SPECTRE_TEST_CASE("Unit.DataStructures.BatchedVariables",
   test_extract_point_to_host();
   test_host_batch();
   test_nan_init();
+  test_serialization();
 }

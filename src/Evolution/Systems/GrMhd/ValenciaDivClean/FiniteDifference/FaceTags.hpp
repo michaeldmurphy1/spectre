@@ -79,4 +79,39 @@ using face_tags = tmpl::append<
 static_assert(tmpl::size<face_tags>::value ==
                   tmpl::size<tmpl::remove_duplicates<face_tags>>::value,
               "A face variable is listed twice.");
+
+/*!
+ * \brief The `face_tags` without the fluxes and the normal vector and
+ * covector, in the same order.
+ *
+ * The FD time derivative on the device computes these where it needs them
+ * (see `BoundaryCorrections::fluxes_and_package_data_on_device`) instead of
+ * keeping them on the faces.
+ */
+using device_face_tags = tmpl::list_difference<
+    face_tags,
+    tmpl::push_back<
+        db::wrap_tags_in<::Tags::Flux,
+                         tmpl::list<::grmhd::ValenciaDivClean::Tags::TildeD,
+                                    ::grmhd::ValenciaDivClean::Tags::TildeYe,
+                                    ::grmhd::ValenciaDivClean::Tags::TildeTau,
+                                    ::grmhd::ValenciaDivClean::Tags::TildeS<>,
+                                    ::grmhd::ValenciaDivClean::Tags::TildeB<>,
+                                    ::grmhd::ValenciaDivClean::Tags::TildePhi>,
+                         tmpl::size_t<3>, Frame::Inertial>,
+        evolution::dg::Actions::detail::NormalVector<3>,
+        evolution::dg::Tags::NormalCovector<3>>>;
+
+/*!
+ * \brief The variables on the faces from which
+ * `BoundaryCorrections::package_data_from_reconstruction_on_device` computes
+ * the packaged data: the `reconstructed_face_tags` (first, see
+ * `reconstructed_face_views`) and the spacetime variables.
+ */
+using reconstruction_face_tags = tmpl::append<
+    reconstructed_face_tags,
+    tmpl::list<gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, 3>,
+               gr::Tags::SpatialMetric<DataVector, 3>,
+               gr::Tags::SqrtDetSpatialMetric<DataVector>,
+               gr::Tags::InverseSpatialMetric<DataVector, 3>>>;
 }  // namespace grmhd::ValenciaDivClean::fd

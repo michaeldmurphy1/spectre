@@ -19,6 +19,7 @@ set(LIBRARY_SOURCES
   Test_DeviceMessageKokkos.cpp
   Test_ExecutionSpaceKokkos.cpp
   Test_Kokkos.cpp
+  Test_ScratchViewKokkos.cpp
   )
 
 # Only device builds can test that `ASSERT` aborts on the device

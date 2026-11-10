@@ -38,8 +38,8 @@
 #include "Evolution/DgSubcell/Tags/Coordinates.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.tpp"
-#include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/MonotonisedCentral.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Reconstructor.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ReconstructorOnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservativesOnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/KastaunEtAl.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/NewmanHamlin.hpp"
@@ -111,15 +111,8 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
       fix_conservatives_(fix_conservatives),
       primitive_from_conservative_options_(primitive_from_conservative_options),
       constraint_damping_parameter_(constraint_damping_parameter) {
-  // Check what is supported
-  const auto* const monotonised_central =
-      dynamic_cast<const fd::MonotonisedCentralPrim*>(&reconstructor);
-  if (monotonised_central == nullptr or
-      monotonised_central->reconstruct_rho_times_temperature()) {
-    ERROR(
-        "FD patches only support the MonotonisedCentralPrim reconstructor "
-        "without ReconstructRhoTimesTemperature.");
-  }
+  // Errors if the reconstructor isn't supported
+  const fd::ReconstructorOnDevice reconstructor_on_device{reconstructor};
   const Mesh<3>& dg_mesh = fd_patches.dg_mesh(patch);
   const size_t number_of_elements = fd_patches.element_ids(patch).size();
 
@@ -132,7 +125,7 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
     boundary_correction_ = *rusanov;
     time_derivative_ =
         subcell::TimeDerivativeOnDevice<BoundaryCorrections::Rusanov>{
-            exec, number_of_elements, dg_mesh};
+            exec, number_of_elements, dg_mesh, reconstructor_on_device};
     number_of_packaged_variables =
         Variables<typename BoundaryCorrections::Rusanov::
                       dg_package_field_tags>::number_of_independent_components;
@@ -143,7 +136,7 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
     boundary_correction_ = *hll;
     time_derivative_ =
         subcell::TimeDerivativeOnDevice<BoundaryCorrections::Hll>{
-            exec, number_of_elements, dg_mesh};
+            exec, number_of_elements, dg_mesh, reconstructor_on_device};
     number_of_packaged_variables =
         Variables<typename BoundaryCorrections::Hll::dg_package_field_tags>::
             number_of_independent_components;
@@ -161,7 +154,7 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
       grid_to_inertial_map,
       time,
       functions_of_time,
-      monotonised_central->ghost_zone_size(),
+      reconstructor_on_device.ghost_zone_size(),
       Variables<ghost_tags>::number_of_independent_components,
       number_of_packaged_variables};
 

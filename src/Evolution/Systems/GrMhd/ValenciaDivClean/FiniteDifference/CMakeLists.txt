@@ -10,6 +10,7 @@ spectre_target_sources(
   MonotonisedCentral.cpp
   PositivityPreservingAdaptiveOrder.cpp
   Reconstructor.cpp
+  ReconstructorOnDeviceKokkos.cpp
   RegisterDerivedWithCharm.cpp
   Wcns5z.cpp
   )
@@ -29,6 +30,7 @@ spectre_target_headers(
   MonotonisedCentral.hpp
   PositivityPreservingAdaptiveOrder.hpp
   Reconstructor.hpp
+  ReconstructorOnDeviceKokkos.hpp
   ReconstructWork.hpp
   ReconstructWork.tpp
   RegisterDerivedWithCharm.hpp

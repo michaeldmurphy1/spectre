@@ -5,6 +5,7 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   ConservativesOnDeviceKokkos.cpp
+  FaceViewsKokkos.cpp
   MonotonicityPreserving5.cpp
   MonotonisedCentral.cpp
   PositivityPreservingAdaptiveOrder.cpp
@@ -20,6 +21,7 @@ spectre_target_headers(
   BoundaryConditionGhostData.hpp
   ConservativesOnDeviceKokkos.hpp
   FaceTags.hpp
+  FaceViewsKokkos.hpp
   Factory.hpp
   FiniteDifference.hpp
   MonotonicityPreserving5.hpp

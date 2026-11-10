@@ -21,6 +21,7 @@ spectre_target_headers(
   BoundaryConditionGhostData.hpp
   ConservativesOnDeviceKokkos.hpp
   FaceTags.hpp
+  FaceVariablesAtGridPointKokkos.hpp
   FaceViewsKokkos.hpp
   Factory.hpp
   FiniteDifference.hpp

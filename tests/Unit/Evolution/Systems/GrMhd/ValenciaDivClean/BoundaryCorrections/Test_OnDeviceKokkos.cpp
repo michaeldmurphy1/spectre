@@ -6,13 +6,16 @@
 #include <cstddef>
 #include <optional>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
+#include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Evolution/DiscontinuousGalerkin/Actions/NormalCovectorAndMagnitude.hpp"
@@ -21,6 +24,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/OnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Rusanov.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/Fluxes.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
@@ -46,6 +50,12 @@ using grmhd::ValenciaDivClean::fd::face_tags;
 
 struct NormalDotMeshVelocity : db::SimpleTag {
   using type = Scalar<DataVector>;
+};
+struct Conormal : db::SimpleTag {
+  using type = tnsr::i<DataVector, 3, Frame::Inertial>;
+};
+struct MeshVelocity : db::SimpleTag {
+  using type = tnsr::I<DataVector, 3, Frame::Inertial>;
 };
 
 constexpr size_t num_points = 50;
@@ -264,6 +274,134 @@ void check_against_host(const gsl::not_null<std::mt19937*> generator,
   }
 }
 
+// `fluxes_and_package_data_on_device` must agree with computing the fluxes,
+// the mesh velocity terms and the normal covector first and then the packaged
+// data, as the FD time derivative does on the host
+template <typename Correction>
+void check_fused(const gsl::not_null<std::mt19937*> generator,
+                 const Correction& correction,
+                 const EoS::EquationOfState<true, 3>& eos) {
+  const Approx custom_approx = Approx::custom().epsilon(1.e-13).scale(1.0);
+  std::uniform_real_distribution<> dist(-1.0, 1.0);
+  const Kokkos::DefaultExecutionSpace exec{};
+  using packaged_tags = typename Correction::dg_package_field_tags;
+  using geometry_tags = tmpl::list<Conormal, MeshVelocity>;
+
+  for (const bool moving_mesh : {false, true}) {
+    for (const double sign : {1.0, -1.0}) {
+      CAPTURE(moving_mesh);
+      CAPTURE(sign);
+      std::vector<Variables<face_tags>> faces{};
+      std::vector<Variables<geometry_tags>> geometry{};
+      std::vector<Variables<packaged_tags>> expected{};
+      for (size_t e = 0; e < num_face_sets; ++e) {
+        // A spatial metric close to the flat one, with its inverse, so that
+        // the conormal can be normalized
+        auto& face = faces.emplace_back(random_face(generator, e));
+        auto& spatial_metric =
+            get<gr::Tags::SpatialMetric<DataVector, 3>>(face);
+        for (size_t i = 0; i < 3; ++i) {
+          for (size_t j = i; j < 3; ++j) {
+            spatial_metric.get(i, j) =
+                (i == j ? 1.0 : 0.0) + 0.1 * spatial_metric.get(i, j);
+          }
+        }
+        const auto [det_spatial_metric, inv_spatial_metric] =
+            determinant_and_inverse(spatial_metric);
+        get<gr::Tags::InverseSpatialMetric<DataVector, 3>>(face) =
+            inv_spatial_metric;
+        get(get<gr::Tags::SqrtDetSpatialMetric<DataVector>>(face)) =
+            sqrt(get(det_spatial_metric));
+
+        auto& face_geometry = geometry.emplace_back(num_points);
+        fill_with_random_values(make_not_null(&face_geometry), generator,
+                                make_not_null(&dist));
+        auto& conormal = get<Conormal>(face_geometry);
+        // Away from zero
+        get<0>(conormal) += 2.0;
+
+        // The fluxes, the mesh velocity terms and the normals on the host
+        Variables<face_tags> host_face = face;
+        tmpl::as_pack<grmhd::ValenciaDivClean::ComputeFluxes::return_tags>(
+            [&](auto... flux_tags) {
+              tmpl::as_pack<
+                  grmhd::ValenciaDivClean::ComputeFluxes::argument_tags>(
+                  [&](auto... argument_tags) {
+                    grmhd::ValenciaDivClean::ComputeFluxes::apply(
+                        make_not_null(
+                            &get<tmpl::type_from<decltype(flux_tags)>>(
+                                host_face))...,
+                        get<tmpl::type_from<decltype(argument_tags)>>(
+                            host_face)...);
+                  });
+            });
+        std::optional<tnsr::I<DataVector, 3, Frame::Inertial>> mesh_velocity{};
+        std::optional<Scalar<DataVector>> normal_dot_mesh_velocity{};
+        if (moving_mesh) {
+          mesh_velocity = get<MeshVelocity>(face_geometry);
+          tmpl::for_each<BoundaryCorrectionTags>([&](auto tag_v) {
+            using Tag = tmpl::type_from<decltype(tag_v)>;
+            const auto& variable = get<Tag>(host_face);
+            auto& flux =
+                get<::Tags::Flux<Tag, tmpl::size_t<3>, Frame::Inertial>>(
+                    host_face);
+            for (size_t j = 0; j < 3; ++j) {
+              if constexpr (std::decay_t<decltype(variable)>::rank() == 0) {
+                flux.get(j) -= mesh_velocity->get(j) * get(variable);
+              } else {
+                for (size_t i = 0; i < 3; ++i) {
+                  flux.get(j, i) -= mesh_velocity->get(j) * variable.get(i);
+                }
+              }
+            }
+          });
+        }
+        Scalar<DataVector> magnitude_squared{num_points, 0.0};
+        for (size_t i = 0; i < 3; ++i) {
+          for (size_t j = 0; j < 3; ++j) {
+            get(magnitude_squared) += conormal.get(i) * conormal.get(j) *
+                                      inv_spatial_metric.get(i, j);
+          }
+        }
+        auto& normal_covector =
+            get<evolution::dg::Tags::NormalCovector<3>>(host_face);
+        for (size_t i = 0; i < 3; ++i) {
+          normal_covector.get(i) =
+              sign * conormal.get(i) / sqrt(get(magnitude_squared));
+        }
+        raise_or_lower_index(
+            make_not_null(&get<evolution::dg::Actions::detail::NormalVector<3>>(
+                host_face)),
+            normal_covector, inv_spatial_metric);
+        if (moving_mesh) {
+          normal_dot_mesh_velocity =
+              dot_product(*mesh_velocity, normal_covector);
+        }
+        expected.push_back(package_data_on_host(correction, host_face,
+                                                mesh_velocity,
+                                                normal_dot_mesh_velocity, eos));
+      }
+
+      // The fluxes and normals in the face variables on the device are
+      // random, so this also checks that they aren't used
+      const auto device_geometry = to_device(geometry);
+      BatchedVariables<packaged_tags> packaged{num_points, num_face_sets};
+      BoundaryCorrections::fluxes_and_package_data_on_device(
+          exec, make_not_null(&packaged), to_device(faces),
+          get<::Tags::BatchView<Conormal>>(device_geometry), sign,
+          moving_mesh ? &get<::Tags::BatchView<MeshVelocity>>(device_geometry)
+                      : nullptr,
+          correction, eos);
+      const auto host_packaged = to_host(packaged);
+      for (size_t e = 0; e < num_face_sets; ++e) {
+        CAPTURE(e);
+        CHECK_VARIABLES_CUSTOM_APPROX(host_packaged[e], expected[e],
+                                      custom_approx);
+      }
+    }
+  }
+}
+
 // EOSs without a `DeviceView` are an error rather than evaluated on the host
 void check_error_without_device_view(
     const gsl::not_null<std::mt19937*> generator) {
@@ -292,6 +430,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.OnDevice",
 
   check_against_host(make_not_null(&generator), BoundaryCorrections::Rusanov{},
                      ideal_fluid);
+  check_fused(make_not_null(&generator), BoundaryCorrections::Rusanov{},
+              ideal_fluid);
   for (const auto* eos :
        {static_cast<const EoS::EquationOfState<true, 3>*>(&ideal_fluid),
         static_cast<const EoS::EquationOfState<true, 3>*>(&polytrope)}) {
@@ -307,6 +447,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.BoundaryCorrections.OnDevice",
     // is large
     check_against_host(make_not_null(&generator),
                        BoundaryCorrections::Hll{1.0, 1.0}, *eos);
+    check_fused(make_not_null(&generator), BoundaryCorrections::Hll{1.0, 1.0},
+                *eos);
   }
   check_error_without_device_view(make_not_null(&generator));
 }

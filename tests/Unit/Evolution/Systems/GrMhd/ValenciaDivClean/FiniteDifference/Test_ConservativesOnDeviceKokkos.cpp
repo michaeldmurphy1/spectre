@@ -14,8 +14,11 @@
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/Tensor/EagerMath/Determinant.hpp"
+#include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/OnDeviceKokkos.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Rusanov.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ConservativesOnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ReconstructWork.tpp"
@@ -123,6 +126,125 @@ std::vector<Variables<face_tags>> to_host(
     result.push_back(face);
   }
   return result;
+}
+
+template <typename TagsList, typename SourceTagsList>
+BatchedVariables<TagsList> subset_to_device(
+    const std::vector<Variables<SourceTagsList>>& elements) {
+  BatchedVariables<TagsList, Kokkos::HostSpace> host_batch{num_points,
+                                                           elements.size()};
+  for (size_t e = 0; e < elements.size(); ++e) {
+    Variables<TagsList> element{};
+    set_data_ref_to_element(make_not_null(&element), host_batch, e);
+    element.assign_subset(elements[e]);
+  }
+  BatchedVariables<TagsList> result{num_points, elements.size()};
+  const Kokkos::DefaultExecutionSpace exec{};
+  deep_copy(exec, make_not_null(&result), host_batch);
+  exec.fence();
+  return result;
+}
+
+struct Conormal : db::SimpleTag {
+  using type = tnsr::i<DataVector, 3, Frame::Inertial>;
+};
+struct MeshVelocity : db::SimpleTag {
+  using type = tnsr::I<DataVector, 3, Frame::Inertial>;
+};
+
+// `package_data_from_reconstruction_on_device` must agree with computing the
+// variables on the faces first and then the packaged data, as the FD time
+// derivative does with `Hll`
+void check_package_data_from_reconstruction(
+    const gsl::not_null<std::mt19937*> generator,
+    const EoS::EquationOfState<true, 3>& eos,
+    const std::optional<Fixer>& fixer) {
+  namespace BoundaryCorrections = grmhd::ValenciaDivClean::BoundaryCorrections;
+  using packaged_tags = BoundaryCorrections::Rusanov::dg_package_field_tags;
+  using geometry_tags = tmpl::list<Conormal, MeshVelocity>;
+  const Approx custom_approx = Approx::custom().epsilon(1.e-14).scale(1.0);
+  std::uniform_real_distribution<> dist(-1.0, 1.0);
+  std::uniform_real_distribution<> dist_lapse(0.8, 1.2);
+  std::uniform_real_distribution<> dist_shift(-0.1, 0.1);
+  const Kokkos::DefaultExecutionSpace exec{};
+  const std::optional<Fixer::DeviceView> fixer_view =
+      fixer.has_value() ? std::optional{fixer->device_view()} : std::nullopt;
+  const Fixer::DeviceView* const fixer_pointer =
+      fixer_view.has_value() ? &*fixer_view : nullptr;
+
+  std::vector<Variables<face_tags>> faces{};
+  std::vector<Variables<geometry_tags>> geometry{};
+  for (size_t e = 0; e < num_face_sets; ++e) {
+    auto& face = faces.emplace_back(random_face(generator));
+    get<gr::Tags::InverseSpatialMetric<DataVector, 3>>(face) =
+        determinant_and_inverse(
+            get<gr::Tags::SpatialMetric<DataVector, 3>>(face))
+            .second;
+    get<gr::Tags::Lapse<DataVector>>(face) =
+        make_with_random_values<Scalar<DataVector>>(
+            generator, make_not_null(&dist_lapse), DataVector{num_points});
+    get<gr::Tags::Shift<DataVector, 3>>(face) =
+        make_with_random_values<tnsr::I<DataVector, 3, Frame::Inertial>>(
+            generator, make_not_null(&dist_shift), DataVector{num_points});
+    auto& face_geometry = geometry.emplace_back(num_points);
+    fill_with_random_values(make_not_null(&face_geometry), generator,
+                            make_not_null(&dist));
+    // Away from zero
+    get<0>(get<Conormal>(face_geometry)) += 2.0;
+  }
+  const auto device_geometry = subset_to_device<geometry_tags>(geometry);
+  const auto conormal = get<::Tags::BatchView<Conormal>>(device_geometry);
+  const auto mesh_velocity =
+      get<::Tags::BatchView<MeshVelocity>>(device_geometry);
+  const auto reconstruction =
+      subset_to_device<grmhd::ValenciaDivClean::fd::reconstruction_face_tags>(
+          faces);
+  for (const bool moving_mesh : {false, true}) {
+    for (const double sign : {1.0, -1.0}) {
+      CAPTURE(moving_mesh);
+      CAPTURE(sign);
+      // In two steps
+      auto all_variables = to_device(faces);
+      const PointwiseStatusSummary expected_status =
+          grmhd::ValenciaDivClean::fd::compute_conservatives_on_device(
+              exec, make_not_null(&all_variables), eos, fixer_pointer);
+      BatchedVariables<packaged_tags> expected{num_points, num_face_sets};
+      BoundaryCorrections::fluxes_and_package_data_on_device(
+          exec, make_not_null(&expected), all_variables, conormal, sign,
+          moving_mesh ? &mesh_velocity : nullptr,
+          BoundaryCorrections::Rusanov{}, eos);
+      // In one
+      BatchedVariables<packaged_tags> packaged{num_points, num_face_sets};
+      const PointwiseStatusSummary status =
+          BoundaryCorrections::package_data_from_reconstruction_on_device(
+              exec, make_not_null(&packaged), reconstruction, conormal, sign,
+              moving_mesh ? &mesh_velocity : nullptr, eos, fixer_pointer);
+      CHECK(status.number_of_failures == expected_status.number_of_failures);
+      CHECK(status.number_of_failures == 0);
+      const auto to_host_vars =
+          [](const BatchedVariables<packaged_tags>& batch) {
+            BatchedVariables<packaged_tags, Kokkos::HostSpace> host_batch{
+                num_points, num_face_sets};
+            const Kokkos::DefaultExecutionSpace host_exec{};
+            deep_copy(host_exec, make_not_null(&host_batch), batch);
+            host_exec.fence();
+            std::vector<Variables<packaged_tags>> result{};
+            for (size_t e = 0; e < num_face_sets; ++e) {
+              Variables<packaged_tags> element{};
+              set_data_ref_to_element(make_not_null(&element), host_batch, e);
+              result.emplace_back(element);
+            }
+            return result;
+          };
+      const auto host_expected = to_host_vars(expected);
+      const auto host_packaged = to_host_vars(packaged);
+      for (size_t e = 0; e < num_face_sets; ++e) {
+        CAPTURE(e);
+        CHECK_VARIABLES_CUSTOM_APPROX(host_packaged[e], host_expected[e],
+                                      custom_approx);
+      }
+    }
+  }
 }
 
 // The batched version computes the variables on each face set like
@@ -249,6 +371,10 @@ SPECTRE_TEST_CASE(
         static_cast<const EoS::EquationOfState<true, 3>*>(&polytrope)}) {
     check_against_host(make_not_null(&generator), *eos, std::nullopt);
     check_against_host(make_not_null(&generator), *eos, fixer);
+    check_package_data_from_reconstruction(make_not_null(&generator), *eos,
+                                           std::nullopt);
+    check_package_data_from_reconstruction(make_not_null(&generator), *eos,
+                                           fixer);
   }
   check_atmosphere_failure(make_not_null(&generator));
   check_error_without_device_view(make_not_null(&generator));

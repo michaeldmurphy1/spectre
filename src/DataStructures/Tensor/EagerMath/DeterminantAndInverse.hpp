@@ -14,10 +14,12 @@
 #include "DataStructures/Variables.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/Requires.hpp"
 #include "Utilities/SetNumberOfGridPoints.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 namespace determinant_and_inverse_detail {
 // Helps to shorten some repeated code:
@@ -31,12 +33,14 @@ struct DetAndInverseImpl;
 
 template <typename Symm, typename Index0, typename Index1>
 struct DetAndInverseImpl<Symm, Index0, Index1, Requires<Index0::dim == 1>> {
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
   template <typename T>
-  static void apply(
+  KOKKOS_FUNCTION static void apply(
       const gsl::not_null<Scalar<T>*> det,
       const gsl::not_null<Tensor<T, Symm, inverse_indices<Index0, Index1>>*>
           inv,
       const Tensor<T, Symm, tmpl::list<Index0, Index1>>& tensor) {
+    ASSERT_DEVICE_CAPABLE(T);
     const T& t00 = get<0, 0>(tensor);
     // inv is non-const so that it can be moved into the std::pair:
     get(*det) = t00;
@@ -48,13 +52,15 @@ struct DetAndInverseImpl<Symm, Index0, Index1, Requires<Index0::dim == 1>> {
 template <typename Index0, typename Index1>
 struct DetAndInverseImpl<Symmetry<2, 1>, Index0, Index1,
                          Requires<Index0::dim == 2>> {
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
   template <typename T>
-  static void apply(
+  KOKKOS_FUNCTION static void apply(
       const gsl::not_null<Scalar<T>*> det,
       const gsl::not_null<
           Tensor<T, Symmetry<2, 1>, inverse_indices<Index0, Index1>>*>
           inv,
       const Tensor<T, Symmetry<2, 1>, tmpl::list<Index0, Index1>>& tensor) {
+    ASSERT_DEVICE_CAPABLE(T);
     const T& t00 = get<0, 0>(tensor);
     const T& t01 = get<0, 1>(tensor);
     const T& t10 = get<1, 0>(tensor);
@@ -72,13 +78,15 @@ struct DetAndInverseImpl<Symmetry<2, 1>, Index0, Index1,
 template <typename Index0>
 struct DetAndInverseImpl<Symmetry<1, 1>, Index0, Index0,
                          Requires<Index0::dim == 2>> {
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
   template <typename T>
-  static void apply(
+  KOKKOS_FUNCTION static void apply(
       const gsl::not_null<Scalar<T>*> det,
       const gsl::not_null<
           Tensor<T, Symmetry<1, 1>, inverse_indices<Index0, Index0>>*>
           inv,
       const Tensor<T, Symmetry<1, 1>, tmpl::list<Index0, Index0>>& tensor) {
+    ASSERT_DEVICE_CAPABLE(T);
     const T& t00 = get<0, 0>(tensor);
     const T& t01 = get<0, 1>(tensor);
     const T& t11 = get<1, 1>(tensor);
@@ -96,13 +104,15 @@ struct DetAndInverseImpl<Symmetry<1, 1>, Index0, Index0,
 template <typename Index0, typename Index1>
 struct DetAndInverseImpl<Symmetry<2, 1>, Index0, Index1,
                          Requires<Index0::dim == 3>> {
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
   template <typename T>
-  static void apply(
+  KOKKOS_FUNCTION static void apply(
       const gsl::not_null<Scalar<T>*> det,
       const gsl::not_null<
           Tensor<T, Symmetry<2, 1>, inverse_indices<Index0, Index1>>*>
           inv,
       const Tensor<T, Symmetry<2, 1>, tmpl::list<Index0, Index1>>& tensor) {
+    ASSERT_DEVICE_CAPABLE(T);
     const T& t00 = get<0, 0>(tensor);
     const T& t01 = get<0, 1>(tensor);
     const T& t02 = get<0, 2>(tensor);
@@ -133,13 +143,15 @@ struct DetAndInverseImpl<Symmetry<2, 1>, Index0, Index1,
 template <typename Index0>
 struct DetAndInverseImpl<Symmetry<1, 1>, Index0, Index0,
                          Requires<Index0::dim == 3>> {
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
   template <typename T>
-  static void apply(
+  KOKKOS_FUNCTION static void apply(
       const gsl::not_null<Scalar<T>*> det,
       const gsl::not_null<
           Tensor<T, Symmetry<1, 1>, inverse_indices<Index0, Index0>>*>
           inv,
       const Tensor<T, Symmetry<1, 1>, tmpl::list<Index0, Index0>>& tensor) {
+    ASSERT_DEVICE_CAPABLE(T);
     const T& t00 = get<0, 0>(tensor);
     const T& t01 = get<0, 1>(tensor);
     const T& t02 = get<0, 2>(tensor);
@@ -180,13 +192,15 @@ struct DetAndInverseImpl<Symmetry<1, 1>, Index0, Index0,
 template <typename Index0, typename Index1>
 struct DetAndInverseImpl<Symmetry<2, 1>, Index0, Index1,
                          Requires<Index0::dim == 4>> {
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
   template <typename T>
-  static void apply(
+  KOKKOS_FUNCTION static void apply(
       const gsl::not_null<Scalar<T>*> det,
       const gsl::not_null<
           Tensor<T, Symmetry<2, 1>, inverse_indices<Index0, Index1>>*>
           inv,
       const Tensor<T, Symmetry<2, 1>, tmpl::list<Index0, Index1>>& tensor) {
+    ASSERT_DEVICE_CAPABLE(T);
     const T& p00 = get<0, 0>(tensor);
     const T& p01 = get<0, 1>(tensor);
     const T& p10 = get<1, 0>(tensor);
@@ -274,13 +288,15 @@ struct DetAndInverseImpl<Symmetry<2, 1>, Index0, Index1,
 template <typename Index0>
 struct DetAndInverseImpl<Symmetry<1, 1>, Index0, Index0,
                          Requires<Index0::dim == 4>> {
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
   template <typename T>
-  static void apply(
+  KOKKOS_FUNCTION static void apply(
       const gsl::not_null<Scalar<T>*> det,
       const gsl::not_null<
           Tensor<T, Symmetry<1, 1>, inverse_indices<Index0, Index0>>*>
           inv,
       const Tensor<T, Symmetry<1, 1>, tmpl::list<Index0, Index0>>& tensor) {
+    ASSERT_DEVICE_CAPABLE(T);
     const T& p00 = get<0, 0>(tensor);
     const T& p01 = get<0, 1>(tensor);
     const T& p11 = get<1, 1>(tensor);
@@ -338,6 +354,46 @@ struct DetAndInverseImpl<Symmetry<1, 1>, Index0, Index0,
     get(*det) *= det_inv_x;
   }
 };
+
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <typename T, typename Symm, typename Index0, typename Index1>
+KOKKOS_FUNCTION void determinant_and_inverse_impl(
+    const gsl::not_null<Scalar<T>*> det,
+    const gsl::not_null<Tensor<
+        T, Symm,
+        tmpl::list<change_index_up_lo<Index1>, change_index_up_lo<Index0>>>*>
+        inv,
+    const Tensor<T, Symm, tmpl::list<Index0, Index1>>& tensor) {
+  ASSERT_DEVICE_CAPABLE(T);
+  static_assert(Index0::dim == Index1::dim,
+                "Cannot take the inverse of a Tensor whose Indices are not "
+                "of the same dimensionality.");
+  static_assert(Index0::index_type == Index1::index_type,
+                "Taking the inverse of a mixed Spatial and Spacetime index "
+                "Tensor is not allowed since it's not clear what that means.");
+  static_assert(not std::is_integral<T>::value, "Can't invert a Tensor<int>.");
+
+  set_number_of_grid_points(det, tensor);
+  set_number_of_grid_points(inv, tensor);
+  DetAndInverseImpl<Symm, Index0, Index1>::apply(det, inv, tensor);
+}
+
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <typename T, typename Symm, typename Index0, typename Index1>
+KOKKOS_FUNCTION auto determinant_and_inverse_impl(
+    const Tensor<T, Symm, tmpl::list<Index0, Index1>>& tensor)
+    -> std::pair<Scalar<T>, Tensor<T, Symm,
+                                   tmpl::list<change_index_up_lo<Index1>,
+                                              change_index_up_lo<Index0>>>> {
+  ASSERT_DEVICE_CAPABLE(T);
+  std::pair<Scalar<T>, Tensor<T, Symm,
+                              tmpl::list<change_index_up_lo<Index1>,
+                                         change_index_up_lo<Index0>>>>
+      result{};
+  DetAndInverseImpl<Symm, Index0, Index1>::apply(
+      make_not_null(&result.first), make_not_null(&result.second), tensor);
+  return result;
+}
 }  // namespace determinant_and_inverse_detail
 
 /// @{
@@ -362,6 +418,20 @@ struct DetAndInverseImpl<Symmetry<1, 1>, Index0, Index0,
  * to be inverted.
  */
 template <typename T, typename Symm, typename Index0, typename Index1>
+  requires tt::is_device_capable_v<T>
+KOKKOS_FUNCTION void determinant_and_inverse(
+    const gsl::not_null<Scalar<T>*> det,
+    const gsl::not_null<Tensor<
+        T, Symm,
+        tmpl::list<change_index_up_lo<Index1>, change_index_up_lo<Index0>>>*>
+        inv,
+    const Tensor<T, Symm, tmpl::list<Index0, Index1>>& tensor) {
+  determinant_and_inverse_detail::determinant_and_inverse_impl(det, inv,
+                                                               tensor);
+}
+
+template <typename T, typename Symm, typename Index0, typename Index1>
+  requires(not tt::is_device_capable_v<T>)
 void determinant_and_inverse(
     const gsl::not_null<Scalar<T>*> det,
     const gsl::not_null<Tensor<
@@ -369,35 +439,28 @@ void determinant_and_inverse(
         tmpl::list<change_index_up_lo<Index1>, change_index_up_lo<Index0>>>*>
         inv,
     const Tensor<T, Symm, tmpl::list<Index0, Index1>>& tensor) {
-  static_assert(Index0::dim == Index1::dim,
-                "Cannot take the inverse of a Tensor whose Indices are not "
-                "of the same dimensionality.");
-  static_assert(Index0::index_type == Index1::index_type,
-                "Taking the inverse of a mixed Spatial and Spacetime index "
-                "Tensor is not allowed since it's not clear what that means.");
-  static_assert(not std::is_integral<T>::value, "Can't invert a Tensor<int>.");
-
-  set_number_of_grid_points(det, tensor);
-  set_number_of_grid_points(inv, tensor);
-  determinant_and_inverse_detail::DetAndInverseImpl<Symm, Index0,
-                                                    Index1>::apply(det, inv,
-                                                                   tensor);
+  determinant_and_inverse_detail::determinant_and_inverse_impl(det, inv,
+                                                               tensor);
 }
 
 template <typename T, typename Symm, typename Index0, typename Index1>
+  requires tt::is_device_capable_v<T>
+KOKKOS_FUNCTION auto determinant_and_inverse(
+    const Tensor<T, Symm, tmpl::list<Index0, Index1>>& tensor)
+    -> std::pair<Scalar<T>, Tensor<T, Symm,
+                                   tmpl::list<change_index_up_lo<Index1>,
+                                              change_index_up_lo<Index0>>>> {
+  return determinant_and_inverse_detail::determinant_and_inverse_impl(tensor);
+}
+
+template <typename T, typename Symm, typename Index0, typename Index1>
+  requires(not tt::is_device_capable_v<T>)
 auto determinant_and_inverse(
     const Tensor<T, Symm, tmpl::list<Index0, Index1>>& tensor)
     -> std::pair<Scalar<T>, Tensor<T, Symm,
                                    tmpl::list<change_index_up_lo<Index1>,
                                               change_index_up_lo<Index0>>>> {
-  std::pair<Scalar<T>, Tensor<T, Symm,
-                              tmpl::list<change_index_up_lo<Index1>,
-                                         change_index_up_lo<Index0>>>>
-      result{};
-  determinant_and_inverse_detail::DetAndInverseImpl<
-      Symm, Index0, Index1>::apply(make_not_null(&result.first),
-                                   make_not_null(&result.second), tensor);
-  return result;
+  return determinant_and_inverse_detail::determinant_and_inverse_impl(tensor);
 }
 /// @}
 

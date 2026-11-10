@@ -56,6 +56,7 @@ if (SPECTRE_KOKKOS)
     Subcell/Test_ComputeFluxesKokkos.cpp
     Subcell/Test_PrimitiveGhostDataKokkos.cpp
     Subcell/Test_RdmpTciDataKokkos.cpp
+    Subcell/Test_TimeDerivativeKokkos.cpp
     Test_ConservativeFromPrimitiveKokkos.cpp
     Test_FixConservativesKokkos.cpp
     Test_FluxesKokkos.cpp

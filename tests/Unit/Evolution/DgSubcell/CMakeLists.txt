@@ -54,6 +54,7 @@ set(LIBRARY_SOURCES
 
 if (SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
+    FdPatch/Test_BoundaryMessagesKokkos.cpp
     FdPatch/Test_GeometryKokkos.cpp
     FdPatch/Test_GhostZonesKokkos.cpp
     FdPatch/Test_PackagedDataFromDgKokkos.cpp

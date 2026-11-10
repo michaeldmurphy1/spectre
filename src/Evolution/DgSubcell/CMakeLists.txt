@@ -101,6 +101,7 @@ target_link_libraries(
   )
 
 add_subdirectory(Actions)
+add_subdirectory(FdPatch)
 add_subdirectory(Tags)
 
 add_subdirectory(Python)

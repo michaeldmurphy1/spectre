@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/MetavariablesTag.hpp"
@@ -295,6 +296,32 @@ void test_custom_check_trigger() {
 }
 }  // namespace
 
+namespace {
+// Each trigger is visited with its events
+void test_for_each_trigger_and_events() {
+  EventsAndTriggers::Storage events_and_triggers_input;
+  events_and_triggers_input.emplace_back(
+      std::make_unique<Triggers::Always>(),
+      make_vector<std::unique_ptr<Event>>(std::make_unique<TestEvent>(),
+                                          std::make_unique<TestEvent>()));
+  events_and_triggers_input.emplace_back(
+      std::make_unique<Triggers::Not>(std::make_unique<Triggers::Always>()),
+      make_vector<std::unique_ptr<Event>>(std::make_unique<TestEvent>()));
+  const EventsAndTriggers events_and_triggers(
+      std::move(events_and_triggers_input));
+  std::vector<size_t> number_of_events{};
+  std::vector<bool> triggers_are_negated{};
+  events_and_triggers.for_each_trigger_and_events(
+      [&](const Trigger& trigger, const auto& events) {
+        number_of_events.push_back(events.size());
+        triggers_are_negated.push_back(
+            dynamic_cast<const Triggers::Not*>(&trigger) != nullptr);
+      });
+  CHECK(number_of_events == std::vector<size_t>{2, 1});
+  CHECK(triggers_are_negated == std::vector<bool>{false, true});
+}
+}  // namespace
+
 SPECTRE_TEST_CASE("Unit.ParallelAlgorithms.EventsAndTriggers",
                   "[Unit][ParallelAlgorithms]") {
   register_factory_classes_with_charm<Metavariables>();
@@ -302,4 +329,5 @@ SPECTRE_TEST_CASE("Unit.ParallelAlgorithms.EventsAndTriggers",
   test_basic_triggers();
   test_factory();
   test_custom_check_trigger();
+  test_for_each_trigger_and_events();
 }

@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <pup.h>
+#include <utility>
 #include <vector>
 
 #include "DataStructures/DataBox/DataBox.hpp"
@@ -117,6 +118,16 @@ class EventsAndTriggers {
       for (const auto& event : trigger_and_events.events) {
         f(*event);
       }
+    }
+  }
+
+  /// Call `f(trigger, events)` for each trigger and its events, e.g. for a
+  /// component that can't run all the events
+  template <typename F>
+  void for_each_trigger_and_events(F&& f) const {
+    for (const auto& trigger_and_events : events_and_triggers_) {
+      f(std::as_const(*trigger_and_events.trigger),
+        std::as_const(trigger_and_events.events));
     }
   }
 

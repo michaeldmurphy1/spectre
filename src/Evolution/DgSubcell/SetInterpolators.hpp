@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <utility>
@@ -12,6 +15,7 @@
 #include "Domain/Creators/Tags/Domain.hpp"
 #include "Domain/Domain.hpp"
 #include "Domain/ElementMap.hpp"
+#include "Domain/ElementToBlockLogicalMap.hpp"
 #include "Domain/Structure/BlockId.hpp"
 #include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/DirectionMap.hpp"
@@ -19,6 +23,8 @@
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/OrientationMap.hpp"
+#include "Domain/Structure/Side.hpp"
 #include "Domain/Tags.hpp"
 #include "Evolution/DgSubcell/GhostZoneLogicalCoordinates.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
@@ -30,11 +36,70 @@
 #include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
 #include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
+#include "Utilities/Algorithm.hpp"
+#include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/MakeArray.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace evolution::dg::subcell {
+namespace SetInterpolators_detail {
+// The offset between the coordinates of points computed with the map of the
+// element and with the map of its neighbor in `direction` in another block, so
+// that `neighbor_point + offset` is the same point in the coordinates of the
+// element. It is zero for blocks that touch, and the period for blocks that
+// are identified by periodic boundary conditions, where the coordinates of
+// the neighbor are a period away. Offsets at the level of roundoff are set
+// to zero, so that touching blocks don't get roundoff shifts.
+template <size_t Dim, typename ElementMapType, typename NeighborElementMapType>
+std::array<double, Dim> periodic_offset(
+    const ElementId<Dim>& element_id, const ElementId<Dim>& neighbor_id,
+    const Direction<Dim>& direction, const OrientationMap<Dim>& orientation,
+    const ElementMapType& element_map,
+    const NeighborElementMapType& neighbor_element_map) {
+  // The center of the face of the element, in its logical coordinates
+  tnsr::I<double, Dim, Frame::ElementLogical> face_point{0.0};
+  face_point.get(direction.dimension()) = direction.sign();
+  // The same point in the block logical coordinates of the neighbor: the
+  // orientation maps the logical axes of the block to those of the neighbor's
+  // block, and the face is the neighbor's face in the opposite direction
+  const auto block_point =
+      (*domain::element_to_block_logical_map(element_id))(face_point);
+  tnsr::I<double, Dim, Frame::BlockLogical> neighbor_block_point{};
+  for (size_t d = 0; d < Dim; ++d) {
+    const Direction<Dim> neighbor_axis =
+        orientation(Direction<Dim>{d, Side::Upper});
+    neighbor_block_point.get(neighbor_axis.dimension()) =
+        neighbor_axis.sign() * block_point.get(d);
+  }
+  const size_t neighbor_face_dimension = orientation(direction).dimension();
+  neighbor_block_point.get(neighbor_face_dimension) =
+      -neighbor_block_point.get(neighbor_face_dimension);
+  const auto neighbor_face_point =
+      domain::element_to_block_logical_map(neighbor_id)
+          ->inverse(neighbor_block_point);
+  ASSERT(neighbor_face_point.has_value(), "The element to block logical map of "
+                                              << neighbor_id
+                                              << " has no inverse.");
+
+  const auto point = element_map(face_point);
+  const auto neighbor_point = neighbor_element_map(neighbor_face_point.value());
+  std::array<double, Dim> offset{};
+  double scale = 1.0;
+  for (size_t d = 0; d < Dim; ++d) {
+    gsl::at(offset, d) = point.get(d) - neighbor_point.get(d);
+    scale = std::max(scale, std::abs(point.get(d)));
+  }
+  if (alg::all_of(offset, [&scale](const double component) {
+        return std::abs(component) < 1.0e-10 * scale;
+      })) {
+    offset = make_array<Dim>(0.0);
+  }
+  return offset;
+}
+}  // namespace SetInterpolators_detail
+
 /*!
  * \brief Sets the `intrp::IrregularInterpolant`s for interpolating to ghost
  * zone data at block boundaries.
@@ -121,6 +186,23 @@ struct SetInterpolators {
           continue;
         }
         const auto& neighbor_block = domain.blocks()[neighbor_block_id];
+        // Blocks identified by periodic boundary conditions are a period
+        // apart, so the ghost zone coordinates of the neighbor are shifted by
+        // this offset into the coordinates of the element
+        const std::array<double, Dim> offset = [&]() {
+          if (neighbor_block.is_time_dependent()) {
+            return SetInterpolators_detail::periodic_offset(
+                element.id(), neighbor_id, direction, orientation, element_map,
+                ElementMap(neighbor_id,
+                           neighbor_block.moving_mesh_logical_to_grid_map()
+                               .get_clone()));
+          } else {
+            return SetInterpolators_detail::periodic_offset(
+                element.id(), neighbor_id, direction, orientation, element_map,
+                ElementMap(neighbor_id,
+                           neighbor_block.stationary_map().get_clone()));
+          }
+        }();
         // InterpolatorsFromFdToNeighborFd &
         // InterpolatorsFromDgToNeighborFd
         // 1. Compute the grid coordinates of my neighbor's ghost zones.
@@ -189,6 +271,9 @@ struct SetInterpolators {
             neighbor_grid_ghost_zone_coords[i] =
                 neighbor_inertial_ghost_zone_coords[i];
           }
+        }
+        for (size_t d = 0; d < Dim; ++d) {
+          neighbor_grid_ghost_zone_coords.get(d) += gsl::at(offset, d);
         }
         // Map the ghost zone grid coordinates back to our logical
         // coordinates.
@@ -337,8 +422,12 @@ struct SetInterpolators {
             direction.sign() * delta_xi * number_of_ghost_zones;
         my_logical_ghost_zone_coords.get(direction.dimension()) +=
             coordinate_shift;
-        const tnsr::I<DataVector, Dim, Frame::Grid> my_grid_ghost_zone_coords =
+        tnsr::I<DataVector, Dim, Frame::Grid> my_grid_ghost_zone_coords =
             element_map(my_logical_ghost_zone_coords);
+        // Into the coordinates of the neighbor (see `offset`)
+        for (size_t d = 0; d < Dim; ++d) {
+          my_grid_ghost_zone_coords.get(d) -= gsl::at(offset, d);
+        }
         if (neighbor_block.is_time_dependent()) {
           const ElementMap neighbor_element_map(
               neighbor_id,

@@ -11,6 +11,7 @@
 #include <memory>
 #include <pup.h>
 #include <pup_stl.h>
+#include <type_traits>
 #include <typeindex>
 #include <unordered_map>
 #include <utility>
@@ -63,6 +64,16 @@ struct StoreNewSlabSize {
         make_not_null(&box));
   }
 };
+
+// Whether `Metavariables::slab_size_reduction` is set (see `ChangeSlabSize`)
+template <typename Metavariables>
+constexpr bool has_slab_size_reduction() {
+  if constexpr (requires { typename Metavariables::slab_size_reduction; }) {
+    return not std::is_void_v<typename Metavariables::slab_size_reduction>;
+  } else {
+    return false;
+  }
+}
 }  // namespace ChangeSlabSize_detail
 
 /// \ingroup TimeGroup
@@ -79,12 +90,22 @@ struct StoreNewSlabSize {
 /// integration.  With local time-stepping this controls the interval
 /// between times when the sequences of steps on all elements are
 /// forced to align.
+///
+/// The reduction is over the elements of the parallel component that runs
+/// the event, and its result is sent back to them. Executables that evolve
+/// elements in several parallel components combine their reductions by
+/// setting `Metavariables::slab_size_reduction` to a type with a static
+/// function
+/// `contribute<ParallelComponent>(cache, element_proxy, reduction_data)`,
+/// which the event calls instead of contributing to its own component.
 class ChangeSlabSize : public Event, public RequestsStepperErrorTolerances {
+ public:
+  /// The data that each element contributes to the reduction: the slab to
+  /// change and the requested sizes
   using ReductionData = Parallel::ReductionData<
       Parallel::ReductionDatum<int64_t, funcl::AssertEqual<>>,
       Parallel::ReductionDatum<TimeStepRequestProcessor, funcl::Plus<>>>;
 
- public:
   /// \cond
   explicit ChangeSlabSize(CkMigrateMessage* /*unused*/) {}
   using PUP::able::register_constructor;
@@ -191,10 +212,17 @@ class ChangeSlabSize : public Event, public RequestsStepperErrorTolerances {
           Parallel::get_parallel_component<ParallelComponent>(cache);
       const auto& self_proxy = component_proxy[array_index];
       if (synchronization_required) {
-        Parallel::contribute_to_reduction<
-            ChangeSlabSize_detail::StoreNewSlabSize>(
-            ReductionData(slab_to_change, step_requests), self_proxy,
-            component_proxy);
+        if constexpr (ChangeSlabSize_detail::has_slab_size_reduction<
+                          Metavariables>()) {
+          Metavariables::slab_size_reduction::template contribute<
+              ParallelComponent>(cache, self_proxy,
+                                 ReductionData(slab_to_change, step_requests));
+        } else {
+          Parallel::contribute_to_reduction<
+              ChangeSlabSize_detail::StoreNewSlabSize>(
+              ReductionData(slab_to_change, step_requests), self_proxy,
+              component_proxy);
+        }
       } else {
         db::mutate<::Tags::ChangeSlabSize::NewSlabSize>(
             [&](const gsl::not_null<
@@ -233,6 +261,14 @@ class ChangeSlabSize : public Event, public RequestsStepperErrorTolerances {
     p | step_choosers_;
     p | delay_change_;
   }
+
+  /// The step choosers that limit the slab size
+  const std::vector<std::unique_ptr<StepChooser<StepChooserUse::Slab>>>&
+  step_choosers() const {
+    return step_choosers_;
+  }
+  /// The number of slabs to wait before changing the slab size
+  uint64_t delay_change() const { return delay_change_; }
 
  private:
   std::vector<std::unique_ptr<StepChooser<StepChooserUse::Slab>>>

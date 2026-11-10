@@ -15,7 +15,9 @@ spectre_target_headers(
   GhostZonesKokkos.hpp
   InboxTags.hpp
   PackagedDataFromDgKokkos.hpp
+  PatchElementsKokkos.hpp
   Tags.hpp
+  TagsKokkos.hpp
   )
 
 spectre_target_sources(
@@ -26,6 +28,7 @@ spectre_target_sources(
   GeometryKokkos.cpp
   GhostZonesKokkos.cpp
   PackagedDataFromDgKokkos.cpp
+  PatchElementsKokkos.cpp
   )
 
 target_link_libraries(

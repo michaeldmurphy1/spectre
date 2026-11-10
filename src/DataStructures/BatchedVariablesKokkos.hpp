@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <pup.h>
 #include <utility>
 
 #include "DataStructures/DataBox/Tag.hpp"
@@ -143,6 +144,37 @@ class BatchedVariables<tmpl::list<Tags...>, Space> {
 
   storage_type& view() { return storage_; }
   const storage_type& view() const { return storage_; }
+
+  /// Serialization copies the data through the host. A deserialized batch
+  /// owns new memory, so views of the original data don't refer to it.
+  // NOLINTNEXTLINE(google-runtime-references)
+  void pup(PUP::er& p) {
+    size_t number_of_grid_points = this->number_of_grid_points();
+    size_t number_of_elements = this->number_of_elements();
+    p | number_of_grid_points;
+    p | number_of_elements;
+    if (p.isUnpacking()) {
+      *this = number_of_grid_points * number_of_elements == 0
+                  ? BatchedVariables{}
+                  : BatchedVariables{number_of_grid_points, number_of_elements};
+    }
+    if (storage_.size() == 0) {
+      return;
+    }
+    if (p.isUnpacking()) {
+      const auto host_storage = Kokkos::create_mirror_view(storage_);
+      PUParray(p, host_storage.data(), host_storage.size());
+      Kokkos::deep_copy(storage_, host_storage);
+    } else if (p.isSizing()) {
+      // The sizer doesn't read the data, so it doesn't need to be copied
+      const auto host_storage = Kokkos::create_mirror_view(storage_);
+      PUParray(p, host_storage.data(), host_storage.size());
+    } else {
+      const auto host_storage =
+          Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, storage_);
+      PUParray(p, host_storage.data(), host_storage.size());
+    }
+  }
 
   /// The data of the element `e`, which shares the memory of the batch
   element_type element(const size_t e) const {

@@ -19,6 +19,7 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/Kokkos/ScratchViewKokkos.hpp"
 #include "Utilities/TMPL.hpp"
 
 #ifdef SPECTRE_KOKKOS
@@ -47,13 +48,12 @@ struct AtGridPointOfBatch {
 Kokkos::View<const bool*> assume_non_zero_magnetic_field_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
     const typename ::Tags::BatchView<Tags::TildeB<>>::type& tilde_b,
-    const FixConservatives& fix_conservatives) {
+    const FixConservatives& fix_conservatives,
+    Kokkos::View<bool*>* const scratch) {
   const size_t number_of_grid_points = get<0>(tilde_b).extent(0);
   const size_t number_of_elements = get<0>(tilde_b).extent(1);
-  const Kokkos::View<bool*> result{
-      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
-                         "AssumeNonZeroMagneticField"),
-      number_of_elements};
+  const Kokkos::View<bool*> result = scratch_view(
+      exec, scratch, "AssumeNonZeroMagneticField", number_of_elements);
   if (fix_conservatives.magnetic_field_treatment() !=
       hydro::MagneticFieldTreatment::CheckIfZero) {
     Kokkos::deep_copy(exec, result,
@@ -100,11 +100,12 @@ PointwiseStatusSummary fix_conservatives_on_device(
     const typename ::Tags::BatchView<
         gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
         sqrt_det_spatial_metric,
-    const FixConservatives& fix_conservatives) {
+    const FixConservatives& fix_conservatives,
+    Kokkos::View<bool*>* const per_element_scratch) {
   const auto& tilde_b = get<::Tags::BatchView<Tags::TildeB<>>>(*conservatives);
   const Kokkos::View<const bool*> assume_non_zero_magnetic_field =
-      assume_non_zero_magnetic_field_on_device(exec, tilde_b,
-                                               fix_conservatives);
+      assume_non_zero_magnetic_field_on_device(exec, tilde_b, fix_conservatives,
+                                               per_element_scratch);
   // The variables are both arguments and results. This is safe because the
   // arguments at a grid point are read before the results there are written.
   return apply_pointwise_on_device<AtGridPointOfBatch>(

@@ -5,6 +5,8 @@
 
 #include <cstddef>
 
+#include "DataStructures/DataBox/Prefixes.hpp"
+#include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Domain/Tags.hpp"
 #include "Domain/TagsTimeDependent.hpp"
@@ -16,6 +18,7 @@
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ConstraintDampingTags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/TagsDeclarations.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
@@ -188,5 +191,54 @@ struct TimeDerivative {
                             Frame::Inertial>& inverse_jacobian,
       const std::optional<tnsr::I<DataVector, Dim, Frame::Inertial>>&
           mesh_velocity);
+};
+/*!
+ * \brief The time derivative of `TimeDerivative` with the harmonic gauge
+ * (\f$H_a = 0\f$), which device kernels can call pointwise (e.g. with
+ * `apply_pointwise_on_device`).
+ *
+ * \details It computes the same as `TimeDerivative::apply` with a harmonic
+ * `gauges::GaugeCondition`, with the same operations, and keeps the
+ * temporaries in a `TempBuffer`. The mesh velocity is an argument, so a mesh
+ * that doesn't move needs a mesh velocity of zero.
+ */
+template <size_t Dim>
+struct TimeDerivativeHarmonicGauge {
+  /// The mesh velocity, as a tensor (`domain::Tags::MeshVelocity` holds an
+  /// optional)
+  struct MeshVelocity : db::SimpleTag {
+    using type = tnsr::I<DataVector, Dim, Frame::Inertial>;
+  };
+
+  using return_tags =
+      tmpl::list<::Tags::dt<gr::Tags::SpacetimeMetric<DataVector, Dim>>,
+                 ::Tags::dt<Tags::Pi<DataVector, Dim>>,
+                 ::Tags::dt<Tags::Phi<DataVector, Dim>>>;
+  using argument_tags =
+      tmpl::list<::Tags::deriv<gr::Tags::SpacetimeMetric<DataVector, Dim>,
+                               tmpl::size_t<Dim>, Frame::Inertial>,
+                 ::Tags::deriv<Tags::Pi<DataVector, Dim>, tmpl::size_t<Dim>,
+                               Frame::Inertial>,
+                 ::Tags::deriv<Tags::Phi<DataVector, Dim>, tmpl::size_t<Dim>,
+                               Frame::Inertial>,
+                 gr::Tags::SpacetimeMetric<DataVector, Dim>,
+                 Tags::Pi<DataVector, Dim>, Tags::Phi<DataVector, Dim>,
+                 ::gh::Tags::ConstraintGamma0, ::gh::Tags::ConstraintGamma1,
+                 ::gh::Tags::ConstraintGamma2, MeshVelocity>;
+
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataType>
+  KOKKOS_FUNCTION static void apply(
+      gsl::not_null<tnsr::aa<DataType, Dim>*> dt_spacetime_metric,
+      gsl::not_null<tnsr::aa<DataType, Dim>*> dt_pi,
+      gsl::not_null<tnsr::iaa<DataType, Dim>*> dt_phi,
+      const tnsr::iaa<DataType, Dim>& d_spacetime_metric,
+      const tnsr::iaa<DataType, Dim>& d_pi,
+      const tnsr::ijaa<DataType, Dim>& d_phi,
+      const tnsr::aa<DataType, Dim>& spacetime_metric,
+      const tnsr::aa<DataType, Dim>& pi, const tnsr::iaa<DataType, Dim>& phi,
+      const Scalar<DataType>& gamma0, const Scalar<DataType>& gamma1,
+      const Scalar<DataType>& gamma2,
+      const tnsr::I<DataType, Dim>& mesh_velocity);
 };
 }  // namespace gh

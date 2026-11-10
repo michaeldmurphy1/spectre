@@ -6,8 +6,12 @@
 #include "Evolution/Systems/GeneralizedHarmonic/TimeDerivative.hpp"
 
 #include <cstddef>
+#include <type_traits>
 
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/Tags/TempTensor.hpp"
+#include "DataStructures/TempBuffer.hpp"
+#include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/DiscontinuousGalerkin/TimeDerivativeDecisions.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/DuDtTempTags.hpp"
@@ -26,70 +30,86 @@
 #include "PointwiseFunctions/GeneralRelativity/SpatialMetric.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
+#include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 namespace gh {
-template <class AllSolutionsForChristoffelAnalytic, size_t Dim>
-evolution::dg::TimeDerivativeDecisions<Dim>
-TimeDerivative<AllSolutionsForChristoffelAnalytic, Dim>::apply(
-    const gsl::not_null<tnsr::aa<DataVector, Dim>*> dt_spacetime_metric,
-    const gsl::not_null<tnsr::aa<DataVector, Dim>*> dt_pi,
-    const gsl::not_null<tnsr::iaa<DataVector, Dim>*> dt_phi,
-    const gsl::not_null<Scalar<DataVector>*> temp_gamma1,
-    const gsl::not_null<Scalar<DataVector>*> temp_gamma2,
-    const gsl::not_null<tnsr::a<DataVector, Dim>*> gauge_function,
-    const gsl::not_null<tnsr::ab<DataVector, Dim>*>
+namespace TimeDerivative_detail {
+// A view of `source` for `DataVector`s, a copy for `double`s
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <typename DataType>
+KOKKOS_FUNCTION void view_or_copy(const gsl::not_null<DataType*> result,
+                                  const DataType& source) {
+  ASSERT_DEVICE_CAPABLE(DataType);
+  if constexpr (std::is_same_v<DataType, double>) {
+    *result = source;
+  } else {
+    make_const_view(make_not_null(static_cast<const DataType*>(result.get())),
+                    source, 0, source.size());
+  }
+}
+
+// The time derivative of `TimeDerivative::apply`, for `DataVector`s on the
+// host and for `double`s at a grid point on the device. `compute_gauge`
+// computes the gauge source function and its spacetime derivative.
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <typename DataType, size_t Dim, typename ComputeGauge>
+KOKKOS_FUNCTION void apply(
+    const gsl::not_null<tnsr::aa<DataType, Dim>*> dt_spacetime_metric,
+    const gsl::not_null<tnsr::aa<DataType, Dim>*> dt_pi,
+    const gsl::not_null<tnsr::iaa<DataType, Dim>*> dt_phi,
+    const gsl::not_null<Scalar<DataType>*> temp_gamma1,
+    const gsl::not_null<Scalar<DataType>*> temp_gamma2,
+    const gsl::not_null<tnsr::a<DataType, Dim>*> gauge_function,
+    const gsl::not_null<tnsr::ab<DataType, Dim>*>
         spacetime_deriv_gauge_function,
-    const gsl::not_null<Scalar<DataVector>*> gamma1gamma2,
-    const gsl::not_null<Scalar<DataVector>*> half_pi_two_normals,
-    const gsl::not_null<Scalar<DataVector>*> normal_dot_gauge_constraint,
-    const gsl::not_null<Scalar<DataVector>*> gamma1_plus_1,
-    const gsl::not_null<tnsr::a<DataVector, Dim>*> pi_one_normal,
-    const gsl::not_null<tnsr::a<DataVector, Dim>*> gauge_constraint,
-    const gsl::not_null<tnsr::i<DataVector, Dim>*> half_phi_two_normals,
-    const gsl::not_null<tnsr::aa<DataVector, Dim>*>
+    const gsl::not_null<Scalar<DataType>*> gamma1gamma2,
+    const gsl::not_null<Scalar<DataType>*> half_pi_two_normals,
+    const gsl::not_null<Scalar<DataType>*> normal_dot_gauge_constraint,
+    const gsl::not_null<Scalar<DataType>*> gamma1_plus_1,
+    const gsl::not_null<tnsr::a<DataType, Dim>*> pi_one_normal,
+    const gsl::not_null<tnsr::a<DataType, Dim>*> gauge_constraint,
+    const gsl::not_null<tnsr::i<DataType, Dim>*> half_phi_two_normals,
+    const gsl::not_null<tnsr::aa<DataType, Dim>*>
         shift_dot_three_index_constraint,
-    const gsl::not_null<tnsr::aa<DataVector, Dim>*>
+    const gsl::not_null<tnsr::aa<DataType, Dim>*>
         mesh_velocity_dot_three_index_constraint,
-    const gsl::not_null<tnsr::ia<DataVector, Dim>*> phi_one_normal,
-    const gsl::not_null<tnsr::aB<DataVector, Dim>*> pi_2_up,
-    const gsl::not_null<tnsr::iaa<DataVector, Dim>*> three_index_constraint,
-    const gsl::not_null<tnsr::Iaa<DataVector, Dim>*> phi_1_up,
-    const gsl::not_null<tnsr::iaB<DataVector, Dim>*> phi_3_up,
-    const gsl::not_null<tnsr::abC<DataVector, Dim>*>
-        christoffel_first_kind_3_up,
-    const gsl::not_null<Scalar<DataVector>*> lapse,
-    const gsl::not_null<tnsr::I<DataVector, Dim>*> shift,
-    const gsl::not_null<tnsr::II<DataVector, Dim>*> inverse_spatial_metric,
-    const gsl::not_null<Scalar<DataVector>*> det_spatial_metric,
-    const gsl::not_null<Scalar<DataVector>*> sqrt_det_spatial_metric,
-    const gsl::not_null<tnsr::AA<DataVector, Dim>*> inverse_spacetime_metric,
-    const gsl::not_null<tnsr::abb<DataVector, Dim>*> christoffel_first_kind,
-    const gsl::not_null<tnsr::A<DataVector, Dim>*> two_gauge_h_up,
-    const gsl::not_null<tnsr::A<DataVector, Dim>*> normal_spacetime_vector,
-    const tnsr::iaa<DataVector, Dim>& d_spacetime_metric,
-    const tnsr::iaa<DataVector, Dim>& d_pi,
-    const tnsr::ijaa<DataVector, Dim>& d_phi,
-    const tnsr::aa<DataVector, Dim>& spacetime_metric,
-    const tnsr::aa<DataVector, Dim>& pi, const tnsr::iaa<DataVector, Dim>& phi,
-    const Scalar<DataVector>& gamma0, const Scalar<DataVector>& gamma1,
-    const Scalar<DataVector>& gamma2,
-    const gauges::GaugeCondition& gauge_condition, const Mesh<Dim>& mesh,
-    double time,
-    const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords,
-    const InverseJacobian<DataVector, Dim, Frame::ElementLogical,
-                          Frame::Inertial>& inverse_jacobian,
-    const std::optional<tnsr::I<DataVector, Dim, Frame::Inertial>>&
-        mesh_velocity) {
-  const size_t number_of_points = get<0, 0>(*dt_spacetime_metric).size();
+    const gsl::not_null<tnsr::ia<DataType, Dim>*> phi_one_normal,
+    const gsl::not_null<tnsr::aB<DataType, Dim>*> pi_2_up,
+    const gsl::not_null<tnsr::iaa<DataType, Dim>*> three_index_constraint,
+    const gsl::not_null<tnsr::Iaa<DataType, Dim>*> phi_1_up,
+    const gsl::not_null<tnsr::iaB<DataType, Dim>*> phi_3_up,
+    const gsl::not_null<tnsr::abC<DataType, Dim>*> christoffel_first_kind_3_up,
+    const gsl::not_null<Scalar<DataType>*> lapse,
+    const gsl::not_null<tnsr::I<DataType, Dim>*> shift,
+    const gsl::not_null<tnsr::II<DataType, Dim>*> inverse_spatial_metric,
+    const gsl::not_null<Scalar<DataType>*> det_spatial_metric,
+    const gsl::not_null<Scalar<DataType>*> sqrt_det_spatial_metric,
+    const gsl::not_null<tnsr::AA<DataType, Dim>*> inverse_spacetime_metric,
+    const gsl::not_null<tnsr::abb<DataType, Dim>*> christoffel_first_kind,
+    const gsl::not_null<tnsr::A<DataType, Dim>*> two_gauge_h_up,
+    const gsl::not_null<tnsr::A<DataType, Dim>*> normal_spacetime_vector,
+    const tnsr::iaa<DataType, Dim>& d_spacetime_metric,
+    const tnsr::iaa<DataType, Dim>& d_pi,
+    const tnsr::ijaa<DataType, Dim>& d_phi,
+    const tnsr::aa<DataType, Dim>& spacetime_metric,
+    const tnsr::aa<DataType, Dim>& pi, const tnsr::iaa<DataType, Dim>& phi,
+    const Scalar<DataType>& gamma0, const Scalar<DataType>& gamma1,
+    const Scalar<DataType>& gamma2, const bool using_harmonic_gauge,
+    const tnsr::I<DataType, Dim>* const mesh_velocity,
+    const ComputeGauge& compute_gauge) {
+  ASSERT_DEVICE_CAPABLE(DataType);
   // Need constraint damping on interfaces in DG schemes
   *temp_gamma1 = gamma1;
   *temp_gamma2 = gamma2;
 
-  const tnsr::ii<DataVector, Dim> spatial_metric{};
+  // Views of the spatial metric in the spacetime metric (copies for doubles)
+  tnsr::ii<DataType, Dim> spatial_metric{};
   for (size_t i = 0; i < Dim; ++i) {
     for (size_t j = i; j < Dim; ++j) {
-      make_const_view(make_not_null(&spatial_metric.get(i, j)),
-                      spacetime_metric.get(i + 1, j + 1), 0, number_of_points);
+      view_or_copy(make_not_null(&spatial_metric.get(i, j)),
+                   spacetime_metric.get(i + 1, j + 1));
     }
   }
   determinant_and_inverse(det_spatial_metric, inverse_spatial_metric,
@@ -110,25 +130,25 @@ TimeDerivative<AllSolutionsForChristoffelAnalytic, Dim>::apply(
     }
   }
 
-  const std::optional da_spacetime_metric{tnsr::abb<DataVector, Dim>{}};
+  // Views of the time derivative computed so far and of phi (copies for
+  // doubles), which are invalid once the time derivative is modified below
+  tnsr::abb<DataType, Dim> da_spacetime_metric{};
   for (size_t a = 0; a < Dim + 1; ++a) {
     for (size_t b = a; b < Dim + 1; ++b) {
-      make_const_view(make_not_null(&da_spacetime_metric.value().get(0, a, b)),
-                      dt_spacetime_metric->get(a, b), 0, number_of_points);
+      view_or_copy(make_not_null(&da_spacetime_metric.get(0, a, b)),
+                   dt_spacetime_metric->get(a, b));
       for (size_t i = 0; i < Dim; ++i) {
-        make_const_view(
-            make_not_null(&da_spacetime_metric.value().get(i + 1, a, b)),
-            phi.get(i, a, b), 0, number_of_points);
+        view_or_copy(make_not_null(&da_spacetime_metric.get(i + 1, a, b)),
+                     phi.get(i, a, b));
       }
     }
   }
 
-  gr::christoffel_first_kind(christoffel_first_kind,
-                             da_spacetime_metric.value());
+  gr::christoffel_first_kind(christoffel_first_kind, da_spacetime_metric);
   gr::spacetime_normal_vector(normal_spacetime_vector, *lapse, *shift);
 
   get(*gamma1gamma2) = get(gamma1) * get(gamma2);
-  const DataVector& gamma12 = get(*gamma1gamma2);
+  const DataType& gamma12 = get(*gamma1gamma2);
 
   for (size_t m = 0; m < Dim; ++m) {
     for (size_t mu = 0; mu < Dim + 1; ++mu) {
@@ -239,20 +259,20 @@ TimeDerivative<AllSolutionsForChristoffelAnalytic, Dim>::apply(
   }
 
   get(*gamma1_plus_1) = 1.0 + gamma1.get();
-  const DataVector& gamma1p1 = get(*gamma1_plus_1);
+  const DataType& gamma1p1 = get(*gamma1_plus_1);
 
   for (size_t mu = 0; mu < Dim + 1; ++mu) {
     for (size_t nu = mu; nu < Dim + 1; ++nu) {
       shift_dot_three_index_constraint->get(mu, nu) =
           get<0>(*shift) * three_index_constraint->get(0, mu, nu);
-      if (mesh_velocity.has_value()) {
+      if (mesh_velocity != nullptr) {
         mesh_velocity_dot_three_index_constraint->get(mu, nu) =
             get<0>(*mesh_velocity) * three_index_constraint->get(0, mu, nu);
       }
       for (size_t m = 1; m < Dim; ++m) {
         shift_dot_three_index_constraint->get(mu, nu) +=
             shift->get(m) * three_index_constraint->get(m, mu, nu);
-        if (mesh_velocity.has_value()) {
+        if (mesh_velocity != nullptr) {
           mesh_velocity_dot_three_index_constraint->get(mu, nu) +=
               mesh_velocity->get(m) * three_index_constraint->get(m, mu, nu);
         }
@@ -260,16 +280,14 @@ TimeDerivative<AllSolutionsForChristoffelAnalytic, Dim>::apply(
     }
   }
 
-  const bool using_harmonic_gauge = gauge_condition.is_harmonic();
   if (not using_harmonic_gauge) {
     // Compute gauge condition.
     get(*sqrt_det_spatial_metric) = sqrt(get(*det_spatial_metric));
   }
-  gauges::dispatch<AllSolutionsForChristoffelAnalytic, Dim>(
-      gauge_function, spacetime_deriv_gauge_function, *lapse, *shift,
-      *sqrt_det_spatial_metric, *inverse_spatial_metric, *da_spacetime_metric,
-      *half_pi_two_normals, *half_phi_two_normals, spacetime_metric, phi, mesh,
-      time, inertial_coords, inverse_jacobian, gauge_condition);
+  compute_gauge(gauge_function, spacetime_deriv_gauge_function, *lapse, *shift,
+                *sqrt_det_spatial_metric, *inverse_spatial_metric,
+                da_spacetime_metric, *half_pi_two_normals,
+                *half_phi_two_normals, spacetime_metric, phi);
   if (not using_harmonic_gauge) {
     // Compute source function last so that we don't need to recompute any of
     // the other temporary tags.
@@ -298,12 +316,6 @@ TimeDerivative<AllSolutionsForChristoffelAnalytic, Dim>::apply(
         normal_spacetime_vector->get(mu) * gauge_constraint->get(mu);
   }
 
-  // Invalidate da_spacetime_metric since we will be modifying some of the
-  // data it points to.
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-  const_cast<std::optional<tnsr::abb<DataVector, Dim>>&>(da_spacetime_metric) =
-      std::nullopt;
-
   // Here are the actual equations
 
   // Equation for dt_spacetime_metric
@@ -311,7 +323,7 @@ TimeDerivative<AllSolutionsForChristoffelAnalytic, Dim>::apply(
     for (size_t nu = mu; nu < Dim + 1; ++nu) {
       dt_spacetime_metric->get(mu, nu) +=
           gamma1p1 * shift_dot_three_index_constraint->get(mu, nu);
-      if (mesh_velocity.has_value()) {
+      if (mesh_velocity != nullptr) {
         dt_spacetime_metric->get(mu, nu) +=
             get(gamma1) * mesh_velocity_dot_three_index_constraint->get(mu, nu);
       }
@@ -390,7 +402,7 @@ TimeDerivative<AllSolutionsForChristoffelAnalytic, Dim>::apply(
 
       dt_pi->get(mu, nu) +=
           gamma12 * shift_dot_three_index_constraint->get(mu, nu);
-      if (mesh_velocity.has_value()) {
+      if (mesh_velocity != nullptr) {
         dt_pi->get(mu, nu) +=
             gamma12 * mesh_velocity_dot_three_index_constraint->get(mu, nu);
       }
@@ -422,6 +434,193 @@ TimeDerivative<AllSolutionsForChristoffelAnalytic, Dim>::apply(
       }
     }
   }
+}
+}  // namespace TimeDerivative_detail
+
+template <class AllSolutionsForChristoffelAnalytic, size_t Dim>
+evolution::dg::TimeDerivativeDecisions<Dim>
+TimeDerivative<AllSolutionsForChristoffelAnalytic, Dim>::apply(
+    const gsl::not_null<tnsr::aa<DataVector, Dim>*> dt_spacetime_metric,
+    const gsl::not_null<tnsr::aa<DataVector, Dim>*> dt_pi,
+    const gsl::not_null<tnsr::iaa<DataVector, Dim>*> dt_phi,
+    const gsl::not_null<Scalar<DataVector>*> temp_gamma1,
+    const gsl::not_null<Scalar<DataVector>*> temp_gamma2,
+    const gsl::not_null<tnsr::a<DataVector, Dim>*> gauge_function,
+    const gsl::not_null<tnsr::ab<DataVector, Dim>*>
+        spacetime_deriv_gauge_function,
+    const gsl::not_null<Scalar<DataVector>*> gamma1gamma2,
+    const gsl::not_null<Scalar<DataVector>*> half_pi_two_normals,
+    const gsl::not_null<Scalar<DataVector>*> normal_dot_gauge_constraint,
+    const gsl::not_null<Scalar<DataVector>*> gamma1_plus_1,
+    const gsl::not_null<tnsr::a<DataVector, Dim>*> pi_one_normal,
+    const gsl::not_null<tnsr::a<DataVector, Dim>*> gauge_constraint,
+    const gsl::not_null<tnsr::i<DataVector, Dim>*> half_phi_two_normals,
+    const gsl::not_null<tnsr::aa<DataVector, Dim>*>
+        shift_dot_three_index_constraint,
+    const gsl::not_null<tnsr::aa<DataVector, Dim>*>
+        mesh_velocity_dot_three_index_constraint,
+    const gsl::not_null<tnsr::ia<DataVector, Dim>*> phi_one_normal,
+    const gsl::not_null<tnsr::aB<DataVector, Dim>*> pi_2_up,
+    const gsl::not_null<tnsr::iaa<DataVector, Dim>*> three_index_constraint,
+    const gsl::not_null<tnsr::Iaa<DataVector, Dim>*> phi_1_up,
+    const gsl::not_null<tnsr::iaB<DataVector, Dim>*> phi_3_up,
+    const gsl::not_null<tnsr::abC<DataVector, Dim>*>
+        christoffel_first_kind_3_up,
+    const gsl::not_null<Scalar<DataVector>*> lapse,
+    const gsl::not_null<tnsr::I<DataVector, Dim>*> shift,
+    const gsl::not_null<tnsr::II<DataVector, Dim>*> inverse_spatial_metric,
+    const gsl::not_null<Scalar<DataVector>*> det_spatial_metric,
+    const gsl::not_null<Scalar<DataVector>*> sqrt_det_spatial_metric,
+    const gsl::not_null<tnsr::AA<DataVector, Dim>*> inverse_spacetime_metric,
+    const gsl::not_null<tnsr::abb<DataVector, Dim>*> christoffel_first_kind,
+    const gsl::not_null<tnsr::A<DataVector, Dim>*> two_gauge_h_up,
+    const gsl::not_null<tnsr::A<DataVector, Dim>*> normal_spacetime_vector,
+    const tnsr::iaa<DataVector, Dim>& d_spacetime_metric,
+    const tnsr::iaa<DataVector, Dim>& d_pi,
+    const tnsr::ijaa<DataVector, Dim>& d_phi,
+    const tnsr::aa<DataVector, Dim>& spacetime_metric,
+    const tnsr::aa<DataVector, Dim>& pi, const tnsr::iaa<DataVector, Dim>& phi,
+    const Scalar<DataVector>& gamma0, const Scalar<DataVector>& gamma1,
+    const Scalar<DataVector>& gamma2,
+    const gauges::GaugeCondition& gauge_condition, const Mesh<Dim>& mesh,
+    double time,
+    const tnsr::I<DataVector, Dim, Frame::Inertial>& inertial_coords,
+    const InverseJacobian<DataVector, Dim, Frame::ElementLogical,
+                          Frame::Inertial>& inverse_jacobian,
+    const std::optional<tnsr::I<DataVector, Dim, Frame::Inertial>>&
+        mesh_velocity) {
+  TimeDerivative_detail::apply<DataVector, Dim>(
+      dt_spacetime_metric, dt_pi, dt_phi, temp_gamma1, temp_gamma2,
+      gauge_function, spacetime_deriv_gauge_function, gamma1gamma2,
+      half_pi_two_normals, normal_dot_gauge_constraint, gamma1_plus_1,
+      pi_one_normal, gauge_constraint, half_phi_two_normals,
+      shift_dot_three_index_constraint,
+      mesh_velocity_dot_three_index_constraint, phi_one_normal, pi_2_up,
+      three_index_constraint, phi_1_up, phi_3_up, christoffel_first_kind_3_up,
+      lapse, shift, inverse_spatial_metric, det_spatial_metric,
+      sqrt_det_spatial_metric, inverse_spacetime_metric, christoffel_first_kind,
+      two_gauge_h_up, normal_spacetime_vector, d_spacetime_metric, d_pi, d_phi,
+      spacetime_metric, pi, phi, gamma0, gamma1, gamma2,
+      gauge_condition.is_harmonic(),
+      mesh_velocity.has_value() ? &*mesh_velocity : nullptr,
+      [&mesh, &time, &inertial_coords, &inverse_jacobian, &gauge_condition](
+          const auto local_gauge_function,
+          const auto local_spacetime_deriv_gauge_function,
+          const auto& local_lapse, const auto& local_shift,
+          const auto& local_sqrt_det_spatial_metric,
+          const auto& local_inverse_spatial_metric,
+          const auto& local_da_spacetime_metric,
+          const auto& local_half_pi_two_normals,
+          const auto& local_half_phi_two_normals,
+          const auto& local_spacetime_metric, const auto& local_phi) {
+        gauges::dispatch<AllSolutionsForChristoffelAnalytic, Dim>(
+            local_gauge_function, local_spacetime_deriv_gauge_function,
+            local_lapse, local_shift, local_sqrt_det_spatial_metric,
+            local_inverse_spatial_metric, local_da_spacetime_metric,
+            local_half_pi_two_normals, local_half_phi_two_normals,
+            local_spacetime_metric, local_phi, mesh, time, inertial_coords,
+            inverse_jacobian, gauge_condition);
+      });
   return {true};
+}
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <size_t Dim>
+template <typename DataType>
+KOKKOS_FUNCTION void TimeDerivativeHarmonicGauge<Dim>::apply(
+    const gsl::not_null<tnsr::aa<DataType, Dim>*> dt_spacetime_metric,
+    const gsl::not_null<tnsr::aa<DataType, Dim>*> dt_pi,
+    const gsl::not_null<tnsr::iaa<DataType, Dim>*> dt_phi,
+    const tnsr::iaa<DataType, Dim>& d_spacetime_metric,
+    const tnsr::iaa<DataType, Dim>& d_pi,
+    const tnsr::ijaa<DataType, Dim>& d_phi,
+    const tnsr::aa<DataType, Dim>& spacetime_metric,
+    const tnsr::aa<DataType, Dim>& pi, const tnsr::iaa<DataType, Dim>& phi,
+    const Scalar<DataType>& gamma0, const Scalar<DataType>& gamma1,
+    const Scalar<DataType>& gamma2,
+    const tnsr::I<DataType, Dim>& mesh_velocity) {
+  ASSERT_DEVICE_CAPABLE(DataType);
+  // The temporaries of `TimeDerivative`, in the same order
+  TempBuffer<tmpl::list<
+      ::Tags::TempScalar<0, DataType>, ::Tags::TempScalar<1, DataType>,
+      ::Tags::Tempa<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::Tempab<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::TempScalar<2, DataType>, ::Tags::TempScalar<3, DataType>,
+      ::Tags::TempScalar<4, DataType>, ::Tags::TempScalar<5, DataType>,
+      ::Tags::Tempa<1, Dim, Frame::Inertial, DataType>,
+      ::Tags::Tempa<2, Dim, Frame::Inertial, DataType>,
+      ::Tags::Tempi<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::Tempaa<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::Tempaa<1, Dim, Frame::Inertial, DataType>,
+      ::Tags::Tempia<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::TempaB<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::Tempiaa<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::TempIaa<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::TempiaB<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::TempabC<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::TempScalar<6, DataType>,
+      ::Tags::TempI<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::TempII<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::TempScalar<7, DataType>, ::Tags::TempScalar<8, DataType>,
+      ::Tags::TempAA<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::Tempabb<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::TempA<0, Dim, Frame::Inertial, DataType>,
+      ::Tags::TempA<1, Dim, Frame::Inertial, DataType>>>
+      temps{get_size(get<0, 0>(spacetime_metric))};
+  TimeDerivative_detail::apply<DataType, Dim>(
+      dt_spacetime_metric, dt_pi, dt_phi,
+      make_not_null(&get<::Tags::TempScalar<0, DataType>>(temps)),
+      make_not_null(&get<::Tags::TempScalar<1, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::Tempa<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::Tempab<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(&get<::Tags::TempScalar<2, DataType>>(temps)),
+      make_not_null(&get<::Tags::TempScalar<3, DataType>>(temps)),
+      make_not_null(&get<::Tags::TempScalar<4, DataType>>(temps)),
+      make_not_null(&get<::Tags::TempScalar<5, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::Tempa<1, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::Tempa<2, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::Tempi<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::Tempaa<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::Tempaa<1, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::Tempia<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::TempaB<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::Tempiaa<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::TempIaa<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::TempiaB<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::TempabC<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(&get<::Tags::TempScalar<6, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::TempI<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::TempII<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(&get<::Tags::TempScalar<7, DataType>>(temps)),
+      make_not_null(&get<::Tags::TempScalar<8, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::TempAA<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::Tempabb<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::TempA<0, Dim, Frame::Inertial, DataType>>(temps)),
+      make_not_null(
+          &get<::Tags::TempA<1, Dim, Frame::Inertial, DataType>>(temps)),
+      d_spacetime_metric, d_pi, d_phi, spacetime_metric, pi, phi, gamma0,
+      gamma1, gamma2, true, &mesh_velocity,
+      [](const auto /*gauge_function*/,
+         const auto /*spacetime_deriv_gauge_function*/,
+         const auto&... /*args*/) {
+        // The harmonic gauge only enters through `using_harmonic_gauge`
+      });
 }
 }  // namespace gh

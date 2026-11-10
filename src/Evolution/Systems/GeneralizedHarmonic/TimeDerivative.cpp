@@ -13,6 +13,7 @@
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/Factory.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ConstraintDampingTags.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 // Explicit instantiations of structs defined in `Equations.cpp` as well as of
 // `partial_derivatives` function for use in the computation of spatial
@@ -63,4 +64,27 @@ using variables_tags = typename gh::System<Dim>::variables_tag::tags_list;
 GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3))
 
 #undef INSTANTIATE
+
+#define DTYPE(data) BOOST_PP_TUPLE_ELEM(1, data)
+#define INSTANTIATE_HARMONIC(_, data)                                       \
+  template void gh::TimeDerivativeHarmonicGauge<DIM(data)>::apply(          \
+      gsl::not_null<tnsr::aa<DTYPE(data), DIM(data)>*> dt_spacetime_metric, \
+      gsl::not_null<tnsr::aa<DTYPE(data), DIM(data)>*> dt_pi,               \
+      gsl::not_null<tnsr::iaa<DTYPE(data), DIM(data)>*> dt_phi,             \
+      const tnsr::iaa<DTYPE(data), DIM(data)>& d_spacetime_metric,          \
+      const tnsr::iaa<DTYPE(data), DIM(data)>& d_pi,                        \
+      const tnsr::ijaa<DTYPE(data), DIM(data)>& d_phi,                      \
+      const tnsr::aa<DTYPE(data), DIM(data)>& spacetime_metric,             \
+      const tnsr::aa<DTYPE(data), DIM(data)>& pi,                           \
+      const tnsr::iaa<DTYPE(data), DIM(data)>& phi,                         \
+      const Scalar<DTYPE(data)>& gamma0, const Scalar<DTYPE(data)>& gamma1, \
+      const Scalar<DTYPE(data)>& gamma2,                                    \
+      const tnsr::I<DTYPE(data), DIM(data)>& mesh_velocity);
+
+GENERATE_INSTANTIATIONS(INSTANTIATE_HARMONIC, (1, 2, 3),
+                        SPECTRE_DEVICE_AND_HOST_TYPES((double),
+                                                      (double, DataVector)))
+
+#undef INSTANTIATE_HARMONIC
+#undef DTYPE
 #undef DIM

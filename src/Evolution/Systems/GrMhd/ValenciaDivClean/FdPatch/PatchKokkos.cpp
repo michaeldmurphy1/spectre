@@ -463,6 +463,20 @@ auto Patch<OrderedListOfPrimitiveRecoverySchemes>::element_variables(
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>
+auto Patch<OrderedListOfPrimitiveRecoverySchemes>::
+    element_variables_without_values() const -> std::vector<ElementVariables> {
+  const size_t number_of_cells =
+      patch_elements_.subcell_mesh().number_of_grid_points();
+  std::vector<ElementVariables> result(patch_elements_.number_of_elements());
+  for (auto& element_variables : result) {
+    element_variables.evolved.initialize(number_of_cells);
+    element_variables.primitives.initialize(number_of_cells);
+    element_variables.spacetime.initialize(number_of_cells);
+  }
+  return result;
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
 size_t Patch<OrderedListOfPrimitiveRecoverySchemes>::
     number_of_evolved_values_per_element() const {
   return patch_elements_.subcell_mesh().number_of_grid_points() *

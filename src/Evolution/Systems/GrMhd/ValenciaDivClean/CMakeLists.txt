@@ -33,10 +33,12 @@ spectre_target_headers(
   ComovingMagneticFieldMagnitude.hpp
   ComputeFluxesFromPrimitives.hpp
   ConservativeFromPrimitive.hpp
+  ConservativeFromPrimitive.tpp
   FixConservatives.hpp
   FixConservativesOnDeviceKokkos.hpp
   Flattener.hpp
   Fluxes.hpp
+  Fluxes.tpp
   KastaunEtAl.hpp
   KastaunEtAl.tpp
   KastaunEtAlHydro.hpp
@@ -53,6 +55,7 @@ spectre_target_headers(
   QuadrupoleFormula.hpp
   SetVariablesNeededFixingToFalse.hpp
   Sources.hpp
+  Sources.tpp
   System.hpp
   Tags.hpp
   TagsDeclarations.hpp

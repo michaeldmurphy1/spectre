@@ -9,6 +9,7 @@ spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
+  GeometryKokkos.hpp
   GhostZonesKokkos.hpp
   PatchTable.hpp
   )
@@ -16,6 +17,7 @@ spectre_target_headers(
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  GeometryKokkos.cpp
   GhostZonesKokkos.cpp
   PatchTable.cpp
   )

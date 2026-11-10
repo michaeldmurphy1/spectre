@@ -5,6 +5,8 @@
 
 #include <cmath>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
@@ -12,9 +14,28 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/Barotropic2D.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/Barotropic3D.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
-#include "Utilities/MakeWithValue.hpp"
+#include "Utilities/ErrorHandling/Assert.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
+#include "Utilities/Gsl.hpp"
 
 namespace {
+// The `values` for a `Spectral::DeviceView`
+template <size_t Capacity>
+EquationsOfState::Spectral_detail::FixedArray<Capacity> to_fixed_array(
+    const std::vector<double>& values, const std::string& name) {
+  if (values.size() > Capacity) {
+    ERROR("The DeviceView of the Spectral EOS holds at most "
+          << Capacity << " " << name << ", but the EOS has " << values.size()
+          << ". Increase the capacity in Spectral_detail.");
+  }
+  EquationsOfState::Spectral_detail::FixedArray<Capacity> result{};
+  for (size_t i = 0; i < values.size(); ++i) {
+    gsl::at(result.values, i) = values[i];
+  }
+  result.number_of_values = values.size();
+  return result;
+}
+
 std::vector<double> compute_integral_coefficients(
     const std::vector<double>& gamma_coefficients) {
   std::vector<double> result = gamma_coefficients;
@@ -33,9 +54,7 @@ Spectral::Spectral(const double reference_density,
       reference_pressure_(reference_pressure),
       integral_coefficients_(compute_integral_coefficients(coefficients)),
       gamma_coefficients_(std::move(coefficients)),
-      x_max_(log(upper_density / reference_density)),
-      gamma_of_x_max_(gamma(x_max_)),
-      integral_of_gamma_of_x_max_(integral_of_gamma(x_max_)) {
+      x_max_(log(upper_density / reference_density)) {
   // Setup table of specific energies
   // Use 6th order Gauss-Legendre quadrature.
   // Weights and collocation points can be calculated following
@@ -48,6 +67,8 @@ Spectral::Spectral(const double reference_density,
   quadrature_points_ = {0.6612093864662645, 0.2386191860831969,
                         0.9324695142031521};
   number_of_quadrature_coefs_ = quadrature_weights_.size();
+  gamma_of_x_max_ = functions().gamma(x_max_);
+  integral_of_gamma_of_x_max_ = functions().integral_of_gamma(x_max_);
   const auto n_points_epsilon = static_cast<size_t>(ceil(2.0 * x_max_) + 1.0);
   const double delta_x = x_max_ / (n_points_epsilon - 1.0);
   table_of_specific_energies_.resize(n_points_epsilon);
@@ -66,8 +87,8 @@ Spectral::Spectral(const double reference_density,
       const double xm = x0 + (1.0 - quadrature_points_[q]) * (delta_x / 2.0);
       table_of_specific_energies_[i] +=
           quadrature_weights_[q] * delta_x / (2.0 * reference_density) *
-          (exp(-xp) * pressure_from_log_density(xp) +
-           exp(-xm) * pressure_from_log_density(xm));
+          (exp(-xp) * functions().pressure_from_log_density(xp) +
+           exp(-xm) * functions().pressure_from_log_density(xm));
     }
   }
 }
@@ -121,197 +142,45 @@ void Spectral::pup(PUP::er& p) {
 
 // this evaluates the power series
 // Int_0^x Gamma(xx) dxx = Sum_{n=0}^N \frac{gamma_n}{n+1} xx^{n+1}
-double Spectral::integral_of_gamma(const double x) const {
-  return evaluate_polynomial(integral_coefficients_, x) * x;
+Spectral_detail::SpectralFunctions<const std::vector<double>&,
+                                   const std::vector<double>&>
+Spectral::functions() const {
+  ASSERT(quadrature_weights_.size() == 3 and quadrature_points_.size() == 3,
+         "Expected 3 quadrature points but got " << quadrature_points_.size());
+  return {
+      reference_density_,
+      reference_pressure_,
+      gamma_coefficients_,
+      integral_coefficients_,
+      x_max_,
+      gamma_of_x_max_,
+      integral_of_gamma_of_x_max_,
+      table_of_specific_energies_,
+      {{quadrature_weights_[0], quadrature_weights_[1],
+        quadrature_weights_[2]}},
+      {{quadrature_points_[0], quadrature_points_[1], quadrature_points_[2]}}};
 }
 
-template <typename DataType>
-Scalar<DataType> Spectral::pressure_from_density_impl(
-    const Scalar<DataType>& rest_mass_density) const {
-  if constexpr (std::is_same_v<DataType, double>) {
-    return Scalar<double>{pressure_from_density(get(rest_mass_density))};
-  } else if constexpr (std::is_same_v<DataType, DataVector>) {
-    auto result = make_with_value<Scalar<DataVector>>(rest_mass_density, 0.0);
-    for (size_t i = 0; i < get(result).size(); ++i) {
-      get(result)[i] = pressure_from_density(get(rest_mass_density)[i]);
-    }
-    return result;
-  }
+auto Spectral::device_view() const -> DeviceView {
+  constexpr size_t max_coefficients =
+      Spectral_detail::max_number_of_coefficients;
+  constexpr size_t max_table = Spectral_detail::max_table_size;
+  const auto host = functions();
+  return {
+      reference_density_,
+      reference_pressure_,
+      to_fixed_array<max_coefficients>(gamma_coefficients_, "coefficients"),
+      to_fixed_array<max_coefficients>(integral_coefficients_, "coefficients"),
+      x_max_,
+      gamma_of_x_max_,
+      integral_of_gamma_of_x_max_,
+      to_fixed_array<max_table>(table_of_specific_energies_,
+                                "tabulated specific internal energies"),
+      host.quadrature_weights,
+      host.quadrature_points};
 }
 
-template <class DataType>
-Scalar<DataType> Spectral::rest_mass_density_from_enthalpy_impl(
-    const Scalar<DataType>& specific_enthalpy) const {
-  if constexpr (std::is_same_v<DataType, double>) {
-    return Scalar<double>{
-        rest_mass_density_from_enthalpy(get(specific_enthalpy))};
-  } else if constexpr (std::is_same_v<DataType, DataVector>) {
-    auto result = make_with_value<Scalar<DataVector>>(specific_enthalpy, 0.0);
-    for (size_t i = 0; i < get(result).size(); ++i) {
-      get(result)[i] =
-          rest_mass_density_from_enthalpy(get(specific_enthalpy)[i]);
-    }
-    return result;
-  }
-}
-
-template <class DataType>
-Scalar<DataType> Spectral::specific_internal_energy_from_density_impl(
-    const Scalar<DataType>& rest_mass_density) const {
-  if constexpr (std::is_same_v<DataType, double>) {
-    return Scalar<double>{
-        specific_internal_energy_from_density(get(rest_mass_density))};
-  } else if constexpr (std::is_same_v<DataType, DataVector>) {
-    auto result = make_with_value<Scalar<DataVector>>(rest_mass_density, 0.0);
-    for (size_t i = 0; i < get(result).size(); ++i) {
-      get(result)[i] =
-          specific_internal_energy_from_density(get(rest_mass_density)[i]);
-    }
-    return result;
-  }
-}
-
-template <class DataType>
-Scalar<DataType> Spectral::chi_from_density_impl(
-    const Scalar<DataType>& rest_mass_density) const {
-  if constexpr (std::is_same_v<DataType, double>) {
-    return Scalar<double>{chi_from_density(get(rest_mass_density))};
-  } else if constexpr (std::is_same_v<DataType, DataVector>) {
-    auto result = make_with_value<Scalar<DataVector>>(rest_mass_density, 0.0);
-    for (size_t i = 0; i < get(result).size(); ++i) {
-      get(result)[i] = chi_from_density(get(rest_mass_density)[i]);
-    }
-    return result;
-  }
-}
-
-template <class DataType>
-Scalar<DataType> Spectral::kappa_times_p_over_rho_squared_from_density_impl(
-    const Scalar<DataType>& rest_mass_density) const {
-  return make_with_value<Scalar<DataType>>(get(rest_mass_density), 0.0);
-}
-
-// this evaluates the power series
-// Gamma(x) = Sum_{n=0}^N gamma_n x^n
-double Spectral::gamma(const double x) const {
-  return evaluate_polynomial(gamma_coefficients_, x);
-}
-
-double Spectral::chi_from_density(const double rest_mass_density) const {
-  const double x = log(rest_mass_density / reference_density_);
-  const double P = pressure_from_log_density(x);
-  const double chi = P / rest_mass_density *
-                     (x <= 0.0 ? integral_coefficients_[0]
-                               : (x < x_max_ ? gamma(x) : gamma(x_max_)));
-  return chi;
-}
-
-double Spectral::specific_internal_energy_from_density(
-    const double rest_mass_density) const {
-  const double x = log(rest_mass_density / reference_density_);
-  if (x <= 0.) {
-    return reference_pressure_ / reference_density_ /
-           (gamma_coefficients_[0] - 1.0) *
-           exp((gamma_coefficients_[0] - 1.0) * x);
-  }
-  const size_t n_points_epsilon = table_of_specific_energies_.size();
-  const double delta_x = x_max_ / (n_points_epsilon - 1.0);
-  double specific_energy = 0.0;
-  if (x >= x_max_) {
-    // Analytic integral at constant gamma_coefficient above x_max_
-    specific_energy = table_of_specific_energies_[n_points_epsilon - 1];
-    specific_energy += pressure_from_log_density(x_max_) / reference_density_ *
-                       exp(-x_max_) *
-                       std::expm1((gamma_of_x_max_ - 1.0) * (x - x_max_)) /
-                       (gamma_of_x_max_ - 1.0);
-    return specific_energy;
-  } else {
-    const auto table_index = static_cast<size_t>(floor(x / delta_x));
-    const double x0 = delta_x * table_index;
-    specific_energy = table_of_specific_energies_[table_index];
-    // Gaussian quadrature integral
-    for (size_t q = 0; q < number_of_quadrature_coefs_; q++) {
-      const double xp = (1.0 + quadrature_points_[q]) * (x - x0) / 2. + x0;
-      const double xm = (1.0 - quadrature_points_[q]) * (x - x0) / 2. + x0;
-      const double Pp = pressure_from_log_density(xp);
-      const double Pm = pressure_from_log_density(xm);
-      specific_energy += quadrature_weights_[q] * (x - x0) / 2. *
-                         (Pp * exp(-xp) + Pm * exp(-xm)) / reference_density_;
-    }
-    return specific_energy;
-  }
-}
-
-double Spectral::specific_enthalpy_from_density(
-    const double rest_mass_density) const {
-  return 1.0 + pressure_from_density(rest_mass_density) / rest_mass_density +
-         specific_internal_energy_from_density(rest_mass_density);
-}
-
-// P = P_0 exp(Int_0^x Gamma(xx) dxx)
-// where
-// Gamma(x) = gamma_0                        for  x < 0
-//            Sum_{n=0}^N gamma_n x^n             0 < x < x_{max}
-//            Sum_{n=0}^N gamma_n x_{max}^n       x > x_{max}
-double Spectral::pressure_from_log_density(const double x) const {
-  const double integral_of_gamma_of_x =
-      x <= 0.0 ? integral_coefficients_[0] * x
-               : (x < x_max_ ? integral_of_gamma(x)
-                             : integral_of_gamma_of_x_max_ +
-                                   gamma_of_x_max_ * (x - x_max_));
-  return reference_pressure_ * exp(integral_of_gamma_of_x);
-}
-
-double Spectral::pressure_from_density(const double rest_mass_density) const {
-  const double x = log(rest_mass_density / reference_density_);
-  return pressure_from_log_density(x);
-}
-
-// Solve for h(rho)=h0, which requires rootfinding for this EoS
-double Spectral::rest_mass_density_from_enthalpy(
-    const double specific_enthalpy) const {
-  const double reference_enthalpy =
-      specific_enthalpy_from_density(reference_density_);
-  const double upper_density = reference_density_ * exp(x_max_);
-  const double enthalpy_of_x_max_ =
-      specific_enthalpy_from_density(upper_density);
-  if (specific_enthalpy <= reference_enthalpy) {
-    double rest_mass_density =
-        (specific_enthalpy - 1.0) * (gamma_coefficients_[0] - 1.0) /
-        gamma_coefficients_[0] *
-        pow(reference_density_, gamma_coefficients_[0]) / reference_pressure_;
-    rest_mass_density =
-        pow(rest_mass_density, 1.0 / (gamma_coefficients_[0] - 1.0));
-    return rest_mass_density;
-  } else if (specific_enthalpy >= enthalpy_of_x_max_) {
-    // Above maximum density, we also have an analytical expression
-    // (h-1-eps_max)*(rho_max/P_max)+1/(Gamma_max-1) = Gamma_max / (Gamma_max-1)
-    // * exp((Gamma_max-1)*(x-x_max)) [Can be derived by combining expressions
-    // for epsilon(x) and P(x) with x = log(rho)]
-    const size_t n_points_epsilon = table_of_specific_energies_.size();
-    const double specific_internal_energy_of_x_max_ =
-        table_of_specific_energies_[n_points_epsilon - 1];
-    const double pressure_of_x_max_ = pressure_from_log_density(x_max_);
-    double x_target =
-        ((specific_enthalpy - 1.0 - specific_internal_energy_of_x_max_) *
-             upper_density / pressure_of_x_max_ +
-         1.0 / (gamma_of_x_max_ - 1.0)) *
-        (gamma_of_x_max_ - 1.0) / gamma_of_x_max_;
-    x_target = log(x_target) / (gamma_of_x_max_ - 1.0) + x_max_;
-    return reference_density_ * exp(x_target);
-  } else {
-    // Root-finding appropriate between reference density and maximum density
-    // We can use x=0 and x=x_max as bounds
-    const auto f = [this, &specific_enthalpy](const double density) {
-      return this->specific_enthalpy_from_density(density) - specific_enthalpy;
-    };
-    const auto root_from_lambda =
-        RootFinder::toms748(f, reference_density_, upper_density, 1.0e-14,
-                            1.0e-15)
-            .value();
-    return root_from_lambda;
-  }
-}
+EQUATION_OF_STATE_DELEGATE_IMPLS(, Spectral, 1, functions())
 
 PUP::able::PUP_ID EquationsOfState::Spectral::my_PUP_ID = 0;
 

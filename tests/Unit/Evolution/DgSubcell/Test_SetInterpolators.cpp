@@ -32,26 +32,29 @@
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 
 namespace {
+// Block 1 is shifted by `periodic_shift` in x, as if the blocks were
+// identified by periodic boundary conditions instead of touching
 template <size_t Dim, typename TargetFrame>
-auto make_grid_map(const size_t id) {
+auto make_grid_map(const size_t id, const double periodic_shift = 0.0) {
   CAPTURE(id);
   REQUIRE((id == 0 or id == 1));
   using domain::make_coordinate_map_base;
   using domain::CoordinateMaps::Affine;
+  const double shift = id == 1 ? periodic_shift : 0.0;
   if constexpr (Dim == 1) {
     return make_coordinate_map_base<Frame::BlockLogical, TargetFrame>(
-        Affine(-1.0, 1.0, 2.0, id == 0 ? 5.0 : 0.0));
+        Affine(-1.0, 1.0, 2.0 + shift, (id == 0 ? 5.0 : 0.0) + shift));
   } else if constexpr (Dim == 2) {
     using domain::CoordinateMaps::ProductOf2Maps;
     return make_coordinate_map_base<Frame::BlockLogical, TargetFrame>(
         ProductOf2Maps<Affine, Affine>(
-            Affine(-1.0, 1.0, -1.0, id == 0 ? -0.3 : -1.3),
+            Affine(-1.0, 1.0, -1.0 + shift, (id == 0 ? -0.3 : -1.3) + shift),
             Affine(-1.0, 1.0, -1.0, -0.8)));
   } else {
     using domain::CoordinateMaps::ProductOf3Maps;
     return make_coordinate_map_base<Frame::BlockLogical, TargetFrame>(
         ProductOf3Maps<Affine, Affine, Affine>(
-            Affine(-1.0, 1.0, -1.0, id == 0 ? -0.5 : -1.2),
+            Affine(-1.0, 1.0, -1.0 + shift, (id == 0 ? -0.5 : -1.2) + shift),
             Affine(-1.0, 1.0, -1.0, -0.8), Affine(-1.0, 1.0, 0.8, 1.0)));
   }
 }
@@ -68,7 +71,11 @@ struct Reconstructor : db::SimpleTag {
 }  // namespace Tags
 
 template <size_t Dim>
-void test(const bool enable_extension, const size_t fd_to_fd_interp_order) {
+void test(const bool enable_extension, const size_t fd_to_fd_interp_order,
+          const double periodic_shift) {
+  CAPTURE(Dim);
+  CAPTURE(enable_extension);
+  CAPTURE(periodic_shift);
   // Domain setup:
   //   | lower_xi | element |
   //
@@ -124,7 +131,7 @@ void test(const bool enable_extension, const size_t fd_to_fd_interp_order) {
   DirectionMap<Dim, BlockNeighbors<Dim>> block1_neighbors{};
   block1_neighbors[Direction<Dim>::lower_xi()] =
       BlockNeighbors<Dim>{0, orientation.inverse_map()};
-  Block<Dim> block1{make_grid_map<Dim, Frame::Inertial>(1), 1,
+  Block<Dim> block1{make_grid_map<Dim, Frame::Inertial>(1, periodic_shift), 1,
                     block1_neighbors};
   block1.inject_time_dependent_map(
       domain::make_coordinate_map_base<Frame::Grid, Frame::Inertial>(
@@ -230,6 +237,7 @@ void test(const bool enable_extension, const size_t fd_to_fd_interp_order) {
         evolution::dg::subcell::fd::ghost_zone_logical_coordinates(
             subcell_mesh, DummyReconstructor::ghost_zone_size(),
             Direction<Dim>::lower_xi());
+    // In the coordinates of the element, i.e. without the periodic shift
     const ElementMap lower_xi_element_map{lower_xi_element_id,
                                           make_grid_map<Dim, Frame::Grid>(1)};
     const auto lower_xi_neighbor_grid_ghost_coords =
@@ -280,6 +288,7 @@ void test(const bool enable_extension, const size_t fd_to_fd_interp_order) {
         evolution::dg::subcell::fd::ghost_zone_logical_coordinates(
             subcell_mesh, DummyReconstructor::ghost_zone_size(),
             Direction<Dim>::lower_xi());
+    // In the coordinates of the element, i.e. without the periodic shift
     const ElementMap lower_xi_element_map{lower_xi_element_id,
                                           make_grid_map<Dim, Frame::Grid>(1)};
     const auto lower_xi_neighbor_grid_ghost_coords =
@@ -291,8 +300,9 @@ void test(const bool enable_extension, const size_t fd_to_fd_interp_order) {
                           lower_xi_neighbor_grid_ghost_coords);
 
     // Check interpolating lower-xi DG data works to our FD ghost zones.
-    const auto lower_xi_dg_grid_coords =
-        lower_xi_element_map(element_logical_coords);
+    const auto lower_xi_dg_grid_coords = ElementMap{
+        lower_xi_element_id, make_grid_map<Dim, Frame::Grid>(
+                                 1, periodic_shift)}(element_logical_coords);
     tnsr::I<DataVector, Dim, Frame::Grid> lower_xi_dg_to_ghost_zones{};
     for (size_t i = 0; i < Dim; ++i) {
       lower_xi_dg_to_ghost_zones.get(i) =
@@ -301,9 +311,11 @@ void test(const bool enable_extension, const size_t fd_to_fd_interp_order) {
               .value()
               .interpolate(lower_xi_dg_grid_coords.get(i));
     }
-    const auto expected_lower_xi_dg_to_ghost_zones =
+    // In the coordinates of the neighbor, i.e. with the periodic shift
+    auto expected_lower_xi_dg_to_ghost_zones =
         db::get<domain::Tags::ElementMap<Dim, Frame::Grid>>(box)(
             lower_xi_logical_ghost_coords);
+    get<0>(expected_lower_xi_dg_to_ghost_zones) += periodic_shift;
     CHECK_ITERABLE_APPROX(lower_xi_dg_to_ghost_zones,
                           expected_lower_xi_dg_to_ghost_zones);
   }
@@ -314,9 +326,12 @@ SPECTRE_TEST_CASE("Unit.Evolution.Subcell.SetInterpolators",
                   "[Evolution][Unit]") {
   for (const bool enable_extension : {false, true}) {
     for (size_t fd_interp_order = 1; fd_interp_order <= 3; ++fd_interp_order) {
-      test<1>(enable_extension, fd_interp_order);
-      test<2>(enable_extension, fd_interp_order);
-      test<3>(enable_extension, fd_interp_order);
+      // Blocks that touch, and blocks a period apart
+      for (const double periodic_shift : {0.0, 7.0}) {
+        test<1>(enable_extension, fd_interp_order, periodic_shift);
+        test<2>(enable_extension, fd_interp_order, periodic_shift);
+        test<3>(enable_extension, fd_interp_order, periodic_shift);
+      }
     }
   }
 }

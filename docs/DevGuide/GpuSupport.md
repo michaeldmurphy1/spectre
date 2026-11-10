@@ -257,3 +257,160 @@ provide `cuda::std::sort`. SpECTRE does not currently use it.
   calls it in a Kokkos kernel, e.g. with `TestHelpers::check_on_device`, and
   these tests must be run on a GPU before code is merged. CI doesn't run tests
   on GPUs.
+
+# Evolving elements on the device: patches
+
+\warning Patches are experimental and support only a subset of what the host
+evolution supports (see the end of this section).
+
+Executables can evolve some of their elements on the device in *patches*,
+while the other elements stay on the host in the `DgElementArray`. Today these
+are the FD elements of DG-FD hybrid methods (*FD patches*). A patch holds all
+elements of one block, and the patches are the members of the array component
+`evolution::patches::PatchArray`, one patch per block. Which elements are in
+which patch is fixed at the start and stored in an
+`evolution::patches::PatchTable` in the global cache. Executables enable
+patches with `Metavariables::use_patches`, and provide the `patch_table_tag`
+and the `patch_component` (e.g. `EvolveValenciaDivCleanFdPatches`).
+
+## Layers
+
+The code is in three layers, so that FD and (later) DG patches of any system
+share what they can:
+
+- **Generic** (`src/Evolution/Patches`, `evolution::patches`): the parallel
+  component, the `PatchTable`, the elements of a patch and their maps
+  (`evolution::patches::PatchElements`), the actions (sending and receiving
+  boundary data, taking steps, the self start, events and observations, slab
+  size changes), the inbox and `send_to_patch` for the elements of the
+  `DgElementArray`, and the batched state tags. These don't depend on the
+  method or the system.
+- **Method** (FD: `src/Evolution/DgSubcell/FdPatch`,
+  `evolution::dg::subcell::fd_patch`): the elements of a patch with what FD
+  needs (`evolution::dg::subcell::fd_patch::FdPatchElements`, derived from
+  `evolution::patches::PatchElements`), which elements are FD
+  (`evolution::dg::subcell::fd_patch::patch_table`), ghost zones, the FD
+  geometry, the packaged data
+  from DG neighbors, the FD message format, the initial TCI exchange with DG
+  neighbors, and the element DataBox for events
+  (`evolution::dg::subcell::fd_patch::make_element_box`).
+- **System and method** (e.g. `grmhd::ValenciaDivClean::fd_patch::Patch`): the
+  batched physics, using the method layer.
+
+The generic actions call the system patch (`PatchTag` holds it) through these
+members: `state_tags`, `patch_elements()` (with `element_ids()`),
+`prepare_send()`, `received_all()`, `receive()`, `take_step()`,
+`check_last_step()`, the self-start `save_initial_values()`,
+`restore_initial_values()` and `discard_initial_values()`, and for events
+`ElementVariables`, `element_variables()`,
+`element_variables_without_values()` and `make_element_box()`.
+
+## Batching
+
+The data of a patch stays on the device and is *batched*: each quantity of all
+elements of the patch is one allocation, laid out element by element (see
+`BatchedVariables`). Every operation on the elements is one kernel over the
+whole batch, e.g. `apply_pointwise_on_device`, instead of one kernel per
+element. Ghost zones between the elements of a patch are filled on the device
+without leaving it; only the data on faces to elements outside the patch is
+copied to the host and sent as Charm++ messages.
+
+To the rest of the executable, the elements of a patch look like elements of
+the `DgElementArray`: their neighbors there send them their boundary data (see
+`evolution::patches::send_to_patch`), the patch replies in the format of an
+element of its method (e.g. an FD element), and observations and reductions
+identify each element by its `ElementId`.
+
+## State in the DataBox, operations in the patch
+
+The patch component follows one guiding principle: *the DataBox holds the
+state, and the patch object holds the operations*.
+
+- **State** is what generic code reasons about, e.g. the `TimeStepId`, the
+  step size and the time stepper history. It goes into the DataBox of the patch
+  as tags, so that generic actions that only read or update such state work
+  unchanged for patches. For example, the time stepper history of all elements
+  of a patch is a `::Tags::DeviceHistoryEvolvedVariables`, so
+  `SelfStart::Actions::CheckForOrderIncrease` and `Actions::ChangeSlabSize`
+  (which checks whether the step size can change) run on patches as on DG
+  elements, and so does `AdvanceTime`. The variables of the elements, e.g.
+  the evolved, primitive and background spacetime variables, are state too:
+  they are batches in the DataBox
+  (`evolution::patches::Tags::Batched`), listed in the patch
+  class's `state_tags`, so that checkpoints hold them. The patch object itself
+  serializes nothing; after a restart from a checkpoint it is rebuilt from the
+  options (e.g. `grmhd::ValenciaDivClean::fd_patch::Actions::RebuildPatch`).
+- **Operations** are the batched kernels: the time derivative, reconstruction,
+  primitive recovery, variable fixing, stepping and the ghost-zone exchange.
+  They are member functions of the system-specific patch class (e.g.
+  `grmhd::ValenciaDivClean::fd_patch::Patch`), which also holds the device
+  data they need, e.g. the geometry and the ghost-zone transfers, and scratch
+  space. The parts that don't depend on the system, i.e. the elements, their
+  geometry and the exchange of boundary data, are in the method layer's
+  `evolution::dg::subcell::fd_patch::FdPatchElements` that the patch holds. The
+  actions of the patch component pass the patch the state from the DataBox:
+  operations that change the state get pointers to all of it, the others
+  references.
+
+Operations that *change* the state of the elements, such as taking a step,
+can't reuse the per-element DG actions, which work on one element's
+`Variables` on the host. They have batched versions in the patch, with thin
+actions (`SendBoundaryData`, `ReceiveBoundaryData`, `TakeStep`).
+
+Operations that only *depend on* the state, such as observations and step
+choosers, run through their own generic code instead. At an observation (or a
+slab size change), each element of the patch gets a DataBox on the host
+(`Patch::make_element_box`, for FD elements
+`evolution::dg::subcell::fd_patch::make_element_box`) with what the DataBox
+of an FD element of the `DgElementArray` holds for events: the element, its
+meshes and maps, the time and step, host copies of its variables, and the same
+compute and reference items for coordinates, Jacobians, step choosers and the
+global cache. The events (e.g. `dg::Events::ObserveFields`,
+`Events::ObserveNorms`, `Events::ObserveTimeStep`) and the step choosers then
+run on it as on any element, including derived quantities computed by compute
+tags. This costs a copy of the variables from the device and the construction of
+a DataBox per element at each observation, so it suits operations that run
+occasionally rather than every step.
+
+Since events and step choosers are compiled against this DataBox, it must
+provide every tag that any event or step chooser of the executable may read.
+Tags whose data patches don't have on the host are placeholders (the host time
+stepper history, the error estimates and the local time stepping tags), and the
+step choosers that need them (`ErrorControl`, `PreventRapidIncrease`,
+`FixedLtsRatio`) are an error for patches. Supporting them means providing the
+data, e.g. copying the error estimates of each element into its DataBox, not a
+different design.
+
+## Things to keep in mind
+
+- Kokkos views have reference semantics, so copying a `BatchedVariables` (or
+  anything holding a view) doesn't copy the data. Generic code that copies
+  DataBox items, e.g. to save initial values, would silently share them. This
+  is why the self start of patches
+  (`evolution::patches::Actions::self_start_procedure`) uses the
+  generic actions except for saving and restoring the variables, which the patch
+  does with explicit deep copies. `TimeSteppers::DeviceHistory` deletes its copy
+  operations for the same reason.
+- Charm++ reductions are over the elements of one array component, but some
+  reductions must include the `DgElementArray` and the patches, e.g. the new
+  slab
+  size of `Events::ChangeSlabSize`. The executable combines them by setting
+  `Metavariables::slab_size_reduction` to
+  `evolution::patches::SlabSizeReduction`: both components
+  reduce to the first patch, which combines the results and sends them to both.
+  Observations don't need this, since the observers already collect the
+  contributions of each element by its `ElementId`.
+- Each Charm++ processing element has its own execution space instance (see
+  `Parallel::device_execution_space`). Patches enqueue their kernels on it and
+  fence it only before host code reads device data, e.g. before sending
+  boundary data.
+
+## Current limitations
+
+Patches support global time stepping (Runge-Kutta and multistep time steppers
+with self start), analytic initial data, monotonised central reconstruction,
+the Rusanov and HLL boundary corrections, affine or time-independent grid to
+inertial maps, and blocks whose cells line up across block boundaries (patches
+copy ghost data between blocks instead of interpolating). They don't support
+external boundary conditions, local time stepping, or step size control by
+error estimates yet. Anything unsupported is an error.

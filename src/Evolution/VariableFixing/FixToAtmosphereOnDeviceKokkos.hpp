@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <iomanip>
 #include <string>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
@@ -18,6 +19,7 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/MakeString.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
@@ -77,31 +79,42 @@ template <typename TagsList>
          "device at all grid points.");
   const size_t i = status.first_failed_grid_point;
   const size_t e = status.first_failed_element;
-  const auto point = [&exec, &batch, i,
-                      e]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
-    return extract_point_to_host(exec, get<::Tags::BatchView<Tag>>(batch), i,
-                                 e);
+  // The variables before fixing that the batch holds, e.g. only the
+  // reconstructed ones on faces
+  std::string variables{};
+  const auto print = [&exec, &batch, i, e, &variables]<typename Tag>(
+                         const std::string& name, tmpl::type_<Tag> /*meta*/) {
+    if constexpr (tmpl::list_contains_v<TagsList, Tag>) {
+      // As `ERROR` formats numbers
+      variables += MakeString{}
+                   << std::setprecision(18) << std::scientific << "\n  " << name
+                   << " = "
+                   << extract_point_to_host(
+                          exec, get<::Tags::BatchView<Tag>>(batch), i, e);
+    }
   };
+  print("rest_mass_density",
+        tmpl::type_<hydro::Tags::RestMassDensity<DataVector>>{});
+  print("specific_internal_energy",
+        tmpl::type_<hydro::Tags::SpecificInternalEnergy<DataVector>>{});
+  print("spatial_velocity",
+        tmpl::type_<hydro::Tags::SpatialVelocity<DataVector, 3>>{});
+  print("lorentz_factor_times_spatial_velocity",
+        tmpl::type_<
+            hydro::Tags::LorentzFactorTimesSpatialVelocity<DataVector, 3>>{});
+  print("lorentz_factor",
+        tmpl::type_<hydro::Tags::LorentzFactor<DataVector>>{});
+  print("pressure", tmpl::type_<hydro::Tags::Pressure<DataVector>>{});
+  print("temperature", tmpl::type_<hydro::Tags::Temperature<DataVector>>{});
+  print("electron_fraction",
+        tmpl::type_<hydro::Tags::ElectronFraction<DataVector>>{});
   ERROR(
       "The root find of the kappa limiting in FixToAtmosphere failed on the "
       "device at "
       << status.number_of_failures << " of "
       << batch.number_of_grid_points() * batch.number_of_elements()
       << " grid points. At the first one, grid point " << i << " of "
-      << element_description << ", before fixing:\n  rest_mass_density = "
-      << point(tmpl::type_<hydro::Tags::RestMassDensity<DataVector>>{})
-      << "\n  specific_internal_energy = "
-      << point(tmpl::type_<hydro::Tags::SpecificInternalEnergy<DataVector>>{})
-      << "\n  spatial_velocity =\n"
-      << point(tmpl::type_<hydro::Tags::SpatialVelocity<DataVector, 3>>{})
-      << "\n  lorentz_factor = "
-      << point(tmpl::type_<hydro::Tags::LorentzFactor<DataVector>>{})
-      << "\n  pressure = "
-      << point(tmpl::type_<hydro::Tags::Pressure<DataVector>>{})
-      << "\n  temperature = "
-      << point(tmpl::type_<hydro::Tags::Temperature<DataVector>>{})
-      << "\n  electron_fraction = "
-      << point(tmpl::type_<hydro::Tags::ElectronFraction<DataVector>>{})
+      << element_description << ", before fixing:" << variables
       << "\nRun on the host for the details of the root find.");
 }
 }  // namespace VariableFixing

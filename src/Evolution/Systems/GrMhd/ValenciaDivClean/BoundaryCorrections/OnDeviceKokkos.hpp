@@ -7,11 +7,13 @@
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hll.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Rusanov.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
+#include "Evolution/VariableFixing/FixToAtmosphere.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
@@ -72,6 +74,94 @@ void package_data_on_device(
     const BatchedVariables<fd::face_tags>& faces, const Correction& correction,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const NormalDotMeshVelocityBatch* normal_dot_mesh_velocity = nullptr);
+
+/// @{
+/// A covector or a vector on the faces of a batch (see
+/// `fluxes_and_package_data_on_device`)
+using FaceCovectorBatch =
+    tnsr::i<Kokkos::View<double**, Kokkos::LayoutStride,
+                         Kokkos::DefaultExecutionSpace::memory_space>,
+            3>;
+using FaceVectorBatch =
+    tnsr::I<Kokkos::View<double**, Kokkos::LayoutStride,
+                         Kokkos::DefaultExecutionSpace::memory_space>,
+            3>;
+/// @}
+
+/*!
+ * \brief Computes the packaged data of the boundary correction `Correction`
+ * (`Rusanov` or `Hll`) on one side of the faces of a batch of FD grids in
+ * device memory, starting from the conserved and primitive variables on the
+ * faces, in a single Kokkos kernel.
+ *
+ * \details At every grid point this computes, keeping all intermediate
+ * results on the stack:
+ * 1. the fluxes (see `ComputeFluxes`),
+ * 2. if the mesh is moving, the fluxes minus the `mesh_velocity` times the
+ *    evolved variables,
+ * 3. the normal covector, i.e. `sign` times the `conormal` normalized with the
+ *    inverse spatial metric (`sign` is \f$+1\f$ on the lower side of the faces
+ *    and \f$-1\f$ on the upper side, so that the normal points out of the
+ *    side),
+ * 4. if the mesh is moving, the normal dot the mesh velocity, and
+ * 5. the packaged data, as `package_data_on_device` does from these.
+ *
+ * This is equivalent to computing these steps in separate kernels and passing
+ * the results to `package_data_on_device`, with the same operations at each
+ * grid point, but it doesn't write the fluxes and the normals to memory. The
+ * `faces` (`fd::face_tags` or `fd::device_face_tags`) must hold the conserved
+ * variables, the primitive variables and the spacetime variables (e.g. from
+ * `fd::compute_conservatives_on_device`); fluxes and normals in them are
+ * neither used nor set. `mesh_velocity` is `nullptr` if
+ * the mesh isn't moving.
+ *
+ * The kernel is only enqueued on `exec`, except for `Hll`, which first decides
+ * for each face set whether to use the hydro characteristic speeds (see
+ * `package_data_on_device`), also on the device.
+ */
+template <typename Correction, typename FaceTags>
+void fluxes_and_package_data_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    gsl::not_null<BatchedVariables<typename Correction::dg_package_field_tags>*>
+        packaged_data,
+    const BatchedVariables<FaceTags>& faces, const FaceCovectorBatch& conormal,
+    double sign, const FaceVectorBatch* mesh_velocity,
+    const Correction& correction,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state);
+
+/*!
+ * \brief Computes the packaged data of `Rusanov` on one side of the faces of a
+ * batch of FD grids in device memory, starting from the reconstructed
+ * primitive variables, in a single Kokkos kernel.
+ *
+ * \details At every grid point this computes, keeping all intermediate
+ * results on the stack, the variables on the face as
+ * `fd::compute_conservatives_on_device` does (with the fix to the atmosphere
+ * if `fix_to_atmosphere` isn't `nullptr`), and then the fluxes, the normals
+ * and the packaged data as `fluxes_and_package_data_on_device` does. The
+ * `faces` hold the reconstructed and spacetime variables
+ * (`fd::reconstruction_face_tags`) and aren't modified.
+ *
+ * As `fd::compute_conservatives_on_device`, this returns the number of grid
+ * points where the root find of the fix to the atmosphere failed and the first
+ * one (see `PointwiseStatusSummary`); the packaged data there isn't computed.
+ * Report a failure with `VariableFixing::error_fixing_to_atmosphere_on_device`
+ * on the `faces`, which hold the reconstructed variables there. Since the
+ * failures are needed on the host, this waits for the kernel on `exec`.
+ *
+ * Only `Rusanov` is supported: `Hll` decides for each face set from the fixed
+ * variables on all its faces whether to use the hydro characteristic speeds,
+ * so it needs those variables first (see `fluxes_and_package_data_on_device`).
+ */
+PointwiseStatusSummary package_data_from_reconstruction_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
+        packaged_data,
+    const BatchedVariables<fd::reconstruction_face_tags>& faces,
+    const FaceCovectorBatch& conormal, double sign,
+    const FaceVectorBatch* mesh_velocity,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere);
 
 /*!
  * \brief Computes the boundary terms of the boundary correction `Correction`

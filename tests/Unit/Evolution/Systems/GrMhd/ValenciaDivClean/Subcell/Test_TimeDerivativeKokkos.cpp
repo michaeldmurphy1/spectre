@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
@@ -55,7 +56,9 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Factory.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Factory.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/PositivityPreservingAdaptiveOrder.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Reconstructor.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ReconstructorOnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Tag.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/PrimitiveGhostData.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/TimeDerivative.hpp"
@@ -67,6 +70,7 @@
 #include "Evolution/VariableFixing/Tags.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "NumericalAlgorithms/FiniteDifference/DerivativeOrder.hpp"
+#include "NumericalAlgorithms/FiniteDifference/FallbackReconstructorType.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
@@ -124,8 +128,11 @@ BatchedVariables<Tags> to_device_batch(
 
 // The FD time derivative of one element of Bondi-Michel on the device is the
 // same as on the host, as in the test of `subcell::TimeDerivative`.
-template <typename Correction>
-void test(const Correction& correction) {
+template <typename Correction, typename Reconstructor>
+void test(const Correction& correction, const Reconstructor& recons) {
+  CAPTURE(pretty_type::short_name<Correction>());
+  CAPTURE(pretty_type::short_name<Reconstructor>());
+  CAPTURE(recons.ghost_zone_size());
   using Affine = domain::CoordinateMaps::Affine;
   using Affine3D =
       domain::CoordinateMaps::ProductOf3Maps<Affine, Affine, Affine>;
@@ -148,7 +155,6 @@ void test(const Correction& correction) {
       domain::make_coordinate_map_base<Frame::Grid, Frame::Inertial>(
           domain::CoordinateMaps::Identity<3>{});
 
-  const fd::MonotonisedCentralPrim recons{false};
   const Solutions::BondiMichel soln{1.0, 5.0, 0.05, 1.4, 2.0};
   const double time = 0.5;
   const Mesh<3> dg_mesh{5, Spectral::Basis::Legendre,
@@ -160,9 +166,8 @@ void test(const Correction& correction) {
 
   typename evolution::dg::subcell::Tags::GhostZoneInverseJacobian<3>::type
       ghost_zone_inv_jac{};
-  evolution::dg::subcell::GhostZoneInverseJacobian<
-      3, fd::MonotonisedCentralPrim>::apply(make_not_null(&ghost_zone_inv_jac),
-                                            subcell_mesh, element_map, recons);
+  evolution::dg::subcell::GhostZoneInverseJacobian<3, Reconstructor>::apply(
+      make_not_null(&ghost_zone_inv_jac), subcell_mesh, element_map, recons);
 
   Variables<typename System::spacetime_variables_tag::tags_list>
       cell_spacetime_vars{number_of_cells};
@@ -302,7 +307,7 @@ void test(const Correction& correction) {
                   3>>>(
       element, subcell_mesh, dg_mesh,
       std::unique_ptr<fd::Reconstructor>{
-          std::make_unique<fd::MonotonisedCentralPrim>(recons)},
+          std::make_unique<Reconstructor>(recons)},
       std::unique_ptr<evolution::BoundaryCorrection>{
           std::make_unique<Correction>(correction)},
       eos->get_clone(), cell_spacetime_vars, cell_prims,
@@ -376,7 +381,8 @@ void test(const Correction& correction) {
                                         make_not_null(&cell_geometry),
                                         logical_to_grid, grid_to_inertial);
 
-  subcell::TimeDerivativeOnDevice<Correction> time_derivative{exec, 1, dg_mesh};
+  subcell::TimeDerivativeOnDevice<Correction> time_derivative{
+      exec, 1, dg_mesh, fd::ReconstructorOnDevice{recons}};
   time_derivative.set_face_spacetime_variables(exec, face_spacetime);
   BatchedVariables<subcell::dt_tags_on_device> dt_vars{exec, number_of_cells,
                                                        1};
@@ -429,7 +435,26 @@ void test(const Correction& correction) {
 SPECTRE_TEST_CASE(
     "Unit.Evolution.Systems.ValenciaDivClean.Subcell.TimeDerivative.Kokkos",
     "[Unit][Evolution]") {
-  test(BoundaryCorrections::Rusanov{});
-  test(BoundaryCorrections::Hll{1.0e-30, 1.0e-8});
+  using ::fd::reconstruction::FallbackReconstructorType;
+  const fd::MonotonisedCentralPrim monotonised_central{false};
+  // Orders 5 and 3, and 9, 7, 5 and 3 (with ghost zones of width 5)
+  const fd::PositivityPreservingAdaptiveOrderPrim adaptive_order{
+      4.0, std::nullopt, std::nullopt,
+      FallbackReconstructorType::MonotonisedCentral, false};
+  const fd::PositivityPreservingAdaptiveOrderPrim high_adaptive_order{
+      4.0, 4.0, 4.0, FallbackReconstructorType::Minmod, false};
+  for (const auto& correction_variant :
+       {std::variant<BoundaryCorrections::Rusanov, BoundaryCorrections::Hll>{
+            BoundaryCorrections::Rusanov{}},
+        std::variant<BoundaryCorrections::Rusanov, BoundaryCorrections::Hll>{
+            BoundaryCorrections::Hll{1.0e-30, 1.0e-8}}}) {
+    std::visit(
+        [&](const auto& correction) {
+          test(correction, monotonised_central);
+          test(correction, adaptive_order);
+          test(correction, high_adaptive_order);
+        },
+        correction_variant);
+  }
 }
 }  // namespace grmhd::ValenciaDivClean

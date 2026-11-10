@@ -16,6 +16,7 @@ spectre_target_headers(
   PatchElementsKokkos.hpp
   PatchTable.hpp
   SavedBatchesKokkos.hpp
+  SendToPatch.hpp
   SlabSize.hpp
   TagsKokkos.hpp
   )

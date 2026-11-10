@@ -48,10 +48,13 @@ namespace grmhd::ValenciaDivClean::fd {
  * The `faces` are updated in place. Nothing is copied between the host and
  * the device, but since the failures are needed on the host, this function
  * waits for the kernel on `exec` to complete.
+ *
+ * `FaceTags` is `face_tags` or `device_face_tags`.
  */
+template <typename FaceTags>
 PointwiseStatusSummary compute_conservatives_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    gsl::not_null<BatchedVariables<face_tags>*> faces,
+    gsl::not_null<BatchedVariables<FaceTags>*> faces,
     const EquationsOfState::EquationOfState<true, 3>& eos,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere);
 }  // namespace grmhd::ValenciaDivClean::fd

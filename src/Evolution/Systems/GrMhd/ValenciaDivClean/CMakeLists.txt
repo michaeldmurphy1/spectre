@@ -74,6 +74,7 @@ target_link_libraries(
   ErrorHandling
   Events
   Evolution
+  FdPatch
   FiniteDifference
   GeneralRelativity
   GrMhdAnalyticData

@@ -41,6 +41,7 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ScratchViewKokkos.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace grmhd::ValenciaDivClean {
@@ -63,14 +64,12 @@ struct WholeGridBelowCutoff : db::SimpleTag {
 Kokkos::View<const bool*> whole_grid_below_cutoff_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
     const typename ::Tags::BatchView<Tags::TildeD>::type& tilde_d,
-    const double cutoff) {
+    const double cutoff, Kokkos::View<bool*>* const scratch) {
   const auto& tilde_d_view = get(tilde_d);
   const size_t number_of_grid_points = tilde_d_view.extent(0);
   const size_t number_of_elements = tilde_d_view.extent(1);
-  const Kokkos::View<bool*> result{
-      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
-                         "WholeGridBelowCutoff"),
-      number_of_elements};
+  const Kokkos::View<bool*> result =
+      scratch_view(exec, scratch, "WholeGridBelowCutoff", number_of_elements);
   using TeamPolicy = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>;
   Kokkos::parallel_for(
       "WholeGridBelowCutoff",
@@ -260,12 +259,13 @@ PointwiseStatusSummary primitive_from_conservative_on_device(
         gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
         sqrt_det_spatial_metric,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
-    const PrimitiveFromConservativeOptions&
-        primitive_from_conservative_options) {
+    const PrimitiveFromConservativeOptions& primitive_from_conservative_options,
+    Kokkos::View<bool*>* const per_element_scratch) {
   const Kokkos::View<const bool*> whole_grid_below_cutoff =
       whole_grid_below_cutoff_on_device(
           exec, tilde_d,
-          primitive_from_conservative_options.cutoff_d_for_inversion());
+          primitive_from_conservative_options.cutoff_d_for_inversion(),
+          per_element_scratch);
   PointwiseStatusSummary status{};
   EquationsOfState::visit_device_view(equation_of_state, [&](const auto&
                                                                  device_view) {
@@ -394,7 +394,8 @@ void error_recovering_primitives_on_device(
           sqrt_det_spatial_metric,                                          \
       const EquationsOfState::EquationOfState<true, 3>& equation_of_state,  \
       const PrimitiveFromConservativeOptions&                               \
-          primitive_from_conservative_options);
+          primitive_from_conservative_options,                              \
+      Kokkos::View<bool*>* per_element_scratch);
 
 namespace {
 using NewmanHamlinThenPalenzuelaEtAl =

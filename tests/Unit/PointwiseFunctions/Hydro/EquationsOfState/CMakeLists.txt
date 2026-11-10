@@ -21,8 +21,10 @@ if(SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
     Test_Barotropic3DKokkos.cpp
     Test_Equilibrium3DKokkos.cpp
+    Test_HybridEosKokkos.cpp
     Test_IdealFluidKokkos.cpp
     Test_PolytropicFluidKokkos.cpp
+    Test_SpectralKokkos.cpp
     )
 endif()
 

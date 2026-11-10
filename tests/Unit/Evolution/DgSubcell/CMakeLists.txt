@@ -56,6 +56,7 @@ if (SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
     FdPatch/Test_GeometryKokkos.cpp
     FdPatch/Test_GhostZonesKokkos.cpp
+    FdPatch/Test_PackagedDataFromDgKokkos.cpp
     )
 endif()
 

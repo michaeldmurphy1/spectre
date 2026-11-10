@@ -11,6 +11,7 @@ spectre_target_headers(
   HEADERS
   GeometryKokkos.hpp
   GhostZonesKokkos.hpp
+  PackagedDataFromDgKokkos.hpp
   PatchTable.hpp
   )
 
@@ -19,6 +20,7 @@ spectre_target_sources(
   PRIVATE
   GeometryKokkos.cpp
   GhostZonesKokkos.cpp
+  PackagedDataFromDgKokkos.cpp
   PatchTable.cpp
   )
 

@@ -9,6 +9,7 @@
 #include "NumericalAlgorithms/FiniteDifference/Reconstruct.hpp"
 #include "Utilities/ForceInline.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 /// \cond
 template <size_t Dim, typename T>
@@ -22,7 +23,7 @@ namespace detail {
 template <size_t Degree>
 struct UnlimitedReconstructor {
   static_assert(Degree == 2 or Degree == 4 or Degree == 6 or Degree == 8);
-  SPECTRE_ALWAYS_INLINE static std::array<double, 2> pointwise(
+  KOKKOS_FUNCTION SPECTRE_ALWAYS_INLINE static std::array<double, 2> pointwise(
       const double* const q, const int stride) {
     if constexpr (Degree == 2) {
       // quadratic polynomial
@@ -62,7 +63,8 @@ struct UnlimitedReconstructor {
     }
   }
 
-  SPECTRE_ALWAYS_INLINE static constexpr size_t stencil_width() {
+  KOKKOS_FUNCTION SPECTRE_ALWAYS_INLINE static constexpr size_t
+  stencil_width() {
     return Degree + 1;
   }
 };

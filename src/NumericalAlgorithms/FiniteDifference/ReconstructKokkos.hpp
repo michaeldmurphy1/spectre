@@ -5,6 +5,8 @@
 
 #include <array>
 #include <cstddef>
+#include <tuple>
+#include <utility>
 
 #include "DataStructures/Index.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
@@ -14,6 +16,15 @@
 
 #ifdef SPECTRE_KOKKOS
 namespace fd::device::detail {
+// `Reconstructor::pointwise(q, stride, args...)` with the `args` in a tuple,
+// since device lambdas can't capture parameter packs
+template <typename Reconstructor, typename... Args, size_t... Is>
+KOKKOS_FUNCTION auto reconstruct_pointwise(
+    const double* const q, const int stride, const std::tuple<Args...>& args,
+    std::index_sequence<Is...> /*meta*/) {
+  return Reconstructor::pointwise(q, stride, std::get<Is>(args)...);
+}
+
 /*!
  * \brief Reconstruct a batch of elements to the faces with a
  * `Reconstructor` from `fd::reconstruction::detail`, launching one Kokkos
@@ -25,14 +36,21 @@ namespace fd::device::detail {
  * `(Reconstructor::stencil_width() + 1) / 2`: the faces on the element
  * boundary need the reconstruction in the neighbor's cell, whose stencil
  * extends one cell further than the stencils in the element.
+ *
+ * `Reconstructor::pointwise(q, stride, args...)` returns the values on the
+ * lower and upper face of the cell as its first two elements (e.g. a
+ * `std::array` or a `std::tuple`). The padded volume data can be a
+ * `ConstVolumeView` or a `ConstStridedVolumeView`.
  */
-template <typename Reconstructor, size_t Dim>
+template <typename Reconstructor, size_t Dim, typename PaddedView,
+          typename... Args>
 void reconstruct(
     const Kokkos::DefaultExecutionSpace& exec,
     const std::array<StridedVolumeView, Dim>& upper_side_of_face_vars,
     const std::array<StridedVolumeView, Dim>& lower_side_of_face_vars,
-    const ConstVolumeView& padded_volume_vars,
-    const Index<Dim>& volume_extents) {
+    const PaddedView& padded_volume_vars, const Index<Dim>& volume_extents,
+    const Args&... args) {
+  const std::tuple<Args...> arguments{args...};
   constexpr size_t stencil_width = Reconstructor::stencil_width();
   static_assert(stencil_width % 2 == 1, "The stencil width must be odd");
   const size_t ghost_width =
@@ -89,18 +107,19 @@ void reconstruct(
               &padded_volume_vars(element, var, cell[2] + offsets[2],
                                   cell[1] + offsets[1], cell[0] + offsets[0]);
           const auto lower_and_upper_values =
-              Reconstructor::pointwise(q, stride);
+              reconstruct_pointwise<Reconstructor>(
+                  q, stride, arguments, std::index_sequence_for<Args...>{});
           // The value on the lower face of the cell is on the upper side of
           // face `cell`, and the value on the upper face of the cell is on the
           // lower side of face `cell + 1`
           if (cell[dim] >= 0) {
             upper_side(element, var, cell[2], cell[1], cell[0]) =
-                lower_and_upper_values[0];
+                std::get<0>(lower_and_upper_values);
           }
           if (cell[dim] < number_of_cells) {
             cell[dim] += 1;
             lower_side(element, var, cell[2], cell[1], cell[0]) =
-                lower_and_upper_values[1];
+                std::get<1>(lower_and_upper_values);
           }
         });
   }

@@ -9,12 +9,14 @@ spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
+  GridToInertial.hpp
   PatchTable.hpp
   )
 
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  GridToInertial.cpp
   PatchTable.cpp
   )
 

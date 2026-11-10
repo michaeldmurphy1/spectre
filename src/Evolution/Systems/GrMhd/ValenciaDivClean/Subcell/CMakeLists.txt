@@ -9,6 +9,7 @@ spectre_target_sources(
   PrimitiveGhostData.cpp
   PrimitiveGhostDataKokkos.cpp
   PrimsAfterRollback.cpp
+  RdmpTciDataKokkos.cpp
   ResizeAndComputePrimitives.cpp
   SetInitialRdmpData.cpp
   SwapGrTags.cpp
@@ -28,6 +29,7 @@ spectre_target_headers(
   PrimitiveGhostData.hpp
   PrimitiveGhostDataKokkos.hpp
   PrimsAfterRollback.hpp
+  RdmpTciDataKokkos.hpp
   ResizeAndComputePrimitives.hpp
   SetInitialRdmpData.hpp
   Subcell.hpp

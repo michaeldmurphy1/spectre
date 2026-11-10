@@ -32,12 +32,12 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ConservativesOnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceViewsKokkos.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ReconstructorOnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Sources.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Sources.tpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "NumericalAlgorithms/FiniteDifference/FluxDivergenceKokkos.hpp"
-#include "NumericalAlgorithms/FiniteDifference/MonotonisedCentralKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
@@ -275,8 +275,9 @@ View entries_as_volume_view(const auto& storage, const size_t first,
 template <typename Correction>
 TimeDerivativeOnDevice<Correction>::TimeDerivativeOnDevice(
     const Kokkos::DefaultExecutionSpace& exec, const size_t number_of_elements,
-    const Mesh<3>& dg_mesh)
+    const Mesh<3>& dg_mesh, fd::ReconstructorOnDevice reconstructor)
     : number_of_elements_(number_of_elements),
+      reconstructor_(std::move(reconstructor)),
       dg_mesh_(dg_mesh),
       subcell_extents_(evolution::dg::subcell::fd::mesh(dg_mesh).extents()) {
   // As `subcell::TimeDerivative`, which assumes isotropic extents
@@ -342,7 +343,7 @@ std::array<PointwiseStatusSummary, 2> TimeDerivativeOnDevice<Correction>::apply(
                                         << " elements of the time derivative");
 
   // 1. Reconstruct
-  ::fd::device::monotonised_central(
+  reconstructor_.reconstruct(
       exec, fd::reconstructed_face_views(upper_faces_, subcell_extents_),
       fd::reconstructed_face_views(lower_faces_, subcell_extents_),
       padded_ghost_variables, subcell_extents_);

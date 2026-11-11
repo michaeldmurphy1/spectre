@@ -8,7 +8,9 @@
 #include <random>
 
 #include "DataStructures/ApplyPointwiseOnDeviceKokkos.hpp"
+#include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/DeviceArgumentsKokkos.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/GaugeSourceFunctions/Harmonic.hpp"
@@ -21,6 +23,7 @@
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "PointwiseFunctions/AnalyticSolutions/GeneralRelativity/Factory.hpp"
+#include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/TMPL.hpp"
@@ -112,6 +115,115 @@ void test_on_device(const Variables<Device::argument_tags>& args) {
   Approx custom_approx = Approx::custom().epsilon(1.0e-12).scale(1.0);
   CHECK_VARIABLES_CUSTOM_APPROX(device_result, host_result, custom_approx);
 }
+
+// Benchmarks of the time derivative on the device for the FD elements of the
+// BNS runs: 504 elements of 17^3 cells. They only run when the test is run
+// directly (ctest skips benchmarks), e.g.
+//   Test_GeneralizedHarmonic "Unit.Evolution.Systems.Gh.TimeDerivative.Kokkos"
+//     --benchmark-samples 20
+// "copy" reads the same arguments and writes the same results with almost no
+// arithmetic, which is the lower bound set by the memory bandwidth.
+struct BenchmarkData {
+  static constexpr size_t number_of_elements = 504;
+  static constexpr size_t number_of_points = 17 * 17 * 17;
+  BatchedVariables<Device::argument_tags> arguments{};
+  BatchedVariables<Device::return_tags> results{};
+};
+
+BenchmarkData make_benchmark_data() {
+  return []() {
+    const Kokkos::DefaultExecutionSpace exec{};
+    BenchmarkData result{};
+    // The same arguments in all elements
+    MAKE_GENERATOR(generator);
+    const auto element_arguments = make_arguments(
+        make_not_null(&generator), BenchmarkData::number_of_points);
+    BatchedVariables<Device::argument_tags, Kokkos::HostSpace> host_element{
+        BenchmarkData::number_of_points, 1};
+    Variables<Device::argument_tags> host_view{};
+    set_data_ref_to_element(make_not_null(&host_view), host_element, 0);
+    host_view = element_arguments;
+    BatchedVariables<Device::argument_tags> device_element{
+        exec, BenchmarkData::number_of_points, 1};
+    deep_copy(exec, make_not_null(&device_element), host_element);
+    result.arguments = BatchedVariables<Device::argument_tags>{
+        exec, BenchmarkData::number_of_points,
+        BenchmarkData::number_of_elements};
+    const auto source = device_element.view();
+    const auto destination = result.arguments.view();
+    Kokkos::parallel_for(
+        "copy to all elements",
+        Kokkos::MDRangePolicy<Kokkos::Rank<3>>(
+            exec, {0, 0, 0},
+            {destination.extent(0), destination.extent(1),
+             destination.extent(2)}),
+        KOKKOS_LAMBDA(const size_t point, const size_t component,
+                      const size_t element) {
+          destination(point, component, element) = source(point, component, 0);
+        });
+    result.results = BatchedVariables<Device::return_tags>{
+        exec, BenchmarkData::number_of_points,
+        BenchmarkData::number_of_elements};
+    exec.fence();
+    return result;
+  }();
+}
+
+void benchmark_on_device() {
+  // Catch's statistics of the samples can raise floating point exceptions
+  const ScopedFpeState disable_fpes{false};
+  // Made by the first benchmark that runs (none run in ctest), and freed
+  // before Kokkos is finalized
+  std::optional<BenchmarkData> benchmark_data_storage{};
+  const auto benchmark_data = [&benchmark_data_storage]() -> const auto& {
+    if (not benchmark_data_storage.has_value()) {
+      benchmark_data_storage = make_benchmark_data();
+    }
+    return *benchmark_data_storage;
+  };
+  BENCHMARK_ADVANCED("GH time derivative, 504 elements of 17^3 cells")
+  (Catch::Benchmark::Chronometer meter) {
+    const Kokkos::DefaultExecutionSpace exec{};
+    const auto& data = benchmark_data();
+    auto results = data.results;
+    const auto arguments =
+        [&]<typename... ArgsTags>(tmpl::list<ArgsTags...> /*meta*/) {
+          return make_device_arguments<ArgsTags...>(
+              exec, get<::Tags::BatchView<ArgsTags>>(data.arguments)...);
+        }(Device::argument_tags{});
+    meter.measure([&]() {
+      apply_pointwise_on_device<Device>(exec, make_not_null(&results),
+                                        Device::return_tags{},
+                                        Device::argument_tags{}, arguments);
+      exec.fence();
+    });
+  };
+  BENCHMARK_ADVANCED("copy, 504 elements of 17^3 cells")
+  (Catch::Benchmark::Chronometer meter) {
+    const Kokkos::DefaultExecutionSpace exec{};
+    const auto& data = benchmark_data();
+    const auto source = data.arguments.view();
+    const auto destination = data.results.view();
+    const size_t number_of_points = source.extent(0);
+    const size_t number_of_elements = source.extent(2);
+    meter.measure([&]() {
+      Kokkos::parallel_for(
+          "copy",
+          Kokkos::MDRangePolicy<Kokkos::Rank<2>>(
+              exec, {0, 0}, {number_of_points, number_of_elements}),
+          KOKKOS_LAMBDA(const size_t point, const size_t element) {
+            double sum = 0.0;
+            for (size_t i = 0; i < source.extent(1); ++i) {
+              sum += source(point, i, element);
+            }
+            for (size_t i = 0; i < destination.extent(1); ++i) {
+              destination(point, i, element) = sum;
+            }
+          });
+      exec.fence();
+    });
+  };
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.Evolution.Systems.Gh.TimeDerivative.Kokkos",
@@ -120,4 +232,5 @@ SPECTRE_TEST_CASE("Unit.Evolution.Systems.Gh.TimeDerivative.Kokkos",
   const auto args = make_arguments(make_not_null(&generator), 20);
   test_same_as_time_derivative(args);
   test_on_device(args);
+  benchmark_on_device();
 }

@@ -236,6 +236,119 @@ struct PrimitiveFromConservativeAtGridPoint {
   }
 };
 
+// Recovers with a `PointwiseStatusSummary` result if `status` is `nullptr`,
+// and else records the status in `*status`
+template <typename OrderedListOfPrimitiveRecoverySchemes,
+          bool EnforcePhysicality, typename StatusPointer>
+PointwiseStatusSummary recover_impl(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const gsl::not_null<BatchedVariables<hydro::grmhd_tags<DataVector>>*>
+        primitives,
+    const StatusPointer status,
+    const typename ::Tags::BatchView<Tags::TildeD>::type& tilde_d,
+    const typename ::Tags::BatchView<Tags::TildeYe>::type& tilde_ye,
+    const typename ::Tags::BatchView<Tags::TildeTau>::type& tilde_tau,
+    const typename ::Tags::BatchView<Tags::TildeS<>>::type& tilde_s,
+    const typename ::Tags::BatchView<Tags::TildeB<>>::type& tilde_b,
+    const typename ::Tags::BatchView<Tags::TildePhi>::type& tilde_phi,
+    const typename ::Tags::BatchView<
+        gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
+    const typename ::Tags::BatchView<
+        gr::Tags::InverseSpatialMetric<DataVector, 3>>::type&
+        inv_spatial_metric,
+    const typename ::Tags::BatchView<
+        gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
+        sqrt_det_spatial_metric,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const PrimitiveFromConservativeOptions& primitive_from_conservative_options,
+    Kokkos::View<bool*>* const per_element_scratch) {
+  const Kokkos::View<const bool*> whole_grid_below_cutoff =
+      whole_grid_below_cutoff_on_device(
+          exec, tilde_d,
+          primitive_from_conservative_options.cutoff_d_for_inversion(),
+          per_element_scratch);
+  PointwiseStatusSummary result{};
+  EquationsOfState::visit_device_view(equation_of_state, [&](const auto&
+                                                                 device_view) {
+    using DeviceView = std::decay_t<decltype(device_view)>;
+    static_assert(has_bounds<DeviceView>,
+                  "The DeviceView has no bounds for primitive recovery.");
+    using Function = PrimitiveFromConservativeAtGridPoint<
+        OrderedListOfPrimitiveRecoverySchemes, EnforcePhysicality, DeviceView>;
+    // The primitive variables are both arguments and results. This is safe
+    // because the arguments at a grid point are read before the results
+    // there are written.
+    const auto arguments =
+        [&]<typename... ArgumentTags, typename... PrimitiveTags>(
+            tmpl::list<ArgumentTags...> /*meta*/,
+            tmpl::list<PrimitiveTags...> /*meta*/) {
+          return make_device_arguments<ArgumentTags...>(
+              exec, tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi,
+              spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
+              get<::Tags::BatchView<PrimitiveTags>>(*primitives)...,
+              device_view, primitive_from_conservative_options,
+              whole_grid_below_cutoff);
+        }(typename Function::argument_tags{}, hydro::grmhd_tags<DataVector>{});
+    result = ApplyPointwiseOnDevice_detail::apply_with_status<Function>(
+        exec, primitives, status, typename Function::return_tags{},
+        typename Function::argument_tags{}, arguments);
+  });
+  return result;
+}
+
+// ERRORs with the variables at the failed grid point, which
+// `point(tmpl::type_<Tag>{})` returns, like the error of
+// `PrimitiveFromConservative`. `is_first` is whether it is the first failure,
+// else any.
+template <typename Point>
+[[noreturn]] void error_recovering_primitives(
+    const PointwiseStatusSummary& status,
+    const std::string& element_description, const bool is_first,
+    const Point& point) {
+  const double sqrt_det_g =
+      get(point(tmpl::type_<gr::Tags::SqrtDetSpatialMetric<DataVector>>{}));
+  const auto tilde_s = point(tmpl::type_<Tags::TildeS<>>{});
+  const auto tilde_b = point(tmpl::type_<Tags::TildeB<>>{});
+  const auto spatial_metric =
+      point(tmpl::type_<gr::Tags::SpatialMetric<DataVector, 3>>{});
+  const auto inv_spatial_metric =
+      point(tmpl::type_<gr::Tags::InverseSpatialMetric<DataVector, 3>>{});
+  double momentum_density_squared = 0.0;
+  double momentum_density_dot_magnetic_field = 0.0;
+  double magnetic_field_squared = 0.0;
+  for (size_t i = 0; i < 3; ++i) {
+    momentum_density_dot_magnetic_field += tilde_s.get(i) * tilde_b.get(i);
+    for (size_t j = 0; j < 3; ++j) {
+      momentum_density_squared +=
+          inv_spatial_metric.get(i, j) * tilde_s.get(i) * tilde_s.get(j);
+      magnetic_field_squared +=
+          spatial_metric.get(i, j) * tilde_b.get(i) * tilde_b.get(j);
+    }
+  }
+  ERROR("All primitive inversion schemes failed on the device at "
+        << status.number_of_failures << " grid points. "
+        << (is_first ? "The first" : "One of them")
+        << " is s = " << status.first_failed_grid_point << " of "
+        << element_description << ".\n"
+        << std::setprecision(17) << "tau = "
+        << get(point(tmpl::type_<Tags::TildeTau>{})) / sqrt_det_g << "\n"
+        << "rest_mass_density_times_lorentz_factor = "
+        << get(point(tmpl::type_<Tags::TildeD>{})) / sqrt_det_g << "\n"
+        << "momentum_density_squared = "
+        << momentum_density_squared / square(sqrt_det_g) << "\n"
+        << "momentum_density_dot_magnetic_field = "
+        << momentum_density_dot_magnetic_field / square(sqrt_det_g) << "\n"
+        << "magnetic_field_squared = "
+        << magnetic_field_squared / square(sqrt_det_g) << "\n"
+        << "previous_rest_mass_density = "
+        << get(point(tmpl::type_<hydro::Tags::RestMassDensity<DataVector>>{}))
+        << "\n"
+        << "previous_pressure = "
+        << get(point(tmpl::type_<hydro::Tags::Pressure<DataVector>>{})) << "\n"
+        << "previous_lorentz_factor = "
+        << get(point(tmpl::type_<hydro::Tags::LorentzFactor<DataVector>>{}))
+        << "\n");
+}
 }  // namespace
 
 template <typename OrderedListOfPrimitiveRecoverySchemes,
@@ -261,38 +374,45 @@ PointwiseStatusSummary primitive_from_conservative_on_device(
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const PrimitiveFromConservativeOptions& primitive_from_conservative_options,
     Kokkos::View<bool*>* const per_element_scratch) {
-  const Kokkos::View<const bool*> whole_grid_below_cutoff =
-      whole_grid_below_cutoff_on_device(
-          exec, tilde_d,
-          primitive_from_conservative_options.cutoff_d_for_inversion(),
-          per_element_scratch);
-  PointwiseStatusSummary status{};
-  EquationsOfState::visit_device_view(equation_of_state, [&](const auto&
-                                                                 device_view) {
-    using DeviceView = std::decay_t<decltype(device_view)>;
-    static_assert(has_bounds<DeviceView>,
-                  "The DeviceView has no bounds for primitive recovery.");
-    using Function = PrimitiveFromConservativeAtGridPoint<
-        OrderedListOfPrimitiveRecoverySchemes, EnforcePhysicality, DeviceView>;
-    // The primitive variables are both arguments and results. This is safe
-    // because the arguments at a grid point are read before the results
-    // there are written.
-    const auto arguments =
-        [&]<typename... ArgumentTags, typename... PrimitiveTags>(
-            tmpl::list<ArgumentTags...> /*meta*/,
-            tmpl::list<PrimitiveTags...> /*meta*/) {
-          return make_device_arguments<ArgumentTags...>(
-              exec, tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi,
-              spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
-              get<::Tags::BatchView<PrimitiveTags>>(*primitives)...,
-              device_view, primitive_from_conservative_options,
-              whole_grid_below_cutoff);
-        }(typename Function::argument_tags{}, hydro::grmhd_tags<DataVector>{});
-    status = apply_pointwise_on_device<Function>(
-        exec, primitives, typename Function::return_tags{},
-        typename Function::argument_tags{}, arguments);
-  });
-  return status;
+  return recover_impl<OrderedListOfPrimitiveRecoverySchemes,
+                      EnforcePhysicality>(
+      exec, primitives, nullptr, tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b,
+      tilde_phi, spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
+      equation_of_state, primitive_from_conservative_options,
+      per_element_scratch);
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes,
+          bool EnforcePhysicality>
+void primitive_from_conservative_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const gsl::not_null<BatchedVariables<hydro::grmhd_tags<DataVector>>*>
+        primitives,
+    const gsl::not_null<
+        DeferredPointwiseStatus<primitive_recovery_snapshot_tags>*>
+        status,
+    const typename ::Tags::BatchView<Tags::TildeD>::type& tilde_d,
+    const typename ::Tags::BatchView<Tags::TildeYe>::type& tilde_ye,
+    const typename ::Tags::BatchView<Tags::TildeTau>::type& tilde_tau,
+    const typename ::Tags::BatchView<Tags::TildeS<>>::type& tilde_s,
+    const typename ::Tags::BatchView<Tags::TildeB<>>::type& tilde_b,
+    const typename ::Tags::BatchView<Tags::TildePhi>::type& tilde_phi,
+    const typename ::Tags::BatchView<
+        gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
+    const typename ::Tags::BatchView<
+        gr::Tags::InverseSpatialMetric<DataVector, 3>>::type&
+        inv_spatial_metric,
+    const typename ::Tags::BatchView<
+        gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
+        sqrt_det_spatial_metric,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const PrimitiveFromConservativeOptions& primitive_from_conservative_options,
+    Kokkos::View<bool*>* const per_element_scratch) {
+  recover_impl<OrderedListOfPrimitiveRecoverySchemes, EnforcePhysicality>(
+      exec, primitives, status.get(), tilde_d, tilde_ye, tilde_tau, tilde_s,
+      tilde_b, tilde_phi, spatial_metric, inv_spatial_metric,
+      sqrt_det_spatial_metric, equation_of_state,
+      primitive_from_conservative_options, per_element_scratch);
 }
 
 void error_recovering_primitives_on_device(
@@ -317,56 +437,51 @@ void error_recovering_primitives_on_device(
          "succeeded at all grid points.");
   const size_t s = status.first_failed_grid_point;
   const size_t e = status.first_failed_element;
-  const auto point = [&exec, s, e](const auto& batch_tensor) {
-    return extract_point_to_host(exec, batch_tensor, s, e);
-  };
-  const double sqrt_det_g = get(point(sqrt_det_spatial_metric));
-  const auto tilde_s_at_s = point(tilde_s);
-  const auto tilde_b_at_s = point(tilde_b);
-  const auto spatial_metric_at_s = point(spatial_metric);
-  const auto inv_spatial_metric_at_s = point(inv_spatial_metric);
-  double momentum_density_squared = 0.0;
-  double momentum_density_dot_magnetic_field = 0.0;
-  double magnetic_field_squared = 0.0;
-  for (size_t i = 0; i < 3; ++i) {
-    momentum_density_dot_magnetic_field +=
-        tilde_s_at_s.get(i) * tilde_b_at_s.get(i);
-    for (size_t j = 0; j < 3; ++j) {
-      momentum_density_squared += inv_spatial_metric_at_s.get(i, j) *
-                                  tilde_s_at_s.get(i) * tilde_s_at_s.get(j);
-      magnetic_field_squared += spatial_metric_at_s.get(i, j) *
-                                tilde_b_at_s.get(i) * tilde_b_at_s.get(j);
-    }
-  }
   // The primitive variables at failed grid points hold the values before the
   // recovery
-  ERROR("All primitive inversion schemes failed on the device at "
-        << status.number_of_failures << " grid points. The first is s = " << s
-        << " of " << element_description << ".\n"
-        << std::setprecision(17)
-        << "tau = " << get(point(tilde_tau)) / sqrt_det_g << "\n"
-        << "rest_mass_density_times_lorentz_factor = "
-        << get(point(tilde_d)) / sqrt_det_g << "\n"
-        << "momentum_density_squared = "
-        << momentum_density_squared / square(sqrt_det_g) << "\n"
-        << "momentum_density_dot_magnetic_field = "
-        << momentum_density_dot_magnetic_field / square(sqrt_det_g) << "\n"
-        << "magnetic_field_squared = "
-        << magnetic_field_squared / square(sqrt_det_g) << "\n"
-        << "previous_rest_mass_density = "
-        << get(point(
-               get<::Tags::BatchView<hydro::Tags::RestMassDensity<DataVector>>>(
-                   primitives)))
-        << "\n"
-        << "previous_pressure = "
-        << get(point(get<::Tags::BatchView<hydro::Tags::Pressure<DataVector>>>(
-               primitives)))
-        << "\n"
-        << "previous_lorentz_factor = "
-        << get(point(
-               get<::Tags::BatchView<hydro::Tags::LorentzFactor<DataVector>>>(
-                   primitives)))
-        << "\n");
+  error_recovering_primitives(
+      status, element_description, true,
+      [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+        const auto& batch_tensor = [&]() -> const auto& {
+          if constexpr (std::is_same_v<Tag, Tags::TildeD>) {
+            return tilde_d;
+          } else if constexpr (std::is_same_v<Tag, Tags::TildeTau>) {
+            return tilde_tau;
+          } else if constexpr (std::is_same_v<Tag, Tags::TildeS<>>) {
+            return tilde_s;
+          } else if constexpr (std::is_same_v<Tag, Tags::TildeB<>>) {
+            return tilde_b;
+          } else if constexpr (std::is_same_v<Tag, gr::Tags::SpatialMetric<
+                                                       DataVector, 3>>) {
+            return spatial_metric;
+          } else if constexpr (std::is_same_v<Tag,
+                                              gr::Tags::InverseSpatialMetric<
+                                                  DataVector, 3>>) {
+            return inv_spatial_metric;
+          } else if constexpr (std::is_same_v<Tag,
+                                              gr::Tags::SqrtDetSpatialMetric<
+                                                  DataVector>>) {
+            return sqrt_det_spatial_metric;
+          } else {
+            return get<::Tags::BatchView<Tag>>(primitives);
+          }
+        }();
+        return extract_point_to_host(exec, batch_tensor, s, e);
+      });
+}
+
+void error_recovering_primitives_on_device(
+    const DeferredPointwiseStatus<primitive_recovery_snapshot_tags>& status,
+    const std::string& element_description) {
+  ASSERT(status.failed(),
+         "There is no failure to report: primitive_from_conservative_on_device "
+         "succeeded at all grid points.");
+  const auto snapshot = status.snapshot();
+  error_recovering_primitives(
+      status.summary(), element_description, false,
+      [&snapshot]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+        return get<::Tags::AtIndex<Tag>>(snapshot);
+      });
 }
 
 #define RECOVERY(data) BOOST_PP_TUPLE_ELEM(0, data)
@@ -378,6 +493,32 @@ void error_recovering_primitives_on_device(
       const Kokkos::DefaultExecutionSpace& exec,                            \
       gsl::not_null<BatchedVariables<hydro::grmhd_tags<DataVector>>*>       \
           primitives,                                                       \
+      const typename ::Tags::BatchView<Tags::TildeD>::type& tilde_d,        \
+      const typename ::Tags::BatchView<Tags::TildeYe>::type& tilde_ye,      \
+      const typename ::Tags::BatchView<Tags::TildeTau>::type& tilde_tau,    \
+      const typename ::Tags::BatchView<Tags::TildeS<>>::type& tilde_s,      \
+      const typename ::Tags::BatchView<Tags::TildeB<>>::type& tilde_b,      \
+      const typename ::Tags::BatchView<Tags::TildePhi>::type& tilde_phi,    \
+      const typename ::Tags::BatchView<                                     \
+          gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,    \
+      const typename ::Tags::BatchView<                                     \
+          gr::Tags::InverseSpatialMetric<DataVector, 3>>::type&             \
+          inv_spatial_metric,                                               \
+      const typename ::Tags::BatchView<                                     \
+          gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&                \
+          sqrt_det_spatial_metric,                                          \
+      const EquationsOfState::EquationOfState<true, 3>& equation_of_state,  \
+      const PrimitiveFromConservativeOptions&                               \
+          primitive_from_conservative_options,                              \
+      Kokkos::View<bool*>* per_element_scratch);                            \
+  template void                                                             \
+  primitive_from_conservative_on_device<RECOVERY(data), PHYSICALITY(data)>( \
+      const Kokkos::DefaultExecutionSpace& exec,                            \
+      gsl::not_null<BatchedVariables<hydro::grmhd_tags<DataVector>>*>       \
+          primitives,                                                       \
+      gsl::not_null<                                                        \
+          DeferredPointwiseStatus<primitive_recovery_snapshot_tags>*>       \
+          status,                                                           \
       const typename ::Tags::BatchView<Tags::TildeD>::type& tilde_d,        \
       const typename ::Tags::BatchView<Tags::TildeYe>::type& tilde_ye,      \
       const typename ::Tags::BatchView<Tags::TildeTau>::type& tilde_tau,    \

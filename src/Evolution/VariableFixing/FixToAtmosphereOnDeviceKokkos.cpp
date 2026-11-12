@@ -93,18 +93,21 @@ struct FixToAtmosphereAtGridPoint {
     return {false, root_find_failed};
   }
 };
-}  // namespace
 
-PointwiseStatusSummary fix_to_atmosphere_on_device(
+// Fixes with a `PointwiseStatusSummary` result if `status` is `nullptr`, and
+// else records the status in `*status`
+template <typename StatusPointer>
+PointwiseStatusSummary fix_to_atmosphere_impl(
     const Kokkos::DefaultExecutionSpace& exec,
     const gsl::not_null<BatchedVariables<hydro::grmhd_tags<DataVector>>*>
         primitives,
+    const StatusPointer status,
     const typename ::Tags::BatchView<
         gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const FixToAtmosphere<3>::DeviceView& fix_to_atmosphere) {
   using return_tags = typename FixToAtmosphere<3>::return_tags;
-  PointwiseStatusSummary status{};
+  PointwiseStatusSummary result{};
   EquationsOfState::visit_device_view(
       equation_of_state, [&](const auto& device_view) {
         using Function =
@@ -125,11 +128,39 @@ PointwiseStatusSummary fix_to_atmosphere_on_device(
                   *primitives),
               spatial_metric, device_view, fix_to_atmosphere);
         }(return_tags{});
-        status = apply_pointwise_on_device<Function>(
-            exec, primitives, return_tags{}, typename Function::argument_tags{},
-            arguments);
+        result = ApplyPointwiseOnDevice_detail::apply_with_status<Function>(
+            exec, primitives, status, return_tags{},
+            typename Function::argument_tags{}, arguments);
       });
-  return status;
+  return result;
+}
+}  // namespace
+
+PointwiseStatusSummary fix_to_atmosphere_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const gsl::not_null<BatchedVariables<hydro::grmhd_tags<DataVector>>*>
+        primitives,
+    const typename ::Tags::BatchView<
+        gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const FixToAtmosphere<3>::DeviceView& fix_to_atmosphere) {
+  return fix_to_atmosphere_impl(exec, primitives, nullptr, spatial_metric,
+                                equation_of_state, fix_to_atmosphere);
+}
+
+void fix_to_atmosphere_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const gsl::not_null<BatchedVariables<hydro::grmhd_tags<DataVector>>*>
+        primitives,
+    const gsl::not_null<
+        DeferredPointwiseStatus<fix_to_atmosphere_snapshot_tags>*>
+        status,
+    const typename ::Tags::BatchView<
+        gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const FixToAtmosphere<3>::DeviceView& fix_to_atmosphere) {
+  fix_to_atmosphere_impl(exec, primitives, status.get(), spatial_metric,
+                         equation_of_state, fix_to_atmosphere);
 }
 
 }  // namespace VariableFixing

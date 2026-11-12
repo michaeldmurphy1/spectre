@@ -673,13 +673,16 @@ Kokkos::View<const bool*> use_hydro_speeds_on_device(
 }
 
 // Applies `Function` to the `faces`, with the arguments that aren't face
-// variables given by `special_argument`
+// variables given by `special_argument`. If `status` isn't `nullptr`, the
+// `PointwiseStatus` of `Function` is recorded in that
+// `DeferredPointwiseStatus` instead of being returned.
 template <typename Function, typename ResultTags, typename FaceTags,
-          typename SpecialArgument>
+          typename SpecialArgument, typename StatusPointer = std::nullptr_t>
 auto apply_to_faces(const Kokkos::DefaultExecutionSpace& exec,
                     const gsl::not_null<BatchedVariables<ResultTags>*> results,
                     const BatchedVariables<FaceTags>& faces,
-                    const SpecialArgument& special_argument) {
+                    const SpecialArgument& special_argument,
+                    const StatusPointer status = nullptr) {
   // The face variables are returned by reference and the other arguments,
   // which are cheap to copy, by value
   const auto argument =
@@ -691,13 +694,21 @@ auto apply_to_faces(const Kokkos::DefaultExecutionSpace& exec,
       return special_argument(tag);
     }
   };
-  return apply_pointwise_on_device<Function>(
-      exec, results, typename Function::return_tags{},
-      typename Function::argument_tags{},
+  const auto args =
       [&]<typename... ArgumentTags>(tmpl::list<ArgumentTags...> /*meta*/) {
         return make_device_arguments<ArgumentTags...>(
             exec, argument(tmpl::type_<ArgumentTags>{})...);
-      }(typename Function::argument_tags{}));
+      }(typename Function::argument_tags{});
+  if constexpr (std::is_null_pointer_v<StatusPointer>) {
+    (void)status;
+    return apply_pointwise_on_device<Function>(
+        exec, results, typename Function::return_tags{},
+        typename Function::argument_tags{}, args);
+  } else {
+    apply_pointwise_on_device<Function>(
+        exec, results, make_not_null(status), typename Function::return_tags{},
+        typename Function::argument_tags{}, args);
+  }
 }
 }  // namespace
 
@@ -826,10 +837,15 @@ void fluxes_and_package_data_on_device(
   }
 }
 
-PointwiseStatusSummary package_data_from_reconstruction_on_device(
+namespace {
+// With a `PointwiseStatusSummary` result if `status` is `nullptr`, and else
+// recording the status in `*status`
+template <typename StatusPointer>
+PointwiseStatusSummary package_data_from_reconstruction_impl(
     const Kokkos::DefaultExecutionSpace& exec,
     const gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
         packaged_data,
+    const StatusPointer deferred_status,
     const BatchedVariables<fd::reconstruction_face_tags>& faces,
     const FaceCovectorBatch& conormal, const double sign,
     const FaceVectorBatch* const mesh_velocity,
@@ -860,9 +876,15 @@ PointwiseStatusSummary package_data_from_reconstruction_on_device(
               return device_view;
             }
           };
-          status = apply_to_faces<RusanovPackageDataFromReconstruction<
-              DeviceView, FixAtmosphere, HasMeshVelocity>>(
-              exec, packaged_data, faces, special_argument);
+          if constexpr (std::is_null_pointer_v<StatusPointer>) {
+            status = apply_to_faces<RusanovPackageDataFromReconstruction<
+                DeviceView, FixAtmosphere, HasMeshVelocity>>(
+                exec, packaged_data, faces, special_argument);
+          } else {
+            apply_to_faces<RusanovPackageDataFromReconstruction<
+                DeviceView, FixAtmosphere, HasMeshVelocity>>(
+                exec, packaged_data, faces, special_argument, deferred_status);
+          }
         };
         const bool fix_atmosphere = fix_to_atmosphere != nullptr;
         const bool has_mesh_velocity = mesh_velocity != nullptr;
@@ -877,6 +899,41 @@ PointwiseStatusSummary package_data_from_reconstruction_on_device(
         }
       });
   return status;
+}
+
+}  // namespace
+
+PointwiseStatusSummary package_data_from_reconstruction_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
+        packaged_data,
+    const BatchedVariables<fd::reconstruction_face_tags>& faces,
+    const FaceCovectorBatch& conormal, const double sign,
+    const FaceVectorBatch* const mesh_velocity,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* const
+        fix_to_atmosphere) {
+  return package_data_from_reconstruction_impl(
+      exec, packaged_data, nullptr, faces, conormal, sign, mesh_velocity,
+      equation_of_state, fix_to_atmosphere);
+}
+
+void package_data_from_reconstruction_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
+        packaged_data,
+    const gsl::not_null<
+        DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>
+        status,
+    const BatchedVariables<fd::reconstruction_face_tags>& faces,
+    const FaceCovectorBatch& conormal, const double sign,
+    const FaceVectorBatch* const mesh_velocity,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* const
+        fix_to_atmosphere) {
+  package_data_from_reconstruction_impl(exec, packaged_data, status.get(),
+                                        faces, conormal, sign, mesh_velocity,
+                                        equation_of_state, fix_to_atmosphere);
 }
 
 template <typename Correction>

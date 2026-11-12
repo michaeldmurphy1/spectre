@@ -165,6 +165,13 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
   dt_variables_ = BatchedVariables<subcell::dt_tags_on_device>{
       exec, number_of_cells, number_of_elements};
   stepper_errors_.resize(number_of_elements);
+  face_status_ = decltype(face_status_){exec};
+  fix_conservatives_status_ = decltype(fix_conservatives_status_){exec};
+  recovery_status_ = decltype(recovery_status_){exec};
+  atmosphere_status_ = decltype(atmosphere_status_){exec};
+  // No step taken yet, so `check_last_step()` finds no failures
+  reset_statuses(exec);
+  copy_statuses_to_host(exec);
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>
@@ -264,17 +271,23 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::prepare_send(
   subcell::primitive_ghost_variables_on_device(
       exec, make_not_null(&ghost_variables_), primitives);
   patch_elements_.fill_ghost_zones(exec, flat(ghost_variables_));
+  if (patch_elements_.has_external_faces()) {
+    patch_elements_.enqueue_boundary_data(exec, flat(ghost_variables_));
+    subcell::enqueue_rdmp_tci_data_on_device(
+        exec, get<::Tags::BatchView<Tags::TildeD>>(evolved_variables),
+        get<::Tags::BatchView<Tags::TildeYe>>(evolved_variables),
+        get<::Tags::BatchView<Tags::TildeTau>>(evolved_variables),
+        get<::Tags::BatchView<Tags::TildeB<>>>(evolved_variables),
+        make_not_null(&rdmp_tci_data_buffers_));
+  }
+  // The only wait for the device in a substep: the failures of the last
+  // substep are reported before its state is sent
+  check_last_step(exec);
   if (not patch_elements_.has_external_faces()) {
     return {};
   }
   return patch_elements_.boundary_data_to_send(
-      exec, flat(ghost_variables_),
-      subcell::rdmp_tci_data_on_device(
-          exec, get<::Tags::BatchView<Tags::TildeD>>(evolved_variables),
-          get<::Tags::BatchView<Tags::TildeYe>>(evolved_variables),
-          get<::Tags::BatchView<Tags::TildeTau>>(evolved_variables),
-          get<::Tags::BatchView<Tags::TildeB<>>>(evolved_variables),
-          &rdmp_tci_data_buffers_),
+      subcell::rdmp_tci_data_from_buffers(rdmp_tci_data_buffers_),
       next_time_step_id, tci_status_sent, integration_order);
 }
 
@@ -307,15 +320,18 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::take_step(
     const domain::FunctionsOfTimeMap& functions_of_time) {
   patch_elements_.update_geometry(exec, time_step_id.substep_time(),
                                   functions_of_time);
+  // The failures of this substep are recorded on the device and reported by
+  // `check_last_step()`, so nothing here waits for the device
+  reset_statuses(exec);
 
   // Time derivative
   std::optional<Kokkos::Profiling::ScopedRegion> region{};
   region.emplace("ValenciaDivClean::fd_patch::Patch::time_derivative");
-  const auto status = std::visit(
+  std::visit(
       [&]<typename Correction>(
           subcell::TimeDerivativeOnDevice<Correction>& time_derivative) {
-        return time_derivative.apply(
-            exec, make_not_null(&dt_variables_),
+        time_derivative.apply(
+            exec, make_not_null(&dt_variables_), make_not_null(&face_status_),
             patch_elements_.padded_ghost_variables(), *evolved_variables,
             *primitives, *cell_spacetime_variables,
             patch_elements_.face_geometry(), patch_elements_.cell_geometry(),
@@ -326,21 +342,6 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::take_step(
             patch_elements_.received_mortar_data());
       },
       time_derivative_);
-  for (size_t side = 0; side < 2; ++side) {
-    if (gsl::at(status, side).number_of_failures > 0) {
-      std::visit(
-          [&](const auto& time_derivative) {
-            VariableFixing::error_fixing_to_atmosphere_on_device(
-                exec, gsl::at(status, side),
-                side == 0 ? time_derivative.lower_faces()
-                          : time_derivative.upper_faces(),
-                "a face of " + patch_elements_.element_description(
-                                   gsl::at(status, side).first_failed_element %
-                                   patch_elements_.number_of_elements()));
-          },
-          time_derivative_);
-    }
-  }
 
   // Time stepping
   region.reset();
@@ -365,20 +366,15 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::take_step(
   const auto& sqrt_det_spatial_metric =
       get<::Tags::BatchView<gr::Tags::SqrtDetSpatialMetric<DataVector>>>(
           *cell_spacetime_variables);
-  const auto fix_status = fix_conservatives_on_device(
-      exec, evolved_variables, spatial_metric, inv_spatial_metric,
-      sqrt_det_spatial_metric, fix_conservatives_, &fix_conservatives_scratch_);
-  if (fix_status.number_of_failures > 0) {
-    error_fixing_conservatives_on_device(
-        exec, fix_status, *evolved_variables, spatial_metric,
-        inv_spatial_metric, sqrt_det_spatial_metric,
-        patch_elements_.element_description(fix_status.first_failed_element));
-  }
+  fix_conservatives_on_device(
+      exec, evolved_variables, make_not_null(&fix_conservatives_status_),
+      spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
+      fix_conservatives_, &fix_conservatives_scratch_);
   region.reset();
   region.emplace("ValenciaDivClean::fd_patch::Patch::primitive_recovery");
-  const auto recovery_status = primitive_from_conservative_on_device<
-      OrderedListOfPrimitiveRecoverySchemes, true>(
-      exec, primitives,
+  primitive_from_conservative_on_device<OrderedListOfPrimitiveRecoverySchemes,
+                                        true>(
+      exec, primitives, make_not_null(&recovery_status_),
       get<::Tags::BatchView<Tags::TildeD>>(*evolved_variables),
       get<::Tags::BatchView<Tags::TildeYe>>(*evolved_variables),
       get<::Tags::BatchView<Tags::TildeTau>>(*evolved_variables),
@@ -388,32 +384,80 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::take_step(
       spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
       *equation_of_state_, primitive_from_conservative_options_,
       &primitive_recovery_scratch_);
-  if (recovery_status.number_of_failures > 0) {
-    error_recovering_primitives_on_device(
-        exec, recovery_status, *primitives,
-        get<::Tags::BatchView<Tags::TildeD>>(*evolved_variables),
-        get<::Tags::BatchView<Tags::TildeTau>>(*evolved_variables),
-        get<::Tags::BatchView<Tags::TildeS<>>>(*evolved_variables),
-        get<::Tags::BatchView<Tags::TildeB<>>>(*evolved_variables),
-        spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
-        patch_elements_.element_description(
-            recovery_status.first_failed_element));
-  }
   region.reset();
   region.emplace("ValenciaDivClean::fd_patch::Patch::fix_to_atmosphere");
-  const auto atmosphere_status = VariableFixing::fix_to_atmosphere_on_device(
-      exec, primitives, spatial_metric, *equation_of_state_,
-      fix_to_atmosphere_);
-  if (atmosphere_status.number_of_failures > 0) {
-    VariableFixing::error_fixing_to_atmosphere_on_device(
-        exec, atmosphere_status, *primitives,
-        patch_elements_.element_description(
-            atmosphere_status.first_failed_element));
-  }
+  VariableFixing::fix_to_atmosphere_on_device(
+      exec, primitives, make_not_null(&atmosphere_status_), spatial_metric,
+      *equation_of_state_, fix_to_atmosphere_);
   region.reset();
   region.emplace("ValenciaDivClean::fd_patch::Patch::compute_conservatives");
   compute_conservatives(exec, evolved_variables, *primitives,
                         *cell_spacetime_variables);
+  copy_statuses_to_host(exec);
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+void Patch<OrderedListOfPrimitiveRecoverySchemes>::check_last_step(
+    const Kokkos::DefaultExecutionSpace& exec) const {
+  exec.fence("ValenciaDivClean::fd_patch::Patch::check_last_step");
+  const auto description = [this](const PointwiseStatusSummary& status) {
+    return patch_elements_.element_description(status.first_failed_element);
+  };
+  // In the order of `take_step()`, so the first failure is reported
+  if (face_status_.failed()) {
+    const auto status = face_status_.summary();
+    const size_t number_of_face_points = std::visit(
+        [](const auto& time_derivative) {
+          return time_derivative.number_of_face_points();
+        },
+        time_derivative_);
+    // The faces of all elements are in one batch, 3 face sets per element
+    VariableFixing::error_fixing_to_atmosphere_on_device(
+        face_status_, 2 * number_of_face_points,
+        "a face of " + patch_elements_.element_description(
+                           status.first_failed_element %
+                           patch_elements_.number_of_elements()));
+  }
+  if (fix_conservatives_status_.failed()) {
+    error_fixing_conservatives_on_device(
+        fix_conservatives_status_, number_of_cells_of_all_elements(),
+        description(fix_conservatives_status_.summary()));
+  }
+  if (recovery_status_.failed()) {
+    error_recovering_primitives_on_device(
+        recovery_status_, description(recovery_status_.summary()));
+  }
+  if (atmosphere_status_.failed()) {
+    VariableFixing::error_fixing_to_atmosphere_on_device(
+        atmosphere_status_, number_of_cells_of_all_elements(),
+        description(atmosphere_status_.summary()));
+  }
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+size_t
+Patch<OrderedListOfPrimitiveRecoverySchemes>::number_of_cells_of_all_elements()
+    const {
+  return patch_elements_.subcell_mesh().number_of_grid_points() *
+         patch_elements_.number_of_elements();
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+void Patch<OrderedListOfPrimitiveRecoverySchemes>::reset_statuses(
+    const Kokkos::DefaultExecutionSpace& exec) const {
+  face_status_.reset(exec);
+  fix_conservatives_status_.reset(exec);
+  recovery_status_.reset(exec);
+  atmosphere_status_.reset(exec);
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+void Patch<OrderedListOfPrimitiveRecoverySchemes>::copy_statuses_to_host(
+    const Kokkos::DefaultExecutionSpace& exec) const {
+  face_status_.copy_to_host(exec);
+  fix_conservatives_status_.copy_to_host(exec);
+  recovery_status_.copy_to_host(exec);
+  atmosphere_status_.copy_to_host(exec);
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>

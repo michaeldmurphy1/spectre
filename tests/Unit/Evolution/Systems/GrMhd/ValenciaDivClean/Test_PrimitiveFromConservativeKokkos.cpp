@@ -11,6 +11,8 @@
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
+#include "DataStructures/Tensor/AtIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
@@ -436,6 +438,49 @@ void test_error_on_failure(
       Catch::Matchers::ContainsSubstring(
           "All primitive inversion schemes failed on the device at 8 grid "
           "points. The first is s = 1 of the element [B0,(L0I0)].") and
+          Catch::Matchers::ContainsSubstring(
+              "previous_lorentz_factor = 5.00000000000000000e+00") and
+          Catch::Matchers::ContainsSubstring(
+              "previous_rest_mass_density = 5.00000000000000000e-01"));
+
+  // With a deferred status, the failures are recorded on the device, with the
+  // variables before the recovery at one of the failed grid points
+  const Kokkos::DefaultExecutionSpace exec{};
+  auto deferred_batch = to_device({cons}, primitives);
+  DeferredPointwiseStatus<
+      grmhd::ValenciaDivClean::primitive_recovery_snapshot_tags>
+      deferred_status{exec};
+  deferred_status.reset(exec);
+  grmhd::ValenciaDivClean::primitive_from_conservative_on_device<
+      tmpl::list<Schemes::NewmanHamlin>, false>(
+      exec, make_not_null(&deferred_batch.primitives),
+      make_not_null(&deferred_status), deferred_batch.view<VTags::TildeD>(),
+      deferred_batch.view<VTags::TildeYe>(),
+      deferred_batch.view<VTags::TildeTau>(),
+      deferred_batch.view<VTags::TildeS<>>(),
+      deferred_batch.view<VTags::TildeB<>>(),
+      deferred_batch.view<VTags::TildePhi>(),
+      deferred_batch.view<gr::Tags::SpatialMetric<DataVector, 3>>(),
+      deferred_batch.view<gr::Tags::InverseSpatialMetric<DataVector, 3>>(),
+      deferred_batch.view<gr::Tags::SqrtDetSpatialMetric<DataVector>>(), eos,
+      options);
+  deferred_status.copy_to_host(exec);
+  exec.fence();
+  REQUIRE(deferred_status.failed());
+  const PointwiseStatusSummary deferred_summary = deferred_status.summary();
+  CHECK(deferred_summary.number_of_failures == status.number_of_failures);
+  // Every fifth grid point is atmosphere, which doesn't fail
+  CHECK(deferred_summary.first_failed_grid_point % 5 != 0);
+  const auto snapshot = deferred_status.snapshot();
+  CHECK(get(get<::Tags::AtIndex<VTags::TildeTau>>(snapshot)) == -10.0);
+  CHECK(get(get<::Tags::AtIndex<hydro::Tags::LorentzFactor<DataVector>>>(
+            snapshot)) == 5.0);
+  CHECK_THROWS_WITH(
+      grmhd::ValenciaDivClean::error_recovering_primitives_on_device(
+          deferred_status, "the element [B0,(L0I0)]"),
+      Catch::Matchers::ContainsSubstring(
+          "All primitive inversion schemes failed on the device at 8 grid "
+          "points. One of them is s = ") and
           Catch::Matchers::ContainsSubstring(
               "previous_lorentz_factor = 5.00000000000000000e+00") and
           Catch::Matchers::ContainsSubstring(

@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/DeviceArgumentsKokkos.hpp"
 #include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/TaggedTuple.hpp"
@@ -143,6 +144,42 @@ struct Functor<Function, tmpl::list<ResultTags...>, tmpl::list<ArgsTags...>> {
   size_t number_of_grid_points;
 };
 
+// Kokkos functor that calls `Function::apply` at every grid point like
+// `Functor`, and records its `PointwiseStatus` in a `DeferredPointwiseStatus`
+template <typename Functor, typename SnapshotTags>
+struct DeferredStatusFunctor;
+
+template <typename Functor, typename... SnapshotTags>
+struct DeferredStatusFunctor<Functor, tmpl::list<SnapshotTags...>> {
+  KOKKOS_FUNCTION void operator()(const size_t k) const {
+    const size_t i = k % functor.number_of_grid_points;
+    const size_t e = k / functor.number_of_grid_points;
+    const PointwiseStatus status = functor.apply_at(i, e);
+    if (status.flag) {
+      Kokkos::atomic_store(&record().any_flag, 1);
+    }
+    if (status.failed) {
+      Kokkos::atomic_inc(&record().number_of_failures);
+      if (Kokkos::atomic_compare_exchange(&record().claimed, 0, 1) == 0) {
+        record().grid_point = i;
+        record().element = e;
+        size_t offset = 0;
+        const auto save = [this, &offset](const auto& tensor) {
+          for (size_t c = 0; c < tensor.size(); ++c) {
+            snapshot(offset + c) = tensor[c];
+          }
+          offset += tensor.size();
+        };
+        (save(device_argument_at_index<SnapshotTags>(functor.args, i, e)), ...);
+      }
+    }
+  }
+
+  Functor functor;
+  Kokkos::View<DeferredPointwiseStatus_detail::Record> record;
+  Kokkos::View<double*> snapshot;
+};
+
 // Launches the `Functor` over the batch `results`
 template <typename Function, typename ExecSpace, typename... ResultTags,
           typename... ArgsTags>
@@ -206,6 +243,37 @@ auto apply_on_batch(
     }
     return summary;
   }
+}
+
+// Launches the `DeferredStatusFunctor` over the batch `results`
+template <typename Function, typename ExecSpace, typename... ResultTags,
+          typename... ArgsTags, typename SnapshotTags>
+void apply_on_batch_with_deferred_status(
+    const ExecSpace& exec,
+    tuples::TaggedTuple<::Tags::BatchView<ResultTags>...> results,
+    const size_t number_of_grid_points, const size_t number_of_elements,
+    tmpl::list<ArgsTags...> /*meta*/, const DeviceArguments<ArgsTags...>& args,
+    const DeferredPointwiseStatus<SnapshotTags>& status) {
+  using FunctorType =
+      Functor<Function, tmpl::list<ResultTags...>, tmpl::list<ArgsTags...>>;
+  static_assert(
+      std::is_same_v<typename FunctorType::return_type, PointwiseStatus>,
+      "Only functions that return a PointwiseStatus can record it "
+      "in a DeferredPointwiseStatus.");
+  static_assert(
+      tmpl::all<SnapshotTags, tmpl::bind<tmpl::list_contains,
+                                         tmpl::pin<tmpl::list<ArgsTags...>>,
+                                         tmpl::_1>>::value,
+      "The snapshot tags must be arguments of the function.");
+  ASSERT(status.is_allocated(), "The DeferredPointwiseStatus isn't allocated.");
+  const DeferredStatusFunctor<FunctorType, SnapshotTags> functor{
+      FunctorType{std::move(results), args, number_of_grid_points},
+      status.record(), status.snapshot_values()};
+  const Kokkos::RangePolicy<ExecSpace, Kokkos::IndexType<size_t>> policy(
+      exec, 0, number_of_grid_points * number_of_elements);
+  static const std::string label =
+      "apply_pointwise_on_device<" + pretty_type::short_name<Function>() + ">";
+  Kokkos::parallel_for(label, policy, functor);
 }
 
 // Enqueue the copy of the device tensor into the (already allocated) host
@@ -288,6 +356,58 @@ auto apply_pointwise_on_device(
       results->number_of_grid_points(), 1, args_tags, args);
 }
 /// @}
+
+/*!
+ * \brief Call the pointwise function `Function::apply`, which returns a
+ * `PointwiseStatus`, at every grid point of a batch on the device, and record
+ * the status in `status` without waiting for the kernel.
+ *
+ * \details Like `apply_pointwise_on_device` with a `BatchedVariables`, but the
+ * failures are added to `status` on the device (see
+ * `DeferredPointwiseStatus`) instead of being reduced into a
+ * `PointwiseStatusSummary` on the host, so the kernel is only enqueued.
+ */
+template <typename Function, typename ExecSpace, typename BatchTags,
+          typename SnapshotTags, typename... ResultTags, typename... ArgsTags>
+  requires Kokkos::is_execution_space_v<ExecSpace>
+void apply_pointwise_on_device(
+    const ExecSpace& exec,
+    const gsl::not_null<BatchedVariables<BatchTags>*> results,
+    const gsl::not_null<DeferredPointwiseStatus<SnapshotTags>*> status,
+    tmpl::list<ResultTags...> /*meta*/, tmpl::list<ArgsTags...> args_tags,
+    const DeviceArguments<ArgsTags...>& args) {
+  ApplyPointwiseOnDevice_detail::apply_on_batch_with_deferred_status<Function>(
+      exec,
+      tuples::TaggedTuple<::Tags::BatchView<ResultTags>...>{
+          get<::Tags::BatchView<ResultTags>>(*results)...},
+      results->number_of_grid_points(), results->number_of_elements(),
+      args_tags, args, *status);
+}
+
+namespace ApplyPointwiseOnDevice_detail {
+// Calls `apply_pointwise_on_device` with a `PointwiseStatusSummary` result if
+// `status` is `nullptr`, and else records the status in `*status` (a
+// `DeferredPointwiseStatus`) and returns no failures. Lets functions share
+// their implementation between both kinds of status.
+template <typename Function, typename ExecSpace, typename Results,
+          typename StatusPointer, typename ResultTags, typename ArgsTags,
+          typename Args>
+PointwiseStatusSummary apply_with_status(const ExecSpace& exec,
+                                         const Results results,
+                                         const StatusPointer status,
+                                         ResultTags result_tags,
+                                         ArgsTags args_tags, const Args& args) {
+  if constexpr (std::is_null_pointer_v<StatusPointer>) {
+    (void)status;
+    return apply_pointwise_on_device<Function>(exec, results, result_tags,
+                                               args_tags, args);
+  } else {
+    apply_pointwise_on_device<Function>(exec, results, make_not_null(status),
+                                        result_tags, args_tags, args);
+    return {};
+  }
+}
+}  // namespace ApplyPointwiseOnDevice_detail
 
 /// @{
 /*!

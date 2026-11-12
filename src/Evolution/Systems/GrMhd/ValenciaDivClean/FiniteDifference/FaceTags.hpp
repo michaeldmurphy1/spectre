@@ -114,4 +114,16 @@ using reconstruction_face_tags = tmpl::append<
                gr::Tags::SpatialMetric<DataVector, 3>,
                gr::Tags::SqrtDetSpatialMetric<DataVector>,
                gr::Tags::InverseSpatialMetric<DataVector, 3>>>;
+
+/*!
+ * \brief The variables that a `DeferredPointwiseStatus` of the fix to the
+ * atmosphere on the faces saves (see `compute_conservatives_on_device` and
+ * `BoundaryCorrections::package_data_from_reconstruction_on_device`): the
+ * reconstructed variables that the face variables are computed from.
+ */
+using face_atmosphere_snapshot_tags =
+    tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
+               hydro::Tags::Temperature<DataVector>,
+               hydro::Tags::ElectronFraction<DataVector>,
+               hydro::Tags::LorentzFactorTimesSpatialVelocity<DataVector, 3>>;
 }  // namespace grmhd::ValenciaDivClean::fd

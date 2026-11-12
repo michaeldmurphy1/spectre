@@ -13,18 +13,22 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/DgSubcell/RdmpTciData.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
+#include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 #include "Utilities/Kokkos/ScratchViewKokkos.hpp"
 
 namespace grmhd::ValenciaDivClean::subcell {
-std::vector<evolution::dg::subcell::RdmpTciData> rdmp_tci_data_on_device(
+namespace {
+constexpr size_t number_of_rdmp_variables = 4;
+}  // namespace
+
+void enqueue_rdmp_tci_data_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
     const ::Tags::BatchView<Tags::TildeD>::type& tilde_d,
     const ::Tags::BatchView<Tags::TildeYe>::type& tilde_ye,
     const ::Tags::BatchView<Tags::TildeTau>::type& tilde_tau,
     const ::Tags::BatchView<Tags::TildeB<Frame::Inertial>>::type& tilde_b,
-    RdmpTciDataBuffers* const buffers) {
-  constexpr size_t number_of_rdmp_variables = 4;
+    const gsl::not_null<RdmpTciDataBuffers*> buffers) {
   const auto& d = get(tilde_d);
   const auto& ye = get(tilde_ye);
   const auto& tau = get(tilde_tau);
@@ -34,9 +38,9 @@ std::vector<evolution::dg::subcell::RdmpTciData> rdmp_tci_data_on_device(
   const auto number_of_points = static_cast<int>(d.extent(0));
   const size_t number_of_elements = d.extent(1);
   // The maxima and then the minima of each element
-  const Kokkos::View<double**> result = scratch_view(
-      exec, buffers == nullptr ? nullptr : &buffers->device, "RDMP data",
-      number_of_elements, 2 * number_of_rdmp_variables);
+  const Kokkos::View<double**> result =
+      scratch_view(exec, &buffers->device, "RDMP data", number_of_elements,
+                   2 * number_of_rdmp_variables);
 
   using TeamPolicy = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>;
   Kokkos::parallel_for(
@@ -71,17 +75,20 @@ std::vector<evolution::dg::subcell::RdmpTciData> rdmp_tci_data_on_device(
         });
       });
 
-  if (buffers != nullptr and (not buffers->host.is_allocated() or
-                              buffers->host.extent(0) != number_of_elements)) {
-    buffers->host =
-        Kokkos::create_mirror_view(Kokkos::WithoutInitializing, result);
+  if (not buffers->host.is_allocated() or
+      buffers->host.extent(0) != number_of_elements) {
+    buffers->host = Kokkos::View<double**, Kokkos::SharedHostPinnedSpace>{
+        Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                           "RDMP data on the host"),
+        number_of_elements, 2 * number_of_rdmp_variables};
   }
-  const auto host_result =
-      buffers != nullptr
-          ? buffers->host
-          : Kokkos::create_mirror_view(Kokkos::WithoutInitializing, result);
-  Kokkos::deep_copy(exec, host_result, result);
-  exec.fence("grmhd::ValenciaDivClean::subcell::rdmp_tci_data_on_device");
+  Kokkos::deep_copy(exec, buffers->host, result);
+}
+
+std::vector<evolution::dg::subcell::RdmpTciData> rdmp_tci_data_from_buffers(
+    const RdmpTciDataBuffers& buffers) {
+  const auto& host_result = buffers.host;
+  const size_t number_of_elements = host_result.extent(0);
   std::vector<evolution::dg::subcell::RdmpTciData> rdmp_tci_data(
       number_of_elements);
   for (size_t e = 0; e < number_of_elements; ++e) {
@@ -95,6 +102,22 @@ std::vector<evolution::dg::subcell::RdmpTciData> rdmp_tci_data_on_device(
     }
   }
   return rdmp_tci_data;
+}
+
+std::vector<evolution::dg::subcell::RdmpTciData> rdmp_tci_data_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const ::Tags::BatchView<Tags::TildeD>::type& tilde_d,
+    const ::Tags::BatchView<Tags::TildeYe>::type& tilde_ye,
+    const ::Tags::BatchView<Tags::TildeTau>::type& tilde_tau,
+    const ::Tags::BatchView<Tags::TildeB<Frame::Inertial>>::type& tilde_b,
+    RdmpTciDataBuffers* const buffers) {
+  RdmpTciDataBuffers local_buffers{};
+  RdmpTciDataBuffers* const used_buffers =
+      buffers == nullptr ? &local_buffers : buffers;
+  enqueue_rdmp_tci_data_on_device(exec, tilde_d, tilde_ye, tilde_tau, tilde_b,
+                                  used_buffers);
+  exec.fence("grmhd::ValenciaDivClean::subcell::rdmp_tci_data_on_device");
+  return rdmp_tci_data_from_buffers(*used_buffers);
 }
 }  // namespace grmhd::ValenciaDivClean::subcell
 #endif  // SPECTRE_KOKKOS

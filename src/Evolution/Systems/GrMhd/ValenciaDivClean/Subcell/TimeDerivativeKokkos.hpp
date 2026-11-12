@@ -10,6 +10,7 @@
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/Index.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Evolution/DgSubcell/FdPatch/GeometryKokkos.hpp"
@@ -172,14 +173,15 @@ class TimeDerivativeOnDevice {
    * \param received_mortar_data the data received from DG neighbors, laid
    * out as described by `packaged_data_from_dg`.
    *
-   * Returns the status of the fix to the atmosphere on the lower and upper
-   * sides of the faces (see `fd::compute_conservatives_on_device`), which
-   * waits for the face computations to complete. The rest of the work is only
-   * enqueued on `exec`.
+   * The failures of the fix to the atmosphere on both sides of the faces
+   * (see `fd::compute_conservatives_on_device`) are added to `face_status`.
+   * All work is only enqueued on `exec`.
    */
-  std::array<PointwiseStatusSummary, 2> apply(
+  void apply(
       const Kokkos::DefaultExecutionSpace& exec,
       gsl::not_null<BatchedVariables<dt_tags_on_device>*> dt_vars,
+      gsl::not_null<DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>
+          face_status,
       const ::fd::device::VolumeView& padded_ghost_variables,
       const BatchedVariables<evolved_tags_on_device>& evolved_variables,
       const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,
@@ -198,13 +200,10 @@ class TimeDerivativeOnDevice {
           packaged_data_from_dg,
       const Kokkos::View<const double*>& received_mortar_data);
 
-  /// The variables on the lower side of the faces, e.g. to report a failure
-  const BatchedVariables<face_tags>& lower_faces() const {
-    return lower_faces_;
-  }
-  /// The variables on the upper side of the faces
-  const BatchedVariables<face_tags>& upper_faces() const {
-    return upper_faces_;
+  /// The number of grid points on one side of the faces of all elements
+  size_t number_of_face_points() const {
+    return lower_faces_.number_of_grid_points() *
+           lower_faces_.number_of_elements();
   }
 
  private:

@@ -331,6 +331,34 @@ struct TakeStep {
   }
 };
 
+/*!
+ * \brief At slab boundaries, report failures of the last substep of the patch
+ * (see `Patch::check_last_step`).
+ *
+ * \details The patch checks each substep when it sends the boundary data of the
+ * next one, so the last substep before a phase change, e.g. a checkpoint or
+ * the end of the evolution, would go unchecked. Put this before
+ * `PhaseControl::Actions::ExecutePhaseChange`. It waits for the device once
+ * per slab.
+ */
+template <typename PatchTag>
+struct CheckLastStepAtSlabBoundaries {
+  template <typename DbTagsList, typename... InboxTags, typename Metavariables,
+            typename ActionList, typename ParallelComponent>
+  static Parallel::iterable_action_return_t apply(
+      db::DataBox<DbTagsList>& box,
+      const tuples::TaggedTuple<InboxTags...>& /*inboxes*/,
+      const Parallel::GlobalCache<Metavariables>& /*cache*/,
+      const int /*array_index*/, ActionList /*meta*/,
+      const ParallelComponent* const /*meta*/) {
+    if (db::get<::Tags::TimeStepId>(box).is_at_slab_boundary()) {
+      db::get<PatchTag>(box).check_last_step(
+          Parallel::device_execution_space());
+    }
+    return {Parallel::AlgorithmExecution::Continue, std::nullopt};
+  }
+};
+
 namespace detail {
 // The events that the elements of a patch run as the elements of the
 // `DgElementArray` do, on their DataBox (see `make_element_box`): events that
@@ -409,6 +437,8 @@ void for_each_element_box(const db::DataBox<DbTagsList>& box,
                           const bool copy_variables, const Function& function) {
   constexpr size_t dim = Metavariables::volume_dim;
   const auto& patch = db::get<PatchTag>(box);
+  // Report failures of the last substep before anything sees its state
+  patch.check_last_step(Parallel::device_execution_space());
   const PatchElements& patch_elements = patch.patch_elements();
   const auto& domain = db::get<::domain::Tags::Domain<dim>>(box);
   using ElementVariables =

@@ -7,6 +7,7 @@
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hll.hpp"
@@ -142,17 +143,20 @@ void fluxes_and_package_data_on_device(
  * `faces` hold the reconstructed and spacetime variables
  * (`fd::reconstruction_face_tags`) and aren't modified.
  *
- * As `fd::compute_conservatives_on_device`, this returns the number of grid
- * points where the root find of the fix to the atmosphere failed and the first
- * one (see `PointwiseStatusSummary`); the packaged data there isn't computed.
- * Report a failure with `VariableFixing::error_fixing_to_atmosphere_on_device`
- * on the `faces`, which hold the reconstructed variables there. Since the
- * failures are needed on the host, this waits for the kernel on `exec`.
+ * As `fd::compute_conservatives_on_device`, the first overload returns the
+ * number of grid points where the root find of the fix to the atmosphere
+ * failed and the first one (see `PointwiseStatusSummary`), so it waits for the
+ * kernel on `exec`, and the second records them in `status` (see
+ * `DeferredPointwiseStatus`) and only enqueues the kernel. The packaged data
+ * at failed grid points isn't computed. Report a failure with
+ * `VariableFixing::error_fixing_to_atmosphere_on_device`, on the `faces`
+ * (which hold the reconstructed variables there) or the `status`.
  *
  * Only `Rusanov` is supported: `Hll` decides for each face set from the fixed
  * variables on all its faces whether to use the hydro characteristic speeds,
  * so it needs those variables first (see `fluxes_and_package_data_on_device`).
  */
+/// @{
 PointwiseStatusSummary package_data_from_reconstruction_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
     gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
@@ -162,6 +166,19 @@ PointwiseStatusSummary package_data_from_reconstruction_on_device(
     const FaceVectorBatch* mesh_velocity,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere);
+
+void package_data_from_reconstruction_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
+        packaged_data,
+    gsl::not_null<DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>
+        status,
+    const BatchedVariables<fd::reconstruction_face_tags>& faces,
+    const FaceCovectorBatch& conormal, double sign,
+    const FaceVectorBatch* mesh_velocity,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere);
+/// @}
 
 /*!
  * \brief Computes the boundary terms of the boundary correction `Correction`

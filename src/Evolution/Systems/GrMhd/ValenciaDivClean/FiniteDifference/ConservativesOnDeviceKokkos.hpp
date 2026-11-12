@@ -6,6 +6,7 @@
 #include <cstddef>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/PointwiseStatus.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
@@ -41,21 +42,33 @@ namespace grmhd::ValenciaDivClean::fd {
  *
  * A failed root find of the kappa limiting of the fix to the atmosphere is
  * never an error. The variables at such grid points are left as they were
- * before the fix, and this returns the number of failed grid points and the
- * first one (see `PointwiseStatusSummary`). Report a failure with
- * `VariableFixing::error_fixing_to_atmosphere_on_device`.
+ * before the fix. The first overload returns the number of failed grid points
+ * and the first one (see `PointwiseStatusSummary`), so it waits for the kernel
+ * on `exec` to complete. The second records them in `status` (see
+ * `DeferredPointwiseStatus`) and only enqueues the kernel. Report a failure
+ * with `VariableFixing::error_fixing_to_atmosphere_on_device`.
  *
  * The `faces` are updated in place. Nothing is copied between the host and
- * the device, but since the failures are needed on the host, this function
- * waits for the kernel on `exec` to complete.
+ * the device.
  *
  * `FaceTags` is `face_tags` or `device_face_tags`.
  */
+/// @{
 template <typename FaceTags>
 PointwiseStatusSummary compute_conservatives_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
     gsl::not_null<BatchedVariables<FaceTags>*> faces,
     const EquationsOfState::EquationOfState<true, 3>& eos,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere);
+
+template <typename FaceTags>
+void compute_conservatives_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    gsl::not_null<BatchedVariables<FaceTags>*> faces,
+    gsl::not_null<DeferredPointwiseStatus<face_atmosphere_snapshot_tags>*>
+        status,
+    const EquationsOfState::EquationOfState<true, 3>& eos,
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere);
+/// @}
 }  // namespace grmhd::ValenciaDivClean::fd
 #endif  // SPECTRE_KOKKOS

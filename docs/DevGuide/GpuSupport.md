@@ -383,6 +383,15 @@ different design.
   `Parallel::device_execution_space`). Patches enqueue their kernels on it and
   fence it only before host code reads device data, e.g. before sending
   boundary data.
+- A substep never waits for the device to find out whether it failed, e.g. in
+  the primitive recovery. Pointwise functions that can fail record their
+  failures in a `DeferredPointwiseStatus` on the device, with a snapshot of
+  their arguments at one failed grid point. The patch reports them in
+  `check_last_step()` once the host waits for the device anyway: when it sends
+  the boundary data of the next substep, before observations, and at slab
+  boundaries (`CheckLastStepAtSlabBoundaries`), so that nothing reads the state
+  of a failed substep. Status that the algorithm branches on can't be deferred
+  like this.
 
 ## Current limitations
 

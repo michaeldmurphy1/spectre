@@ -56,7 +56,8 @@ namespace evolution::dg::subcell::fd_patch {
  * of their system. In each substep they
  * 1. compute the ghost variables of all elements (a `BatchedVariables`, see
  *    `GhostZones`) and pass them to `fill_ghost_zones()`, and, if
- *    `has_external_faces()`, to `boundary_data_to_send()`,
+ *    `has_external_faces()`, to `enqueue_boundary_data()`, and after
+ *    fencing get the messages from `boundary_data_to_send()`,
  * 2. pass the received messages to `receive()`, which fills the remaining
  *    ghost zones of `padded_ghost_variables()` and the
  *    `received_mortar_data()`, laid out as described by
@@ -152,15 +153,21 @@ class PatchElements {
     return not ghost_zones_.external_faces().empty();
   }
 
-  /// The boundary data for the neighbors outside the patch from the unpadded
-  /// `ghost_variables` and the RDMP data of the elements, valid until
-  /// `next_time_step_id` (see `pack_boundary_data`). Waits for `exec`.
-  std::vector<OutgoingBoundaryData<3>> boundary_data_to_send(
+  /// Enqueue computing the boundary data for the neighbors outside the patch
+  /// from the unpadded `ghost_variables` and copying it to the host. Read it
+  /// with `boundary_data_to_send()` after fencing `exec`.
+  void enqueue_boundary_data(
       const Kokkos::DefaultExecutionSpace& exec,
-      const Kokkos::View<const double*>& ghost_variables,
+      const Kokkos::View<const double*>& ghost_variables);
+
+  /// The boundary data for the neighbors outside the patch, from the last
+  /// `enqueue_boundary_data()` and the RDMP data of the elements, valid until
+  /// `next_time_step_id` (see `pack_boundary_data`). The execution space
+  /// instance of `enqueue_boundary_data()` must have been fenced since.
+  std::vector<OutgoingBoundaryData<3>> boundary_data_to_send(
       const std::vector<RdmpTciData>& rdmp_tci_data,
       const TimeStepId& next_time_step_id, int tci_status,
-      size_t integration_order);
+      size_t integration_order) const;
 
   /// The RDMP data that the elements send to their DG neighbors during
   /// initialization (see `initial_rdmp_data_for_dg_neighbors`)
@@ -177,7 +184,10 @@ class PatchElements {
   /// Fill the ghost zones from the received boundary data, whose ghost data
   /// ends with `number_of_rdmp_values` RDMP values, and keep the data from DG
   /// neighbors in `received_mortar_data()`. Must be called after
-  /// `fill_ghost_zones()` in each substep.
+  /// `fill_ghost_zones()` in each substep. The copies to the device are only
+  /// enqueued; their host buffers are reused in the next `receive()`, so the
+  /// boundary data of the next substep must be sent (which waits for the
+  /// device) before then.
   void receive(const Kokkos::DefaultExecutionSpace& exec,
                const Tags::BoundaryDataInbox<3>::messages_type& messages,
                size_t number_of_rdmp_values);
@@ -218,10 +228,12 @@ class PatchElements {
   Kokkos::View<double*> received_ghost_data_{};
   Kokkos::View<double*> received_mortar_data_{};
   Kokkos::View<double*> send_data_{};
-  // Host copies of the buffers, kept so they aren't allocated every substep
-  Kokkos::View<double*>::host_mirror_type host_received_ghost_data_{};
-  Kokkos::View<double*>::host_mirror_type host_received_mortar_data_{};
-  Kokkos::View<double*>::host_mirror_type host_send_data_{};
+  // Host copies of the buffers, kept so they aren't allocated every substep,
+  // and pinned so that copies don't wait for the device
+  using HostBuffer = Kokkos::View<double*, Kokkos::SharedHostPinnedSpace>;
+  HostBuffer host_received_ghost_data_{};
+  HostBuffer host_received_mortar_data_{};
+  HostBuffer host_send_data_{};
 };
 
 /*!

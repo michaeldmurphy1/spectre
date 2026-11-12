@@ -3,8 +3,10 @@
 
 #include "Evolution/Patches/PatchTable.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <numeric>
 #include <optional>
 #include <pup.h>
 #include <pup_stl.h>
@@ -17,10 +19,13 @@
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/InitialElementIds.hpp"
+#include "Domain/Structure/ZCurve.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
+#include "Utilities/Algorithm.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
+#include "Utilities/Literals.hpp"
 #include "Utilities/Serialization/PupStlCpp11.hpp"
 
 namespace evolution::patches {
@@ -42,9 +47,13 @@ template <size_t Dim>
 PatchTable<Dim>::PatchTable(
     const std::vector<Block<Dim>>& blocks,
     const std::vector<std::array<size_t, Dim>>& initial_refinement_levels,
-    const PatchMesh& patch_mesh) {
+    const PatchMesh& patch_mesh,
+    const std::optional<size_t>& max_elements_per_patch) {
+  if (max_elements_per_patch.has_value() and *max_elements_per_patch == 0) {
+    ERROR("The maximum number of elements per patch must be positive.");
+  }
   for (const auto& block : blocks) {
-    std::vector<ElementId<Dim>> patch_element_ids{};
+    std::vector<ElementId<Dim>> block_patch_element_ids{};
     std::optional<Mesh<Dim>> patch_dg_mesh{};
     for (const auto& element_id : initial_element_ids(
              block.id(), initial_refinement_levels[block.id()])) {
@@ -60,20 +69,54 @@ PatchTable<Dim>::PatchTable(
       } else if (*dg_mesh != *patch_dg_mesh) {
         ERROR("All elements of a patch must have the same DG mesh, but element "
               << element_id << " has " << *dg_mesh << " while element "
-              << patch_element_ids.front() << " has " << *patch_dg_mesh);
+              << block_patch_element_ids.front() << " has " << *patch_dg_mesh);
       }
-      patch_element_ids.push_back(element_id);
+      block_patch_element_ids.push_back(element_id);
     }
-    if (patch_element_ids.empty()) {
+    if (block_patch_element_ids.empty()) {
       continue;
     }
-    const size_t patch = block_ids_.size();
-    for (size_t slot = 0; slot < patch_element_ids.size(); ++slot) {
-      locations_.emplace(patch_element_ids[slot], Location{patch, slot});
+    const size_t number_of_patch_elements = block_patch_element_ids.size();
+    const size_t number_of_block_patches =
+        max_elements_per_patch.has_value()
+            ? (number_of_patch_elements + *max_elements_per_patch - 1) /
+                  *max_elements_per_patch
+            : 1;
+    // Cut the Z-curve of the block's elements into consecutive pieces
+    std::vector<size_t> z_curve_ranks(number_of_patch_elements);
+    {
+      std::vector<size_t> z_curve_order(number_of_patch_elements);
+      std::iota(z_curve_order.begin(), z_curve_order.end(), 0_st);
+      std::vector<size_t> z_curve_indices(number_of_patch_elements);
+      for (size_t i = 0; i < number_of_patch_elements; ++i) {
+        z_curve_indices[i] = domain::z_curve_index(block_patch_element_ids[i]);
+      }
+      std::sort(z_curve_order.begin(), z_curve_order.end(),
+                [&z_curve_indices](const size_t lhs, const size_t rhs) {
+                  return z_curve_indices[lhs] < z_curve_indices[rhs];
+                });
+      for (size_t rank = 0; rank < number_of_patch_elements; ++rank) {
+        z_curve_ranks[z_curve_order[rank]] = rank;
+      }
     }
-    block_ids_.push_back(block.id());
-    element_ids_.push_back(std::move(patch_element_ids));
-    dg_meshes_.push_back(std::move(*patch_dg_mesh));
+    const size_t first_patch = block_ids_.size();
+    block_ids_.resize(first_patch + number_of_block_patches, block.id());
+    element_ids_.resize(first_patch + number_of_block_patches);
+    dg_meshes_.resize(first_patch + number_of_block_patches, *patch_dg_mesh);
+    // Piece `p` of the `k` pieces of the `n` elements holds the ranks
+    // [floor(p * n / k), floor((p + 1) * n / k)), so rank `r` is in piece
+    // ceil((r + 1) * k / n) - 1. Within each piece the elements keep the order
+    // of `initial_element_ids()`.
+    for (size_t i = 0; i < number_of_patch_elements; ++i) {
+      const size_t patch = first_patch +
+                           ((z_curve_ranks[i] + 1) * number_of_block_patches +
+                            number_of_patch_elements - 1) /
+                               number_of_patch_elements -
+                           1;
+      locations_.emplace(block_patch_element_ids[i],
+                         Location{patch, element_ids_[patch].size()});
+      element_ids_[patch].push_back(block_patch_element_ids[i]);
+    }
   }
 }
 
@@ -126,6 +169,26 @@ bool operator==(const PatchTable<Dim>& lhs, const PatchTable<Dim>& rhs) {
 template <size_t Dim>
 bool operator!=(const PatchTable<Dim>& lhs, const PatchTable<Dim>& rhs) {
   return not(lhs == rhs);
+}
+
+std::vector<size_t> patch_procs(
+    const size_t number_of_patches,
+    const std::vector<std::vector<size_t>>& procs_on_nodes) {
+  std::vector<const std::vector<size_t>*> nodes{};
+  for (const auto& procs : procs_on_nodes) {
+    if (not procs.empty()) {
+      nodes.push_back(&procs);
+    }
+  }
+  if (nodes.empty() and number_of_patches > 0) {
+    ERROR("No processor may hold the " << number_of_patches << " patches.");
+  }
+  std::vector<size_t> result(number_of_patches);
+  for (size_t patch = 0; patch < number_of_patches; ++patch) {
+    const auto& procs = *nodes[patch % nodes.size()];
+    result[patch] = procs[(patch / nodes.size()) % procs.size()];
+  }
+  return result;
 }
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)

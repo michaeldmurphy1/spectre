@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <unordered_set>
+#include <vector>
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/TaggedTuple.hpp"
@@ -48,9 +49,10 @@ struct ErrorOnLoadBalancing {
  * \brief The parallel component of the patches: one array member per patch
  * (see `PatchTable`), which steps all the elements of the patch on the device.
  *
- * \details The patches are distributed round-robin over the processors,
- * skipping the `procs_to_ignore`. The `DgElementArray` of the same executable
- * holds only the elements that aren't in patches (see
+ * \details The patches are distributed round-robin over the nodes
+ * (processes, i.e. GPUs), and over the processors of each node, skipping the
+ * `procs_to_ignore` (see `patch_procs()`). The `DgElementArray` of the same
+ * executable holds only the elements that aren't in patches (see
  * `PatchTable::location`).
  *
  * The `Metavariables::patch_table_tag` holds the `PatchTable`. Patches can't
@@ -91,15 +93,24 @@ struct PatchArray {
     const size_t number_of_patches =
         Parallel::get<typename Metavariables::patch_table_tag>(local_cache)
             .number_of_patches();
-    const auto number_of_procs = Parallel::number_of_procs<size_t>(local_cache);
-    size_t which_proc = 0;
-    for (size_t patch = 0; patch < number_of_patches; ++patch) {
-      while (procs_to_ignore.contains(which_proc)) {
-        which_proc = (which_proc + 1) % number_of_procs;
+    const auto number_of_nodes = Parallel::number_of_nodes<size_t>(local_cache);
+    std::vector<std::vector<size_t>> procs_on_nodes(number_of_nodes);
+    for (size_t node = 0; node < number_of_nodes; ++node) {
+      const auto first_proc =
+          Parallel::first_proc_on_node<size_t>(node, local_cache);
+      const auto number_of_procs =
+          Parallel::procs_on_node<size_t>(node, local_cache);
+      for (size_t proc = first_proc; proc < first_proc + number_of_procs;
+           ++proc) {
+        if (not procs_to_ignore.contains(proc)) {
+          procs_on_nodes[node].push_back(proc);
+        }
       }
+    }
+    const auto procs = patch_procs(number_of_patches, procs_on_nodes);
+    for (size_t patch = 0; patch < number_of_patches; ++patch) {
       patch_array(static_cast<int>(patch))
-          .insert(global_cache, initialization_items, which_proc);
-      which_proc = (which_proc + 1) % number_of_procs;
+          .insert(global_cache, initialization_items, procs[patch]);
     }
     patch_array.doneInserting();
   }

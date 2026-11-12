@@ -19,6 +19,7 @@
 #include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
 #include "Evolution/DiscontinuousGalerkin/OptionTags.hpp"
 #include "Evolution/Patches/PatchTable.hpp"
+#include "Evolution/Patches/Tags.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
@@ -48,7 +49,8 @@ evolution::patches::PatchTable<Dim> patch_table(
     const std::vector<std::array<size_t, Dim>>& initial_extents,
     Spectral::Quadrature i1_quadrature,
     const std::vector<size_t>& only_dg_block_ids,
-    bool subcell_enabled_at_external_boundary);
+    bool subcell_enabled_at_external_boundary,
+    const std::optional<size_t>& max_elements_per_patch = std::nullopt);
 
 namespace Tags {
 /// \ingroup DataBoxTagsGroup
@@ -62,7 +64,8 @@ struct PatchTable : db::SimpleTag {
   using option_tags =
       tmpl::list<::domain::OptionTags::DomainCreator<Dim>,
                  evolution::dg::OptionTags::OnlyDgBlocksAndGroups,
-                 evolution::dg::OptionTags::Quadrature>;
+                 evolution::dg::OptionTags::Quadrature,
+                 evolution::patches::OptionTags::MaxElementsPerPatch>;
 
   static constexpr bool pass_metavariables = true;
   template <typename Metavariables>
@@ -70,7 +73,8 @@ struct PatchTable : db::SimpleTag {
       const std::unique_ptr<::DomainCreator<Dim>>& domain_creator,
       const std::optional<std::vector<std::string>>&
           only_dg_block_and_group_names,
-      const Spectral::Quadrature i1_quadrature) {
+      const Spectral::Quadrature i1_quadrature,
+      const std::optional<size_t>& max_elements_per_patch) {
     const auto domain = domain_creator->create_domain();
     return patch_table(
         domain.blocks(), domain_creator->initial_refinement_levels(),
@@ -78,7 +82,8 @@ struct PatchTable : db::SimpleTag {
         evolution::dg::compute_only_dg_block_ids(
             only_dg_block_and_group_names, domain_creator->block_names(),
             domain_creator->block_groups(), domain.blocks()),
-        Metavariables::SubcellOptions::subcell_enabled_at_external_boundary);
+        Metavariables::SubcellOptions::subcell_enabled_at_external_boundary,
+        max_elements_per_patch);
   }
 };
 }  // namespace Tags

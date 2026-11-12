@@ -265,13 +265,17 @@ evolution supports (see the end of this section).
 
 Executables can evolve some of their elements on the device in *patches*,
 while the other elements stay on the host in the `DgElementArray`. Today these
-are the FD elements of DG-FD hybrid methods (*FD patches*). A patch holds all
-elements of one block, and the patches are the members of the array component
-`evolution::patches::PatchArray`, one patch per block. Which elements are in
-which patch is fixed at the start and stored in an
-`evolution::patches::PatchTable` in the global cache. Executables enable
-patches with `Metavariables::use_patches`, and provide the `patch_table_tag`
-and the `patch_component` (e.g. `EvolveValenciaDivCleanFdPatches`).
+are the FD elements of DG-FD hybrid methods (*FD patches*). A patch holds
+elements of one block: all of them by default, or a piece of them if the block
+is split with the option `Patches.MaxElementsPerPatch`, e.g. to spread a large
+block over several GPUs. The patches are the members of the array component
+`evolution::patches::PatchArray`, distributed over the processes (one per GPU) first and over the processing
+elements of each process second (see `evolution::patches::patch_procs`). Which
+elements are in which patch is fixed
+at the start and stored in an `evolution::patches::PatchTable` in the global
+cache. Executables enable patches with `Metavariables::use_patches`, and
+provide the `patch_table_tag` and the `patch_component` (e.g.
+`EvolveValenciaDivCleanFdPatches`).
 
 ## Layers
 

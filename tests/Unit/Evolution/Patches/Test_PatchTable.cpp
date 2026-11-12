@@ -44,7 +44,8 @@ void test_patch_mesh() {
           return mesh_b;
         }
         return std::nullopt;
-      }};
+      },
+      std::nullopt};
   REQUIRE(table.number_of_patches() == 2);
   CHECK(table.dg_mesh(0) == mesh_a);
   CHECK(table.dg_mesh(1) == mesh_b);
@@ -63,8 +64,25 @@ void test_patch_mesh() {
   test_serialization(table);
   test_copy_semantics(table);
 }
+
+void test_patch_procs() {
+  using evolution::patches::patch_procs;
+  CHECK(patch_procs(0, {}).empty());
+  // One node: round-robin over its processors
+  CHECK(patch_procs(5, {{0, 1, 2}}) == std::vector<size_t>{0, 1, 2, 0, 1});
+  // Two nodes (e.g. one per GPU): first over the nodes
+  CHECK(patch_procs(4, {{0, 1, 2}, {3, 4, 5}}) ==
+        std::vector<size_t>{0, 3, 1, 4});
+  // Nodes without usable processors are skipped
+  CHECK(patch_procs(4, {{}, {3, 5}, {7}}) == std::vector<size_t>{3, 7, 5, 7});
+  CHECK_THROWS_WITH(patch_procs(1, {{}, {}}),
+                    Catch::Matchers::ContainsSubstring(
+                        "No processor may hold the 1 patches"));
+}
+
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.Evolution.Patches.PatchTable", "[Evolution][Unit]") {
   test_patch_mesh();
+  test_patch_procs();
 }

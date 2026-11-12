@@ -18,7 +18,31 @@
 #include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
 #include "Evolution/DiscontinuousGalerkin/OptionTags.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
+#include "Options/Auto.hpp"
+#include "Options/String.hpp"
 #include "Utilities/TMPL.hpp"
+
+namespace evolution::dg::subcell::fd_patch::OptionTags {
+/// \ingroup OptionGroupsGroup
+/// Options for running the FD elements in patches on the device
+struct FdPatchesGroup {
+  static std::string name() { return "FdPatches"; }
+  static constexpr Options::String help{
+      "Options for running the FD elements in patches on the device"};
+};
+
+/// \ingroup OptionTagsGroup
+/// The largest number of FD elements in a patch (see
+/// `evolution::dg::subcell::fd_patch::FdPatches`)
+struct MaxElementsPerPatch {
+  using type = Options::Auto<size_t>;
+  static constexpr Options::String help{
+      "The largest number of FD elements in a patch. The FD elements of a "
+      "block are split along a Z-curve into the fewest patches of about equal "
+      "size. 'Auto' puts all FD elements of a block in one patch."};
+  using group = FdPatchesGroup;
+};
+}  // namespace evolution::dg::subcell::fd_patch::OptionTags
 
 namespace evolution::dg::subcell::fd_patch::Tags {
 /// \ingroup DataBoxTagsGroup
@@ -33,7 +57,8 @@ struct FdPatches : db::SimpleTag {
   using option_tags =
       tmpl::list<::domain::OptionTags::DomainCreator<Dim>,
                  evolution::dg::OptionTags::OnlyDgBlocksAndGroups,
-                 evolution::dg::OptionTags::Quadrature>;
+                 evolution::dg::OptionTags::Quadrature,
+                 OptionTags::MaxElementsPerPatch>;
 
   static constexpr bool pass_metavariables = true;
   template <typename Metavariables>
@@ -41,7 +66,8 @@ struct FdPatches : db::SimpleTag {
       const std::unique_ptr<::DomainCreator<Dim>>& domain_creator,
       const std::optional<std::vector<std::string>>&
           only_dg_block_and_group_names,
-      const Spectral::Quadrature i1_quadrature) {
+      const Spectral::Quadrature i1_quadrature,
+      const std::optional<size_t>& max_elements_per_patch) {
     const auto domain = domain_creator->create_domain();
     return type{
         domain.blocks(),
@@ -51,7 +77,8 @@ struct FdPatches : db::SimpleTag {
         evolution::dg::compute_only_dg_block_ids(
             only_dg_block_and_group_names, domain_creator->block_names(),
             domain_creator->block_groups(), domain.blocks()),
-        Metavariables::SubcellOptions::subcell_enabled_at_external_boundary};
+        Metavariables::SubcellOptions::subcell_enabled_at_external_boundary,
+        max_elements_per_patch};
   }
 };
 }  // namespace evolution::dg::subcell::fd_patch::Tags

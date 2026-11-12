@@ -10,7 +10,9 @@
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/PointwiseStatus.hpp"
+#include "DataStructures/Tensor/AtIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservatives.hpp"
@@ -252,6 +254,46 @@ void test_root_find_failure() {
           "Failed to fix conserved variables on the device because the root "
           "finder failed to find the lorentz factor at 3 of 6 grid points. At "
           "the first one, grid point 0 of the element [B0,(L0I0)]:") and
+          Catch::Matchers::ContainsSubstring("tilde_tau = T()=1.0"));
+
+  // With a deferred status, the failures are recorded on the device, with the
+  // variables before fixing at one of the failed grid points
+  const Kokkos::DefaultExecutionSpace exec{};
+  auto deferred_batch = to_device({cons, cons}, {metric, bad_metric});
+  DeferredPointwiseStatus<
+      grmhd::ValenciaDivClean::fix_conservatives_snapshot_tags>
+      deferred_status{exec};
+  deferred_status.reset(exec);
+  grmhd::ValenciaDivClean::fix_conservatives_on_device(
+      exec, make_not_null(&deferred_batch.conservatives),
+      make_not_null(&deferred_status),
+      get<::Tags::BatchView<gr::Tags::SpatialMetric<DataVector, 3>>>(
+          deferred_batch.metric),
+      get<::Tags::BatchView<gr::Tags::InverseSpatialMetric<DataVector, 3>>>(
+          deferred_batch.metric),
+      get<::Tags::BatchView<gr::Tags::SqrtDetSpatialMetric<DataVector>>>(
+          deferred_batch.metric),
+      variable_fixer);
+  deferred_status.copy_to_host(exec);
+  exec.fence();
+  REQUIRE(deferred_status.failed());
+  const PointwiseStatusSummary deferred_summary = deferred_status.summary();
+  CHECK(deferred_summary.number_of_failures == num_points);
+  CHECK(deferred_summary.first_failed_element == 1);
+  CHECK(deferred_summary.first_failed_grid_point < num_points);
+  CHECK(element_to_host(deferred_batch.conservatives, 1) == cons);
+  const auto snapshot = deferred_status.snapshot();
+  CHECK(get(get<::Tags::AtIndex<Tags::TildeTau>>(snapshot)) == 1.0);
+  CHECK(get<0, 0>(get<::Tags::AtIndex<gr::Tags::SpatialMetric<DataVector, 3>>>(
+            snapshot)) == -1.0);
+  CHECK_THROWS_WITH(
+      grmhd::ValenciaDivClean::error_fixing_conservatives_on_device(
+          deferred_status, 2 * num_points, "the element [B0,(L0I1)]"),
+      Catch::Matchers::ContainsSubstring(
+          "Failed to fix conserved variables on the device because the root "
+          "finder failed to find the lorentz factor at 3 of 6 grid points. At "
+          "one of them, grid point ") and
+          Catch::Matchers::ContainsSubstring(" of the element [B0,(L0I1)]:") and
           Catch::Matchers::ContainsSubstring("tilde_tau = T()=1.0"));
 }
 }  // namespace

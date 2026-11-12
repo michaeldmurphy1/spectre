@@ -19,6 +19,7 @@
 #include "DataStructures/DataBox/MetavariablesTag.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Domain/Block.hpp"
 #include "Domain/CoordinateMaps/Affine.hpp"
@@ -387,13 +388,16 @@ void test(const Correction& correction, const Reconstructor& recons) {
   BatchedVariables<subcell::dt_tags_on_device> dt_vars{exec, number_of_cells,
                                                        1};
   const auto fixer = fix_to_atmosphere.device_view();
-  const auto status = time_derivative.apply(
-      exec, make_not_null(&dt_vars), padded, evolved, primitives,
-      cell_spacetime, face_geometry, cell_geometry, grid_to_inertial,
-      correction, *eos, &fixer, 1.0, fd_patch::PackagedDataFromDg<3>{},
-      Kokkos::View<const double*>{});
-  CHECK(status[0].number_of_failures == 0);
-  CHECK(status[1].number_of_failures == 0);
+  DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags> face_status{exec};
+  face_status.reset(exec);
+  time_derivative.apply(
+      exec, make_not_null(&dt_vars), make_not_null(&face_status), padded,
+      evolved, primitives, cell_spacetime, face_geometry, cell_geometry,
+      grid_to_inertial, correction, *eos, &fixer, 1.0,
+      fd_patch::PackagedDataFromDg<3>{}, Kokkos::View<const double*>{});
+  face_status.copy_to_host(exec);
+  exec.fence();
+  CHECK_FALSE(face_status.failed());
   BatchedVariables<subcell::dt_tags_on_device, Kokkos::HostSpace> host_dt{
       number_of_cells, 1};
   deep_copy(exec, make_not_null(&host_dt), dt_vars);
@@ -415,11 +419,11 @@ void test(const Correction& correction, const Reconstructor& recons) {
   not_moving.is_moving = true;
   BatchedVariables<subcell::dt_tags_on_device> moving_dt_vars{
       exec, number_of_cells, 1};
-  time_derivative.apply(exec, make_not_null(&moving_dt_vars), padded, evolved,
-                        primitives, cell_spacetime, face_geometry,
-                        cell_geometry, not_moving, correction, *eos, &fixer,
-                        1.0, fd_patch::PackagedDataFromDg<3>{},
-                        Kokkos::View<const double*>{});
+  time_derivative.apply(
+      exec, make_not_null(&moving_dt_vars), make_not_null(&face_status), padded,
+      evolved, primitives, cell_spacetime, face_geometry, cell_geometry,
+      not_moving, correction, *eos, &fixer, 1.0,
+      fd_patch::PackagedDataFromDg<3>{}, Kokkos::View<const double*>{});
   BatchedVariables<subcell::dt_tags_on_device, Kokkos::HostSpace>
       host_moving_dt{number_of_cells, 1};
   deep_copy(exec, make_not_null(&host_moving_dt), moving_dt_vars);

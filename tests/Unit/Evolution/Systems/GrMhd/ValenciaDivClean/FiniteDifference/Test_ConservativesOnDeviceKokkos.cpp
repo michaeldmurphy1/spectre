@@ -12,7 +12,9 @@
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/PointwiseStatus.hpp"
+#include "DataStructures/Tensor/AtIndex.hpp"
 #include "DataStructures/Tensor/EagerMath/Determinant.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
@@ -338,6 +340,44 @@ void check_atmosphere_failure(const gsl::not_null<std::mt19937*> generator) {
                         "failed on the device at 2 of 100 grid points. At the "
                         "first one, grid point 7 of the faces in direction 0 "
                         "of [B0,(L0I0)], before fixing:"));
+
+  // With a deferred status, the failures are recorded on the device, with the
+  // reconstructed variables at one of the failed grid points
+  const Kokkos::DefaultExecutionSpace exec{};
+  auto deferred_batch = to_device({face, face});
+  DeferredPointwiseStatus<
+      grmhd::ValenciaDivClean::fd::face_atmosphere_snapshot_tags>
+      deferred_status{exec};
+  deferred_status.reset(exec);
+  grmhd::ValenciaDivClean::fd::compute_conservatives_on_device(
+      exec, make_not_null(&deferred_batch), make_not_null(&deferred_status),
+      eos, &fixer_view);
+  deferred_status.copy_to_host(exec);
+  exec.fence();
+  REQUIRE(deferred_status.failed());
+  CHECK(deferred_status.summary().number_of_failures == 2);
+  CHECK(deferred_status.summary().first_failed_grid_point == 7);
+  // The faces may hold NaNs, so compare what the failure leaves unfixed
+  const auto deferred_computed = to_host(deferred_batch);
+  CHECK(get(get<hydro::Tags::RestMassDensity<DataVector>>(
+            deferred_computed[1]))[7] == 1.e-11);
+  CHECK(get(get<hydro::Tags::Pressure<DataVector>>(deferred_computed[1]))[7] ==
+        1.0);
+  const auto snapshot = deferred_status.snapshot();
+  CHECK(get(get<::Tags::AtIndex<hydro::Tags::RestMassDensity<DataVector>>>(
+            snapshot)) == 1.e-11);
+  CHECK(get(get<::Tags::AtIndex<hydro::Tags::Temperature<DataVector>>>(
+            snapshot)) ==
+        get(get<hydro::Tags::Temperature<DataVector>>(face))[7]);
+  CHECK_THROWS_WITH(
+      VariableFixing::error_fixing_to_atmosphere_on_device(
+          deferred_status, 100, "the faces in direction 0 of [B0,(L0I0)]"),
+      Catch::Matchers::ContainsSubstring(
+          "failed on the device at 2 of 100 grid points. At one "
+          "of them, grid point 7 of the faces in direction 0 "
+          "of [B0,(L0I") and
+          Catch::Matchers::ContainsSubstring(
+              "rest_mass_density = T()=9.999999999999999395e-12"));
 }
 
 void check_error_without_device_view(

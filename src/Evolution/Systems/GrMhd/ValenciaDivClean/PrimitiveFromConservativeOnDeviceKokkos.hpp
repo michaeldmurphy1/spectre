@@ -7,12 +7,14 @@
 #include <string>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/TagsDeclarations.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/TMPL.hpp"
 
 /// \cond
 class DataVector;
@@ -31,6 +33,18 @@ class not_null;
 
 #ifdef SPECTRE_KOKKOS
 namespace grmhd::ValenciaDivClean {
+/// The snapshot of a `DeferredPointwiseStatus` of
+/// `primitive_from_conservative_on_device`: what its error reports
+using primitive_recovery_snapshot_tags =
+    tmpl::list<Tags::TildeD, Tags::TildeTau, Tags::TildeS<>, Tags::TildeB<>,
+               gr::Tags::SpatialMetric<DataVector, 3>,
+               gr::Tags::InverseSpatialMetric<DataVector, 3>,
+               gr::Tags::SqrtDetSpatialMetric<DataVector>,
+               hydro::Tags::RestMassDensity<DataVector>,
+               hydro::Tags::LorentzFactor<DataVector>,
+               hydro::Tags::Pressure<DataVector>>;
+
+/// @{
 /*!
  * \brief Recovers the primitive variables of a batch of elements whose data is
  * in device memory, like `PrimitiveFromConservative` does for each element.
@@ -53,14 +67,15 @@ namespace grmhd::ValenciaDivClean {
  * - The recovery doesn't stop at the first grid point where all recovery
  *   schemes fail. The primitive variables at such grid points keep their
  *   values from before the recovery.
- * - A failure is never an error. Instead this returns the number of failed
- *   grid points and the element and grid point of the first one (see
- *   `PointwiseStatusSummary`). Report it with
- *   `error_recovering_primitives_on_device`.
+ * - A failure is never an error. Instead the first overload returns the
+ *   number of failed grid points and the element and grid point of the first
+ *   one (see `PointwiseStatusSummary`), so it waits for the kernels on `exec`
+ *   to complete. The second records them in `status` (see
+ *   `DeferredPointwiseStatus`) and only enqueues the kernels. Report a failure
+ *   with `error_recovering_primitives_on_device`.
  *
  * The `primitives` are overwritten in place. Nothing is copied between the
- * host and the device, but since the failures are needed on the host, this
- * function waits for the kernels on `exec` to complete.
+ * host and the device.
  *
  * `per_element_scratch`, if given, holds the per-element decision whether
  * \f$\tilde{D}\f$ is below the cutoff between calls (see `scratch_view`), so
@@ -89,16 +104,46 @@ PointwiseStatusSummary primitive_from_conservative_on_device(
     const PrimitiveFromConservativeOptions& primitive_from_conservative_options,
     Kokkos::View<bool*>* per_element_scratch = nullptr);
 
+template <typename OrderedListOfPrimitiveRecoverySchemes,
+          bool EnforcePhysicality>
+void primitive_from_conservative_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    gsl::not_null<BatchedVariables<hydro::grmhd_tags<DataVector>>*> primitives,
+    gsl::not_null<DeferredPointwiseStatus<primitive_recovery_snapshot_tags>*>
+        status,
+    const typename ::Tags::BatchView<Tags::TildeD>::type& tilde_d,
+    const typename ::Tags::BatchView<Tags::TildeYe>::type& tilde_ye,
+    const typename ::Tags::BatchView<Tags::TildeTau>::type& tilde_tau,
+    const typename ::Tags::BatchView<Tags::TildeS<>>::type& tilde_s,
+    const typename ::Tags::BatchView<Tags::TildeB<>>::type& tilde_b,
+    const typename ::Tags::BatchView<Tags::TildePhi>::type& tilde_phi,
+    const typename ::Tags::BatchView<
+        gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
+    const typename ::Tags::BatchView<
+        gr::Tags::InverseSpatialMetric<DataVector, 3>>::type&
+        inv_spatial_metric,
+    const typename ::Tags::BatchView<
+        gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
+        sqrt_det_spatial_metric,
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const PrimitiveFromConservativeOptions& primitive_from_conservative_options,
+    Kokkos::View<bool*>* per_element_scratch = nullptr);
+/// @}
+
+/// @{
 /*!
- * \brief ERRORs with the variables at the first grid point where
+ * \brief ERRORs with the variables at a grid point where
  * `primitive_from_conservative_on_device` failed, like the error of
  * `PrimitiveFromConservative`.
  *
- * The arguments are those passed to `primitive_from_conservative_on_device`
- * and its result `status`, which must have failures. The primitive variables
- * there still hold their values from before the recovery. Only that grid point
- * is copied from the device. The `element_description` identifies the element
- * in the error, e.g. its `ElementId`.
+ * In the first overload, the arguments are those passed to
+ * `primitive_from_conservative_on_device` and its result `status`, which must
+ * have failures. The primitive variables there still hold their values from
+ * before the recovery. Only that grid point is copied from the device. In the
+ * second, `status` is the `DeferredPointwiseStatus` of
+ * `primitive_from_conservative_on_device` after its `copy_to_host()` and a
+ * fence, and the variables are its snapshot. The `element_description`
+ * identifies the element in the error, e.g. its `ElementId`.
  */
 [[noreturn]] void error_recovering_primitives_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
@@ -117,5 +162,10 @@ PointwiseStatusSummary primitive_from_conservative_on_device(
         gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
         sqrt_det_spatial_metric,
     const std::string& element_description);
+
+[[noreturn]] void error_recovering_primitives_on_device(
+    const DeferredPointwiseStatus<primitive_recovery_snapshot_tags>& status,
+    const std::string& element_description);
+/// @}
 }  // namespace grmhd::ValenciaDivClean
 #endif  // SPECTRE_KOKKOS

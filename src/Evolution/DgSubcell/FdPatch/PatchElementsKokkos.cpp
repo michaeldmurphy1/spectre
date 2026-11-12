@@ -89,12 +89,20 @@ PatchElements::PatchElements(
       Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
                          "FD patch received mortar data"),
       packaged_data_from_dg_.received_data_size());
-  host_received_ghost_data_ = Kokkos::create_mirror_view(
-      Kokkos::WithoutInitializing, received_ghost_data_);
-  host_received_mortar_data_ = Kokkos::create_mirror_view(
-      Kokkos::WithoutInitializing, received_mortar_data_);
+  // Pinned, so that copies between them and the device don't wait for the
+  // device
+  const auto pinned_buffer = [&exec](const std::string& label,
+                                     const size_t size) {
+    return HostBuffer{
+        Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, label), size};
+  };
+  host_received_ghost_data_ = pinned_buffer(
+      "FD patch received ghost data on the host", received_ghost_data_.size());
+  host_received_mortar_data_ =
+      pinned_buffer("FD patch received mortar data on the host",
+                    received_mortar_data_.size());
   host_send_data_ =
-      Kokkos::create_mirror_view(Kokkos::WithoutInitializing, send_data_);
+      pinned_buffer("FD patch send data on the host", send_data_.size());
 
   // Geometry
   logical_to_grid_ = logical_to_grid(exec, element_maps_, dg_mesh_);
@@ -154,22 +162,24 @@ void PatchElements::fill_ghost_zones(
   ghost_zones_.fill_from_patch(exec, padded_ghost_variables_, ghost_variables);
 }
 
-std::vector<OutgoingBoundaryData<3>> PatchElements::boundary_data_to_send(
+void PatchElements::enqueue_boundary_data(
     const Kokkos::DefaultExecutionSpace& exec,
-    const Kokkos::View<const double*>& ghost_variables,
+    const Kokkos::View<const double*>& ghost_variables) {
+  const Kokkos::Profiling::ScopedRegion region{
+      "fd_patch::PatchElements::enqueue_boundary_data"};
+  ghost_zones_.slice_for_external(exec, send_data_, ghost_variables);
+  Kokkos::deep_copy(exec, host_send_data_, send_data_);
+}
+
+std::vector<OutgoingBoundaryData<3>> PatchElements::boundary_data_to_send(
     const std::vector<RdmpTciData>& rdmp_tci_data,
     const TimeStepId& next_time_step_id, const int tci_status,
-    const size_t integration_order) {
+    const size_t integration_order) const {
   const Kokkos::Profiling::ScopedRegion region{
       "fd_patch::PatchElements::boundary_data_to_send"};
-  ghost_zones_.slice_for_external(exec, send_data_, ghost_variables);
-  const auto& host_send_data = host_send_data_;
-  Kokkos::deep_copy(exec, host_send_data, send_data_);
-  exec.fence(
-      "evolution::dg::subcell::fd_patch::PatchElements::boundary_data_to_send");
   return pack_boundary_data(
       ghost_zones_,
-      gsl::span<const double>{host_send_data.data(), host_send_data.size()},
+      gsl::span<const double>{host_send_data_.data(), host_send_data_.size()},
       element_ids_, dg_mesh_, rdmp_tci_data, next_time_step_id, tci_status,
       integration_order);
 }
@@ -209,8 +219,9 @@ void PatchElements::receive(
   Kokkos::deep_copy(exec, received_mortar_data_, host_mortar_data);
   ghost_zones_.fill_from_external(exec, padded_ghost_variables_,
                                   received_ghost_data_);
-  // The host buffers mustn't change until the copies are done
-  exec.fence("evolution::dg::subcell::fd_patch::PatchElements::receive");
+  // The host buffers mustn't change until the copies are done. They change
+  // only in the next `receive()`, and the boundary data of the next substep
+  // is sent before that, which waits for `exec`.
 }
 }  // namespace evolution::dg::subcell::fd_patch
 #endif  // SPECTRE_KOKKOS

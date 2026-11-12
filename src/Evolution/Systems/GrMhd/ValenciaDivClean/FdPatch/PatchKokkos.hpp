@@ -14,6 +14,7 @@
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "DataStructures/Variables.hpp"
@@ -23,13 +24,17 @@
 #include "Evolution/DgSubcell/FdPatch/TagsKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hll.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Rusanov.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservatives.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservativesOnDeviceKokkos.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveFromConservativeOnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveFromConservativeOptions.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/PrimitiveGhostData.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/RdmpTciDataKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/TimeDerivativeKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/System.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
+#include "Evolution/VariableFixing/FixToAtmosphereOnDeviceKokkos.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
@@ -291,6 +296,10 @@ class Patch {
   /// Take the substep `time_step_id` (see the class documentation), with the
   /// time stepper `history` of the elements. The `functions_of_time` are those
   /// of the grid to inertial map.
+  ///
+  /// The kernels are only enqueued on `exec`, without waiting for them. Their
+  /// failures, e.g. of the primitive recovery, are recorded on the device and
+  /// reported by `check_last_step()`.
   void take_step(
       const Kokkos::DefaultExecutionSpace& exec,
       gsl::not_null<EvolvedVariables*> evolved_variables,
@@ -302,7 +311,23 @@ class Patch {
       const TimeStepId& next_time_step_id, const TimeDelta& time_step,
       const domain::FunctionsOfTimeMap& functions_of_time);
 
+  /*!
+   * \brief ERRORs if the last `take_step()` failed, e.g. in the primitive
+   * recovery, with the variables at a failed grid point. Waits for `exec`.
+   *
+   * \details `prepare_send()` calls this after it waits for the device, so
+   * that the host waits for the device only once per substep. Call it also
+   * before anything that needs the state of the last substep to be valid,
+   * e.g. observations and checkpoints. Calling it again before the next
+   * `take_step()` checks the same substep again.
+   */
+  void check_last_step(const Kokkos::DefaultExecutionSpace& exec) const;
+
  private:
+  size_t number_of_cells_of_all_elements() const;
+  void reset_statuses(const Kokkos::DefaultExecutionSpace& exec) const;
+  void copy_statuses_to_host(const Kokkos::DefaultExecutionSpace& exec) const;
+
   void compute_conservatives(
       const Kokkos::DefaultExecutionSpace& exec,
       gsl::not_null<EvolvedVariables*> evolved_variables,
@@ -339,6 +364,14 @@ class Patch {
   Kokkos::View<bool*> fix_conservatives_scratch_{};
   Kokkos::View<bool*> primitive_recovery_scratch_{};
   subcell::RdmpTciDataBuffers rdmp_tci_data_buffers_{};
+  // The failures of the last `take_step()` (see `check_last_step()`). Their
+  // device data changes in const member functions, like that of other views.
+  DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags> face_status_{};
+  DeferredPointwiseStatus<fix_conservatives_snapshot_tags>
+      fix_conservatives_status_{};
+  DeferredPointwiseStatus<primitive_recovery_snapshot_tags> recovery_status_{};
+  DeferredPointwiseStatus<VariableFixing::fix_to_atmosphere_snapshot_tags>
+      atmosphere_status_{};
 };
 }  // namespace grmhd::ValenciaDivClean::fd_patch
 #endif  // SPECTRE_KOKKOS

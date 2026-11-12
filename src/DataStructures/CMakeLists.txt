@@ -41,6 +41,7 @@ spectre_target_headers(
   CompressedMatrix.hpp
   CompressedVector.hpp
   DataVector.hpp
+  DeferredPointwiseStatusKokkos.hpp
   DeviceArgumentsKokkos.hpp
   DiagonalModalOperator.hpp
   DynamicBuffer.hpp

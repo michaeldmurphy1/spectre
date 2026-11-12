@@ -13,7 +13,9 @@
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/PointwiseStatus.hpp"
+#include "DataStructures/Tensor/AtIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
@@ -263,6 +265,40 @@ void test_kappa_limiting_failure() {
       Catch::Matchers::ContainsSubstring(
           "The root find of the kappa limiting in FixToAtmosphere failed on "
           "the device at 1 of 4 grid points. At the first one, grid point 1 "
+          "of the element [B0,(L0I0)], before fixing:") and
+          Catch::Matchers::ContainsSubstring(
+              "temperature = T()=1.000000000000000000e+00"));
+
+  // With a deferred status, the failure is recorded on the device, with the
+  // variables before fixing
+  const Kokkos::DefaultExecutionSpace exec{};
+  auto deferred_prims = to_device(std::vector{prims, failing_prims});
+  const auto device_metric = to_device(std::vector{metric, metric});
+  DeferredPointwiseStatus<VariableFixing::fix_to_atmosphere_snapshot_tags>
+      deferred_status{exec};
+  deferred_status.reset(exec);
+  VariableFixing::fix_to_atmosphere_on_device(
+      exec, make_not_null(&deferred_prims), make_not_null(&deferred_status),
+      get<Tags::BatchView<gr::Tags::SpatialMetric<DataVector, 3>>>(
+          device_metric),
+      eos, fixer_view);
+  deferred_status.copy_to_host(exec);
+  exec.fence();
+  REQUIRE(deferred_status.failed());
+  // There is only one failure, so it is the first
+  const PointwiseStatusSummary deferred_summary = deferred_status.summary();
+  CHECK(deferred_summary.number_of_failures == 1);
+  CHECK(deferred_summary.first_failed_element == 1);
+  CHECK(deferred_summary.first_failed_grid_point == 1);
+  CHECK(to_host(deferred_prims)[1] == failing_prims);
+  CHECK(get(get<Tags::AtIndex<hydro::Tags::RestMassDensity<DataVector>>>(
+            deferred_status.snapshot())) == 1.e-11);
+  CHECK_THROWS_WITH(
+      VariableFixing::error_fixing_to_atmosphere_on_device(
+          deferred_status, 4, "the element [B0,(L0I0)]"),
+      Catch::Matchers::ContainsSubstring(
+          "The root find of the kappa limiting in FixToAtmosphere failed on "
+          "the device at 1 of 4 grid points. At one of them, grid point 1 "
           "of the element [B0,(L0I0)], before fixing:") and
           Catch::Matchers::ContainsSubstring(
               "temperature = T()=1.000000000000000000e+00"));

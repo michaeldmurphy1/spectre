@@ -321,9 +321,12 @@ void TimeDerivativeOnDevice<Correction>::set_face_spacetime_variables(
 }
 
 template <typename Correction>
-std::array<PointwiseStatusSummary, 2> TimeDerivativeOnDevice<Correction>::apply(
+void TimeDerivativeOnDevice<Correction>::apply(
     const Kokkos::DefaultExecutionSpace& exec,
     const gsl::not_null<BatchedVariables<dt_tags_on_device>*> dt_vars,
+    const gsl::not_null<
+        DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>
+        face_status,
     const ::fd::device::VolumeView& padded_ghost_variables,
     const BatchedVariables<evolved_tags_on_device>& evolved_variables,
     const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,
@@ -357,26 +360,24 @@ std::array<PointwiseStatusSummary, 2> TimeDerivativeOnDevice<Correction>::apply(
   const auto* const moving_mesh_velocity =
       grid_to_inertial.is_moving ? &mesh_velocity : nullptr;
   const std::array<double, 2> signs{{1.0, -1.0}};
-  std::array<PointwiseStatusSummary, 2> status{};
   if constexpr (std::is_same_v<Correction, BoundaryCorrections::Rusanov>) {
     // In one kernel for each side
     (void)correction;
     for (size_t side = 0; side < 2; ++side) {
-      gsl::at(status, side) =
-          BoundaryCorrections::package_data_from_reconstruction_on_device(
-              exec,
-              make_not_null(side == 0 ? &lower_packaged_data_
-                                      : &upper_packaged_data_),
-              side == 0 ? lower_faces_ : upper_faces_, conormal,
-              gsl::at(signs, side), moving_mesh_velocity, equation_of_state,
-              fix_to_atmosphere);
+      BoundaryCorrections::package_data_from_reconstruction_on_device(
+          exec,
+          make_not_null(side == 0 ? &lower_packaged_data_
+                                  : &upper_packaged_data_),
+          face_status, side == 0 ? lower_faces_ : upper_faces_, conormal,
+          gsl::at(signs, side), moving_mesh_velocity, equation_of_state,
+          fix_to_atmosphere);
     }
   } else {
     // `Hll` needs the variables on all faces of a face set first
     for (size_t side = 0; side < 2; ++side) {
-      gsl::at(status, side) = fd::compute_conservatives_on_device(
+      fd::compute_conservatives_on_device(
           exec, make_not_null(side == 0 ? &lower_faces_ : &upper_faces_),
-          equation_of_state, fix_to_atmosphere);
+          face_status, equation_of_state, fix_to_atmosphere);
     }
     for (size_t side = 0; side < 2; ++side) {
       BoundaryCorrections::fluxes_and_package_data_on_device(
@@ -462,7 +463,6 @@ std::array<PointwiseStatusSummary, 2> TimeDerivativeOnDevice<Correction>::apply(
       entries_as_volume_view<::fd::device::ConstVolumeView>(
           cell_geometry.view(), 0, number_of_elements_, subcell_extents_),
       one_over_delta_xi_, subcell_extents_);
-  return status;
 }
 
 template class TimeDerivativeOnDevice<BoundaryCorrections::Rusanov>;

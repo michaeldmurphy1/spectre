@@ -12,6 +12,7 @@
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/DeviceArgumentsKokkos.hpp"
 #include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/Tags/MirrorView.hpp"
@@ -344,6 +345,75 @@ void test_reduction() {
   CHECK(batch_summary.first_failed_grid_point == 2);
   CHECK(batch_summary.first_failed_element == 1);
 }
+
+// A `DeferredPointwiseStatus` accumulates the failures of several kernels
+// without waiting for them, and saves the arguments at one failed grid point
+void test_deferred_status() {
+  const size_t num_points = 3;
+  const size_t num_elements = 4;
+  const Kokkos::DefaultExecutionSpace exec{};
+  BatchedVariables<tmpl::list<Value>, Kokkos::HostSpace> host_values{
+      num_points, num_elements};
+  const auto value_at = [](const size_t i, const size_t e) {
+    // Negative at grid point 0 of element 3 and grid point 2 of element 1, and
+    // 1 (flagged) at grid point 1 of element 2
+    return (e == 3 and i == 0) or (e == 1 and i == 2)
+               ? -1.0 - static_cast<double>(i + 10 * e)
+               : (e == 2 and i == 1 ? 1.0 : 4.0);
+  };
+  for (size_t e = 0; e < num_elements; ++e) {
+    for (size_t i = 0; i < num_points; ++i) {
+      get(get<Tags::BatchView<Value, Kokkos::HostSpace>>(host_values))(i, e) =
+          value_at(i, e);
+    }
+  }
+  BatchedVariables<tmpl::list<Value>> device_values{exec, num_points,
+                                                    num_elements};
+  deep_copy(exec, make_not_null(&device_values), host_values);
+  BatchedVariables<tmpl::list<Clamped>> results{exec, num_points, num_elements};
+  const auto args = make_device_arguments<Value>(
+      exec, get<Tags::BatchView<Value>>(device_values));
+
+  DeferredPointwiseStatus<tmpl::list<Value>> status{exec};
+  static_assert(DeferredPointwiseStatus<tmpl::list<Value>>::snapshot_size == 1);
+  status.reset(exec);
+  // Twice, so the failures accumulate
+  for (size_t repeat = 0; repeat < 2; ++repeat) {
+    apply_pointwise_on_device<SquareRoot>(
+        exec, make_not_null(&results), make_not_null(&status),
+        SquareRoot::return_tags{}, SquareRoot::argument_tags{}, args);
+  }
+  status.copy_to_host(exec);
+  exec.fence();
+  CHECK(status.failed());
+  const PointwiseStatusSummary summary = status.summary();
+  CHECK(summary.any_flag);
+  CHECK(summary.number_of_failures == 4);
+  // Either failure may be recorded, with its argument
+  const size_t i = summary.first_failed_grid_point;
+  const size_t e = summary.first_failed_element;
+  CHECK(((e == 3 and i == 0) or (e == 1 and i == 2)));
+  CHECK(get(get<Tags::AtIndex<Value>>(status.snapshot())) == value_at(i, e));
+  // The results are those of the function
+  BatchedVariables<tmpl::list<Clamped>, Kokkos::HostSpace> host_results{
+      num_points, num_elements};
+  deep_copy(exec, make_not_null(&host_results), results);
+  exec.fence();
+  for (size_t elem = 0; elem < num_elements; ++elem) {
+    for (size_t point = 0; point < num_points; ++point) {
+      const double value = value_at(point, elem);
+      CHECK(get(get<Tags::BatchView<Clamped, Kokkos::HostSpace>>(host_results))(
+                point, elem) == (value < 0.0 ? 0.0 : std::sqrt(value)));
+    }
+  }
+
+  // After a reset there are no failures
+  status.reset(exec);
+  status.copy_to_host(exec);
+  exec.fence();
+  CHECK_FALSE(status.failed());
+  CHECK_FALSE(status.summary().any_flag);
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.DataStructures.ApplyPointwiseOnDevice",
@@ -353,4 +423,5 @@ SPECTRE_TEST_CASE("Unit.DataStructures.ApplyPointwiseOnDevice",
   test_device_data();
   test_batch();
   test_reduction();
+  test_deferred_status();
 }

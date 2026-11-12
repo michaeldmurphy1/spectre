@@ -700,6 +700,8 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
                       Triggers::WhenToCheck::AtSlabs, fd_patch_tag>,
                   Actions::ChangeSlabSize, fd_patch_step_actions,
                   Actions::MutateApply<AdvanceTime<>>,
+                  evolution::patches::Actions::CheckLastStepAtSlabBoundaries<
+                      fd_patch_tag>,
                   // As for the DG elements, so that all elements halt for
                   // phase changes (e.g. checkpoints) at the same slab
                   PhaseControl::Actions::ExecutePhaseChange>>>>>;

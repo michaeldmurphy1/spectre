@@ -80,6 +80,15 @@ following configuration options:
   that needs it, e.g. `exec.fence()`.
 - Test device code by comparing against its host counterpart. The tests run on
   the host backend in CI, which has no GPUs.
+- Share code between host and device by default: make the host function
+  device-callable (e.g. templated on `DataType` with a `TempBuffer` for its
+  temporaries) instead of writing a device copy. The exception is the few
+  *hot kernels* where profiles show the run spends its time, e.g. the time
+  derivative of a system. Those may get a separate implementation written for
+  the device, e.g. split into several kernels or with temporaries recomputed
+  instead of stored, if profiles show the shared version is far from what the
+  hardware can do. Such a rewrite needs a unit test comparing it with the host
+  implementation on random data, so that the two can't drift apart.
 - `ASSERT` and `ERROR` work in device code. On the device the message is
   streamed into a `DeviceMessage` (`Utilities/ErrorHandling/DeviceMessage.hpp`)
   and passed to `Kokkos::abort`. Only the first failing GPU thread prints its

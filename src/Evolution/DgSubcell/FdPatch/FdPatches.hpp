@@ -30,12 +30,21 @@ namespace evolution::dg::subcell::fd_patch {
 /*!
  * \brief Which FD elements belong to which patch.
  *
- * \details A patch holds the elements of one block that use the subcell (FD)
- * grid for the whole evolution, i.e. the elements for which
+ * \details A patch holds elements of one block that use the subcell (FD) grid
+ * for the whole evolution, i.e. elements for which
  * `evolution::dg::subcell::starts_on_subcell_grid()` is true (this assumes
- * `AlwaysUseSubcells`). Blocks without such elements have no patch. Patches are
- * numbered in order of increasing block ID, and the elements of a patch (its
- * slots) are in the order of `initial_element_ids()`.
+ * `AlwaysUseSubcells`). Blocks without such elements have no patch. By default
+ * a block's FD elements form one patch. With `max_elements_per_patch`, they
+ * are split into the fewest patches that hold at most that many elements,
+ * with sizes that differ by at most one: the elements are ordered along the
+ * Z-curve of the block (see `domain::z_curve_index()`) and cut into
+ * consecutive pieces, so that each patch is spatially compact and has few
+ * faces with other patches. This is how a large block is spread over several
+ * GPUs.
+ *
+ * Patches are numbered in order of increasing block ID, and then along the
+ * Z-curve. The elements of a patch (its slots) are in the order of
+ * `initial_element_ids()`.
  *
  * All elements of a patch must have the same DG mesh, so that the patch can
  * step them with batched kernels.
@@ -66,11 +75,12 @@ class FdPatches {
       const std::vector<std::array<size_t, Dim>>& initial_extents,
       Spectral::Quadrature i1_quadrature,
       const std::vector<size_t>& only_dg_block_ids,
-      bool subcell_enabled_at_external_boundary);
+      bool subcell_enabled_at_external_boundary,
+      const std::optional<size_t>& max_elements_per_patch = std::nullopt);
 
   size_t number_of_patches() const { return block_ids_.size(); }
 
-  /// The block whose FD elements make up the `patch`.
+  /// The block of the FD elements of the `patch`.
   size_t block_id(size_t patch) const;
 
   /// The FD elements of the `patch`, in slot order.
@@ -106,6 +116,21 @@ class FdPatches {
 
 template <size_t Dim>
 bool operator==(const FdPatches<Dim>& lhs, const FdPatches<Dim>& rhs);
+
+/*!
+ * \brief The processor (PE) of each of the `number_of_patches` patches.
+ *
+ * \details `procs_on_nodes[n]` are the processors of node (process) `n` that
+ * may hold patches. The patches are distributed round-robin over the nodes
+ * that have such processors, and the patches of a node round-robin over its
+ * processors. With one process per GPU this spreads the patches evenly over
+ * the GPUs, and patches on the same GPU get different processors, i.e.
+ * different device execution space instances (see
+ * `Parallel::device_execution_space()`) as long as there are enough.
+ */
+std::vector<size_t> patch_procs(
+    size_t number_of_patches,
+    const std::vector<std::vector<size_t>>& procs_on_nodes);
 
 template <size_t Dim>
 bool operator!=(const FdPatches<Dim>& lhs, const FdPatches<Dim>& rhs);

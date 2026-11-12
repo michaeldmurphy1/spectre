@@ -3,6 +3,7 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <memory>
@@ -21,6 +22,7 @@
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/InitialElementIds.hpp"
 #include "Domain/Structure/SegmentId.hpp"
+#include "Domain/Structure/ZCurve.hpp"
 #include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/FdPatch/Tags.hpp"
 #include "Evolution/DgSubcell/SubcellAllowed.hpp"
@@ -29,6 +31,7 @@
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
+#include "Utilities/Literals.hpp"
 
 namespace {
 using evolution::dg::subcell::fd_patch::FdPatches;
@@ -70,7 +73,7 @@ void check_consistency(
   for (size_t patch = 0; patch < patches.number_of_patches(); ++patch) {
     CHECK_FALSE(patches.element_ids(patch).empty());
     if (patch > 0) {
-      CHECK(patches.block_id(patch) > patches.block_id(patch - 1));
+      CHECK(patches.block_id(patch) >= patches.block_id(patch - 1));
     }
   }
   test_serialization(patches);
@@ -158,6 +161,111 @@ void test_block_without_fd_elements() {
                     true);
 }
 
+// A block split into several patches: each patch is a consecutive piece of
+// the block's Z-curve, the pieces differ in size by at most one, and a patch
+// keeps the order of `initial_element_ids()`.
+void test_split_blocks() {
+  const auto domain = rectilinear_domain<2>(
+      Index<2>{2, 1},
+      std::array<std::vector<double>, 2>{{{0.0, 1.0, 2.0}, {0.0, 1.0}}});
+  // 16 elements in block 0, 8 in block 1
+  const std::vector<std::array<size_t, 2>> refinement{{{2, 2}}, {{1, 2}}};
+  const std::vector<std::array<size_t, 2>> extents(2, {{4, 4}});
+  for (const size_t max_elements :
+       {1_st, 3_st, 4_st, 5_st, 7_st, 16_st, 100_st}) {
+    CAPTURE(max_elements);
+    const FdPatches<2> patches{domain.blocks(),
+                               refinement,
+                               extents,
+                               Spectral::Quadrature::GaussLobatto,
+                               {},
+                               true,
+                               max_elements};
+    check_consistency(patches, domain, refinement, extents, {}, true);
+    for (const size_t block : {0_st, 1_st}) {
+      const size_t number_of_elements = block == 0 ? 16 : 8;
+      const size_t expected_number_of_patches =
+          (number_of_elements + max_elements - 1) / max_elements;
+      std::vector<size_t> block_patches{};
+      for (size_t patch = 0; patch < patches.number_of_patches(); ++patch) {
+        if (patches.block_id(patch) == block) {
+          block_patches.push_back(patch);
+        }
+      }
+      REQUIRE(block_patches.size() == expected_number_of_patches);
+      size_t last_z_curve_index = 0;
+      for (size_t i = 0; i < block_patches.size(); ++i) {
+        const auto& element_ids = patches.element_ids(block_patches[i]);
+        CHECK(element_ids.size() <= max_elements);
+        CHECK(element_ids.size() >=
+              number_of_elements / expected_number_of_patches);
+        CHECK(element_ids.size() <=
+              (number_of_elements + expected_number_of_patches - 1) /
+                  expected_number_of_patches);
+        CHECK(std::is_sorted(element_ids.begin(), element_ids.end()));
+        // Consecutive pieces of the Z-curve
+        std::vector<size_t> z_curve_indices{};
+        for (const auto& element_id : element_ids) {
+          z_curve_indices.push_back(domain::z_curve_index(element_id));
+        }
+        const auto [min_index, max_index] =
+            std::minmax_element(z_curve_indices.begin(), z_curve_indices.end());
+        if (i > 0) {
+          CHECK(*min_index > last_z_curve_index);
+        }
+        last_z_curve_index = *max_index;
+      }
+    }
+  }
+  // Block 0 in 2 x 2 quadrants of 4 elements each, and block 1 (a column of 4
+  // elements, conforming to block 0) in one patch
+  const FdPatches<2> quadrants{domain.blocks(),
+                               {{{2, 2}}, {{0, 2}}},
+                               extents,
+                               Spectral::Quadrature::GaussLobatto,
+                               {},
+                               true,
+                               4};
+  REQUIRE(quadrants.number_of_patches() == 5);
+  CHECK(quadrants.element_ids(0) ==
+        std::vector<ElementId<2>>{
+            ElementId<2>{0, {{SegmentId{2, 0}, SegmentId{2, 0}}}},
+            ElementId<2>{0, {{SegmentId{2, 0}, SegmentId{2, 1}}}},
+            ElementId<2>{0, {{SegmentId{2, 1}, SegmentId{2, 0}}}},
+            ElementId<2>{0, {{SegmentId{2, 1}, SegmentId{2, 1}}}}});
+  CHECK(quadrants.element_ids(4) ==
+        std::vector<ElementId<2>>{
+            ElementId<2>{1, {{SegmentId{0, 0}, SegmentId{2, 0}}}},
+            ElementId<2>{1, {{SegmentId{0, 0}, SegmentId{2, 1}}}},
+            ElementId<2>{1, {{SegmentId{0, 0}, SegmentId{2, 2}}}},
+            ElementId<2>{1, {{SegmentId{0, 0}, SegmentId{2, 3}}}}});
+  CHECK_THROWS_WITH(
+      (FdPatches<2>{domain.blocks(),
+                    refinement,
+                    extents,
+                    Spectral::Quadrature::GaussLobatto,
+                    {},
+                    true,
+                    0}),
+      Catch::Matchers::ContainsSubstring(
+          "The maximum number of elements per FD patch must be positive"));
+}
+
+void test_patch_procs() {
+  using evolution::dg::subcell::fd_patch::patch_procs;
+  CHECK(patch_procs(0, {}).empty());
+  // One node: round-robin over its processors
+  CHECK(patch_procs(5, {{0, 1, 2}}) == std::vector<size_t>{0, 1, 2, 0, 1});
+  // Two nodes (e.g. one per GPU): first over the nodes
+  CHECK(patch_procs(4, {{0, 1, 2}, {3, 4, 5}}) ==
+        std::vector<size_t>{0, 3, 1, 4});
+  // Nodes without usable processors are skipped
+  CHECK(patch_procs(4, {{}, {3, 5}, {7}}) == std::vector<size_t>{3, 7, 5, 7});
+  CHECK_THROWS_WITH(patch_procs(1, {{}, {}}),
+                    Catch::Matchers::ContainsSubstring(
+                        "No processor may hold the 1 FD patches"));
+}
+
 template <bool EnabledAtExternalBoundary>
 struct Metavariables {
   struct SubcellOptions {
@@ -176,19 +284,24 @@ void test_tag() {
   };
   using tag = evolution::dg::subcell::fd_patch::Tags::FdPatches<1>;
   // Periodic: no external boundaries, so all 4 elements are FD.
-  CHECK(
-      tag::create_from_options<Metavariables<false>>(
-          make_interval(true), std::nullopt, Spectral::Quadrature::GaussLobatto)
-          .number_of_elements() == 4);
+  CHECK(tag::create_from_options<Metavariables<false>>(
+            make_interval(true), std::nullopt,
+            Spectral::Quadrature::GaussLobatto, std::nullopt)
+            .number_of_elements() == 4);
   // The 2 elements at the ends are on the external boundary.
   CHECK(tag::create_from_options<Metavariables<false>>(
             make_interval(false), std::nullopt,
-            Spectral::Quadrature::GaussLobatto)
+            Spectral::Quadrature::GaussLobatto, std::nullopt)
             .number_of_elements() == 2);
   CHECK(tag::create_from_options<Metavariables<true>>(
             make_interval(false), std::nullopt,
-            Spectral::Quadrature::GaussLobatto)
+            Spectral::Quadrature::GaussLobatto, std::nullopt)
             .number_of_elements() == 4);
+  // Split into patches of at most 3 elements
+  CHECK(tag::create_from_options<Metavariables<true>>(
+            make_interval(false), std::nullopt,
+            Spectral::Quadrature::GaussLobatto, 3)
+            .number_of_patches() == 2);
 }
 }  // namespace
 
@@ -197,5 +310,7 @@ SPECTRE_TEST_CASE("Unit.Evolution.Subcell.FdPatch.FdPatches",
   test_dg_only_surrounding_blocks();
   test_external_boundary();
   test_block_without_fd_elements();
+  test_split_blocks();
+  test_patch_procs();
   test_tag();
 }

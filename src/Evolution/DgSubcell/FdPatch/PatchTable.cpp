@@ -27,7 +27,8 @@ evolution::patches::PatchTable<Dim> patch_table(
     const std::vector<std::array<size_t, Dim>>& initial_extents,
     const Spectral::Quadrature i1_quadrature,
     const std::vector<size_t>& only_dg_block_ids,
-    const bool subcell_enabled_at_external_boundary) {
+    const bool subcell_enabled_at_external_boundary,
+    const std::optional<size_t>& max_elements_per_patch) {
   return evolution::patches::PatchTable<Dim>{
       blocks, initial_refinement_levels,
       [&](const Element<Dim>& element) -> std::optional<Mesh<Dim>> {
@@ -43,7 +44,8 @@ evolution::patches::PatchTable<Dim> patch_table(
           return std::nullopt;
         }
         return dg_mesh;
-      }};
+      },
+      max_elements_per_patch};
 }
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
@@ -56,7 +58,8 @@ evolution::patches::PatchTable<Dim> patch_table(
       const std::vector<std::array<size_t, DIM(data)>>& initial_extents, \
       Spectral::Quadrature i1_quadrature,                                \
       const std::vector<size_t>& only_dg_block_ids,                      \
-      bool subcell_enabled_at_external_boundary);
+      bool subcell_enabled_at_external_boundary,                         \
+      const std::optional<size_t>& max_elements_per_patch);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))
 

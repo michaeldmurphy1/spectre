@@ -34,10 +34,14 @@
 #include "Utilities/TMPL.hpp"
 
 namespace grmhd::ValenciaDivClean::fd {
-template <typename FaceTags>
-PointwiseStatusSummary compute_conservatives_on_device(
+namespace {
+// With a `PointwiseStatusSummary` result if `deferred_status` is `nullptr`,
+// and else recording the status in `*deferred_status`
+template <typename FaceTags, typename StatusPointer>
+PointwiseStatusSummary compute_conservatives_impl(
     const Kokkos::DefaultExecutionSpace& exec,
     const gsl::not_null<BatchedVariables<FaceTags>*> faces,
+    const StatusPointer deferred_status,
     const EquationsOfState::EquationOfState<true, 3>& eos,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* const
         fix_to_atmosphere) {
@@ -51,8 +55,8 @@ PointwiseStatusSummary compute_conservatives_on_device(
       // The variables are both arguments and results. This is safe because
       // the arguments at a grid point are read before the results there are
       // written.
-      status = apply_pointwise_on_device<Function>(
-          exec, faces, typename Function::return_tags{},
+      status = ApplyPointwiseOnDevice_detail::apply_with_status<Function>(
+          exec, faces, deferred_status, typename Function::return_tags{},
           typename Function::argument_tags{},
           [&]<typename... ArgumentTags>(tmpl::list<ArgumentTags...> /*meta*/) {
             return make_device_arguments<ArgumentTags...>(
@@ -89,14 +93,46 @@ PointwiseStatusSummary compute_conservatives_on_device(
   });
   return status;
 }
+}  // namespace
+
+template <typename FaceTags>
+PointwiseStatusSummary compute_conservatives_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const gsl::not_null<BatchedVariables<FaceTags>*> faces,
+    const EquationsOfState::EquationOfState<true, 3>& eos,
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* const
+        fix_to_atmosphere) {
+  return compute_conservatives_impl(exec, faces, nullptr, eos,
+                                    fix_to_atmosphere);
+}
+
+template <typename FaceTags>
+void compute_conservatives_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const gsl::not_null<BatchedVariables<FaceTags>*> faces,
+    const gsl::not_null<DeferredPointwiseStatus<face_atmosphere_snapshot_tags>*>
+        status,
+    const EquationsOfState::EquationOfState<true, 3>& eos,
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* const
+        fix_to_atmosphere) {
+  compute_conservatives_impl(exec, faces, status.get(), eos, fix_to_atmosphere);
+}
 
 #define FACE_TAGS(data) BOOST_PP_TUPLE_ELEM(0, data)
-#define INSTANTIATION(r, data)                                     \
-  template PointwiseStatusSummary compute_conservatives_on_device( \
-      const Kokkos::DefaultExecutionSpace& exec,                   \
-      gsl::not_null<BatchedVariables<FACE_TAGS(data)>*> faces,     \
-      const EquationsOfState::EquationOfState<true, 3>& eos,       \
-      const VariableFixing::FixToAtmosphere<3>::DeviceView*        \
+#define INSTANTIATION(r, data)                                               \
+  template PointwiseStatusSummary compute_conservatives_on_device(           \
+      const Kokkos::DefaultExecutionSpace& exec,                             \
+      gsl::not_null<BatchedVariables<FACE_TAGS(data)>*> faces,               \
+      const EquationsOfState::EquationOfState<true, 3>& eos,                 \
+      const VariableFixing::FixToAtmosphere<3>::DeviceView*                  \
+          fix_to_atmosphere);                                                \
+  template void compute_conservatives_on_device(                             \
+      const Kokkos::DefaultExecutionSpace& exec,                             \
+      gsl::not_null<BatchedVariables<FACE_TAGS(data)>*> faces,               \
+      gsl::not_null<DeferredPointwiseStatus<face_atmosphere_snapshot_tags>*> \
+          status,                                                            \
+      const EquationsOfState::EquationOfState<true, 3>& eos,                 \
+      const VariableFixing::FixToAtmosphere<3>::DeviceView*                  \
           fix_to_atmosphere);
 GENERATE_INSTANTIATIONS(INSTANTIATION, (face_tags, device_face_tags))
 #undef INSTANTIATION

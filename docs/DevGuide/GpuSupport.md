@@ -279,8 +279,10 @@ elements of one block: all of them by default, or a piece of them if the block
 is split with the option `Patches.MaxElementsPerPatch`, e.g. to spread a large
 block over several GPUs. The patches are the members of the array component
 `evolution::patches::PatchArray`, distributed over the processes (one per GPU) first and over the processing
-elements of each process second (see `evolution::patches::patch_procs`). Which
-elements are in which patch is fixed
+elements of each process second (see `evolution::patches::patch_procs`). With
+`Patches.DedicatedProcs`, the elements of the `DgElementArray` avoid the
+processing elements of the patches, so that a patch never waits for other
+elements on its processing element. Which elements are in which patch is fixed
 at the start and stored in an `evolution::patches::PatchTable` in the global
 cache. Executables enable patches with `Metavariables::use_patches`, and
 provide the `patch_table_tag` and the `patch_component` (e.g.

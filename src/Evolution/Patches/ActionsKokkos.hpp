@@ -348,6 +348,7 @@ void for_each_element_box(const db::DataBox<DbTagsList>& box,
                           Parallel::GlobalCache<Metavariables>& cache,
                           const bool copy_variables, const Function& function) {
   constexpr size_t dim = Metavariables::volume_dim;
+  const Kokkos::Profiling::ScopedRegion region{"patches::element_boxes"};
   const auto& patch = db::get<PatchTag>(box);
   // Report failures of the last substep before anything sees its state
   patch.check_last_step(Parallel::device_execution_space());
@@ -356,6 +357,8 @@ void for_each_element_box(const db::DataBox<DbTagsList>& box,
       typename std::decay_t<decltype(patch)>::ElementVariables;
   std::vector<ElementVariables> variables{};
   if (copy_variables) {
+    const Kokkos::Profiling::ScopedRegion copy_region{
+        "patches::element_boxes::copy_variables"};
     variables = with_state<PatchTag>(box, [&patch](const auto&... state) {
       return patch.element_variables(Parallel::device_execution_space(),
                                      state...);
@@ -365,10 +368,13 @@ void for_each_element_box(const db::DataBox<DbTagsList>& box,
   }
   const auto& element_ids = patch.patch_elements().element_ids();
   for (size_t slot = 0; slot < element_ids.size(); ++slot) {
+    std::optional<Kokkos::Profiling::ScopedRegion> make_box_region{
+        "patches::element_boxes::make_box"};
     auto element_box = patch.make_element_box(
         cache, domain, slot, db::get<::Tags::Time>(box),
         db::get<::Tags::TimeStepId>(box), db::get<::Tags::TimeStep>(box),
         std::move(variables[slot]));
+    make_box_region.reset();
     function(element_ids[slot], element_box);
   }
 }
@@ -390,12 +396,25 @@ void run_events_on_elements(const std::vector<const Event*>& events,
   for_each_element_box<PatchTag>(
       box, cache, copy_variables,
       [&](const auto& element_id, auto& element_box) {
+        const Kokkos::Profiling::ScopedRegion events_region{
+            "patches::element_boxes::run_events"};
+        std::optional<Kokkos::Profiling::ScopedRegion> observation_box_region{
+            "patches::element_boxes::observation_box"};
         auto observation_box =
             make_observation_box<observation_compute_tags<Metavariables>>(
                 make_not_null(&element_box));
+        observation_box_region.reset();
         for (const Event* const event : events) {
           call_with_dynamic_type<void, events_on_elements<Metavariables>>(
-              event, [&](auto* const derived_event) {
+              event, [&]<typename EventType>(EventType* const derived_event) {
+                // One profiling region per type of event, named without its
+                // template arguments
+                static const std::string region_name = []() {
+                  const std::string name = pretty_type::name<EventType>();
+                  return "patches::element_boxes::event::" +
+                         name.substr(0, name.find('<'));
+                }();
+                const Kokkos::Profiling::ScopedRegion event_region{region_name};
                 mutate_apply(*derived_event, make_not_null(&observation_box),
                              cache, element_id,
                              static_cast<const ParallelComponent*>(nullptr),

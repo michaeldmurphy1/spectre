@@ -275,10 +275,11 @@ evolution supports (see the end of this section).
 Executables can evolve some of their elements on the device in *patches*,
 while the other elements stay on the host in the `DgElementArray`. Today these
 are the FD elements of DG-FD hybrid methods (*FD patches*). A patch holds
-elements of one block: all of them by default, or a piece of them if the block
-is split with the option `Patches.MaxElementsPerPatch`, e.g. to spread a large
-block over several GPUs. The patches are the members of the array component
-`evolution::patches::PatchArray`, distributed over the processes (one per GPU) first and over the processing
+elements with the same DG mesh, possibly in several blocks: all of them by
+default, or a piece of them if they are split with the option
+`Patches.MaxElementsPerPatch`, e.g. to spread them over several GPUs. The
+patches are the members of the array component `evolution::patches::PatchArray`,
+distributed over the processes (one per GPU) first and over the processing
 elements of each process second (see `evolution::patches::patch_procs`). With
 `Patches.DedicatedProcs`, the elements of the `DgElementArray` avoid the
 processing elements of the patches, so that a patch never waits for other

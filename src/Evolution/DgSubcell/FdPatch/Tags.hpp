@@ -42,6 +42,17 @@ struct MaxElementsPerPatch {
       "size. 'Auto' puts all FD elements of a block in one patch."};
   using group = FdPatchesGroup;
 };
+
+/// \ingroup OptionTagsGroup
+/// Whether the DG elements avoid the processors of the FD patches (see
+/// `evolution::dg::subcell::fd_patch::FdPatches::dedicated_procs`)
+struct DedicatedProcs {
+  using type = bool;
+  static constexpr Options::String help{
+      "Whether the DG elements avoid the processors (PEs) of the FD patches, "
+      "so that a patch never waits for DG elements on its processor."};
+  using group = FdPatchesGroup;
+};
 }  // namespace evolution::dg::subcell::fd_patch::OptionTags
 
 namespace evolution::dg::subcell::fd_patch::Tags {
@@ -58,7 +69,7 @@ struct FdPatches : db::SimpleTag {
       tmpl::list<::domain::OptionTags::DomainCreator<Dim>,
                  evolution::dg::OptionTags::OnlyDgBlocksAndGroups,
                  evolution::dg::OptionTags::Quadrature,
-                 OptionTags::MaxElementsPerPatch>;
+                 OptionTags::MaxElementsPerPatch, OptionTags::DedicatedProcs>;
 
   static constexpr bool pass_metavariables = true;
   template <typename Metavariables>
@@ -67,7 +78,8 @@ struct FdPatches : db::SimpleTag {
       const std::optional<std::vector<std::string>>&
           only_dg_block_and_group_names,
       const Spectral::Quadrature i1_quadrature,
-      const std::optional<size_t>& max_elements_per_patch) {
+      const std::optional<size_t>& max_elements_per_patch,
+      const bool dedicated_procs) {
     const auto domain = domain_creator->create_domain();
     return type{
         domain.blocks(),
@@ -78,7 +90,8 @@ struct FdPatches : db::SimpleTag {
             only_dg_block_and_group_names, domain_creator->block_names(),
             domain_creator->block_groups(), domain.blocks()),
         Metavariables::SubcellOptions::subcell_enabled_at_external_boundary,
-        max_elements_per_patch};
+        max_elements_per_patch,
+        dedicated_procs};
   }
 };
 }  // namespace evolution::dg::subcell::fd_patch::Tags

@@ -280,7 +280,10 @@ default, or a piece of them if the block is split with the option
 GPUs. The patches are the members of the array component
 `evolution::dg::subcell::fd_patch::FdPatchArray`, distributed over the
 processes (one per GPU) first and over the processing elements of each process
-second (see `evolution::dg::subcell::fd_patch::patch_procs`). Which
+second (see `evolution::dg::subcell::fd_patch::patch_procs`). With
+`FdPatches.DedicatedProcs`, the DG elements avoid the processing elements of
+the patches, so that a patch never waits for DG elements on its processing
+element. Which
 elements are FD and which patch holds them is fixed at the start (the patches
 need `AlwaysUseSubcells`), and `evolution::dg::subcell::fd_patch::FdPatches`
 stores the table in the global cache. Executables enable patches with

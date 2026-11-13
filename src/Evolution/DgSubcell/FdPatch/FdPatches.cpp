@@ -47,7 +47,9 @@ FdPatches<Dim>::FdPatches(
     const Spectral::Quadrature i1_quadrature,
     const std::vector<size_t>& only_dg_block_ids,
     const bool subcell_enabled_at_external_boundary,
-    const std::optional<size_t>& max_elements_per_patch) {
+    const std::optional<size_t>& max_elements_per_patch,
+    const bool dedicated_procs)
+    : dedicated_procs_(dedicated_procs) {
   if (max_elements_per_patch.has_value() and *max_elements_per_patch == 0) {
     ERROR("The maximum number of elements per FD patch must be positive.");
   }
@@ -172,6 +174,7 @@ void FdPatches<Dim>::pup(PUP::er& p) {
   p | dg_meshes_;
   p | locations_;
   p | number_of_dg_elements_;
+  p | dedicated_procs_;
 }
 
 template <size_t Dim>
@@ -180,7 +183,8 @@ bool operator==(const FdPatches<Dim>& lhs, const FdPatches<Dim>& rhs) {
          lhs.element_ids_ == rhs.element_ids_ and
          lhs.dg_meshes_ == rhs.dg_meshes_ and
          lhs.locations_ == rhs.locations_ and
-         lhs.number_of_dg_elements_ == rhs.number_of_dg_elements_;
+         lhs.number_of_dg_elements_ == rhs.number_of_dg_elements_ and
+         lhs.dedicated_procs_ == rhs.dedicated_procs_;
 }
 
 template <size_t Dim>

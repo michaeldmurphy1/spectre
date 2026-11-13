@@ -32,6 +32,7 @@
 #include "Parallel/ParallelComponentHelpers.hpp"
 #include "Parallel/Phase.hpp"
 #include "Parallel/Printf/Printf.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/Numeric.hpp"
 #include "Utilities/System/ParallelInfo.hpp"
@@ -132,7 +133,28 @@ void DgElementArray<Metavariables, PhaseDepActionList>::allocate_array(
 
   const size_t number_of_procs = Parallel::number_of_procs<size_t>(local_cache);
   const size_t number_of_nodes = Parallel::number_of_nodes<size_t>(local_cache);
-  const size_t num_of_procs_to_use = number_of_procs - procs_to_ignore.size();
+  // The DG elements may avoid the processors of FD patches
+  std::unordered_set<size_t> dg_procs_to_ignore = procs_to_ignore;
+  if constexpr (uses_fd_patches) {
+    const auto& fd_patches =
+        Parallel::get<typename Metavariables::fd_patches_tag>(local_cache);
+    if (fd_patches.dedicated_procs() and
+        fd_patches.number_of_dg_elements() > 0) {
+      for (const size_t proc : fd_patches.procs(local_cache, procs_to_ignore)) {
+        dg_procs_to_ignore.insert(proc);
+      }
+      if (dg_procs_to_ignore.size() >= number_of_procs) {
+        ERROR(
+            "The FD patches have dedicated processors, so the DG elements "
+            "need more processors than the "
+            << dg_procs_to_ignore.size()
+            << " that patches and other components use, out of "
+            << number_of_procs << ".");
+      }
+    }
+  }
+  const size_t num_of_procs_to_use =
+      number_of_procs - dg_procs_to_ignore.size();
 
   const auto& blocks = domain.blocks();
 
@@ -161,7 +183,7 @@ void DgElementArray<Metavariables, PhaseDepActionList>::allocate_array(
       element_weight, blocks, initial_extents, initial_refinement_levels,
       i1_basis, i1_quadrature,
 
-      procs_to_ignore, number_of_procs, number_of_nodes, num_of_procs_to_use,
+      dg_procs_to_ignore, number_of_procs, number_of_nodes, num_of_procs_to_use,
       local_cache, true, weighting_extents_override);
   dg_element_array.doneInserting();
 }

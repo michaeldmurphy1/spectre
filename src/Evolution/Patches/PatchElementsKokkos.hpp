@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "DataStructures/DataVector.hpp"
+#include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Domain/ElementMap.hpp"
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Domain/Structure/Element.hpp"
@@ -42,8 +44,8 @@ namespace evolution::patches {
  * generic actions use these members through the system's patch (see
  * `PatchArray`).
  *
- * All elements of a patch are in one block and share its grid to inertial
- * map.
+ * The grid to inertial map of an element is the moving mesh map of its block,
+ * or the identity. The patch holds one map per block of its elements.
  */
 class PatchElements {
  public:
@@ -55,12 +57,10 @@ class PatchElements {
   ~PatchElements() = default;
 
   /// Set up the elements of the patch `patch` of `patch_table` and their
-  /// maps, with the `grid_to_inertial_map` of their block.
+  /// maps.
   PatchElements(
       const Domain<3>& domain, const PatchTable<3>& patch_table, size_t patch,
-      const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
-      const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-          grid_to_inertial_map);
+      const std::vector<std::array<size_t, 3>>& initial_refinement_levels);
 
   /// The index of the patch in the `PatchTable`
   size_t patch() const { return patch_; }
@@ -78,11 +78,24 @@ class PatchElements {
   /// The DG mesh of the elements
   const Mesh<3>& dg_mesh() const { return dg_mesh_; }
 
-  /// The map from the grid to the inertial frame of the block of the patch
+  /// The map from the grid to the inertial frame of the element in `slot`
   const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-  grid_to_inertial_map() const {
-    return *grid_to_inertial_map_;
-  }
+  grid_to_inertial_map(size_t slot) const;
+
+  /// Whether the mesh of any element of the patch moves
+  bool mesh_is_moving() const { return mesh_is_moving_; }
+
+  /// @{
+  /// The grid to inertial maps of the blocks of the elements, the map of the
+  /// element in `slot`, and the grid coordinates of the corners of the
+  /// elements with the `map` (where it must be affine, see
+  /// `affine_grid_to_inertial`)
+  size_t number_of_maps() const { return grid_to_inertial_maps_.size(); }
+  const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>& map(
+      size_t map) const;
+  size_t map_of_slot(size_t slot) const;
+  const tnsr::I<DataVector, 3, Frame::Grid>& map_corners(size_t map) const;
+  /// @}
 
   /// A description of the element in `slot` for error messages
   std::string element_description(size_t slot) const;
@@ -100,8 +113,12 @@ class PatchElements {
   std::vector<ElementId<3>> element_ids_{};
   std::vector<Element<3>> elements_{};
   std::vector<ElementMap<3, Frame::Grid>> element_maps_{};
-  std::unique_ptr<::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>>
-      grid_to_inertial_map_{};
+  std::vector<std::unique_ptr<
+      ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>>>
+      grid_to_inertial_maps_{};
+  std::vector<size_t> map_of_slot_{};
+  std::vector<tnsr::I<DataVector, 3, Frame::Grid>> map_corners_{};
+  bool mesh_is_moving_ = false;
 };
 }  // namespace evolution::patches
 #endif  // SPECTRE_KOKKOS

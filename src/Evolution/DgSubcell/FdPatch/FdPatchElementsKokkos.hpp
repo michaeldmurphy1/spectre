@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
+#include "DataStructures/DataVector.hpp"
+#include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Domain/ElementMap.hpp"
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Domain/Structure/Element.hpp"
@@ -90,8 +92,6 @@ class FdPatchElements : public evolution::patches::PatchElements {
       const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
       const evolution::patches::PatchTable<3>& patch_table, size_t patch,
       const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
-      const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-          grid_to_inertial_map,
       double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
       size_t ghost_width, size_t number_of_ghost_variables,
       size_t number_of_packaged_variables);
@@ -99,8 +99,17 @@ class FdPatchElements : public evolution::patches::PatchElements {
   /// The subcell mesh of the elements
   const Mesh<3>& subcell_mesh() const { return subcell_mesh_; }
 
-  /// Update the geometry to the `time`. Only needed if the grid to inertial
-  /// map isn't the identity.
+  /*!
+   * \brief Update the geometry to the `time`. Only needed if the mesh moves.
+   *
+   * \details The host evaluates the grid to inertial maps (one per block)
+   * and copies their `evolution::patches::AffineGridToInertial` parameters to
+   * the device, from where the kernels read them, so the arguments of the
+   * kernels don't change between substeps. The copy from the host buffer is
+   * only enqueued, so the copy of the previous call must be done before the
+   * next call, e.g. because the patch waited for the device in between (which
+   * it does once per substep).
+   */
   void update_geometry(const Kokkos::DefaultExecutionSpace& exec, double time,
                        const ::domain::FunctionsOfTimeMap& functions_of_time);
 
@@ -112,8 +121,9 @@ class FdPatchElements : public evolution::patches::PatchElements {
   const BatchedVariables<inertial_cell_tags>& cell_geometry() const {
     return cell_geometry_;
   }
-  const evolution::patches::AffineGridToInertial& grid_to_inertial() const {
-    return grid_to_inertial_.value();
+  /// The divergence of the mesh velocity of each element
+  Kokkos::View<const double*> div_mesh_velocity() const {
+    return div_mesh_velocity_;
   }
   /// @}
 
@@ -187,8 +197,18 @@ class FdPatchElements : public evolution::patches::PatchElements {
   Mesh<3> subcell_mesh_{};
 
   // Geometry
+  bool geometry_computed_ = false;
   LogicalToGrid logical_to_grid_{};
-  std::optional<evolution::patches::AffineGridToInertial> grid_to_inertial_{};
+  // The parameters of the maps on the device, per face set (see
+  // `inertial_geometry_on_device()`), and the divergence of the mesh velocity
+  // per element, with their host buffers
+  Kokkos::View<evolution::patches::AffineGridToInertial*> grid_to_inertial_{};
+  Kokkos::View<double*> div_mesh_velocity_{};
+  Kokkos::View<evolution::patches::AffineGridToInertial*,
+               Kokkos::SharedHostPinnedSpace>
+      host_grid_to_inertial_{};
+  Kokkos::View<double*, Kokkos::SharedHostPinnedSpace>
+      host_div_mesh_velocity_{};
   BatchedVariables<inertial_face_tags> face_geometry_{};
   BatchedVariables<inertial_cell_tags> cell_geometry_{};
 

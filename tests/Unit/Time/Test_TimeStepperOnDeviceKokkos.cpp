@@ -166,8 +166,9 @@ void test_stepper(const TimeStepper& stepper,
       BatchedVariables<tmpl::list<Var>> device_dense_vars{
           exec, number_of_points, number_of_elements};
       REQUIRE(TimeSteppers::dense_update_u_on_device(
-                  exec, make_not_null(&device_dense_vars), device_history,
-                  stepper, dense_time) == dense_output_possible);
+                  exec, make_not_null(&device_dense_vars),
+                  make_not_null(&device_history), stepper,
+                  dense_time) == dense_output_possible);
       if (dense_output_possible) {
         const auto device_dense = to_host(device_dense_vars);
         for (size_t e = 0; e < number_of_elements; ++e) {
@@ -184,8 +185,8 @@ void test_stepper(const TimeStepper& stepper,
     }
     TimeSteppers::update_u_on_device(
         exec, make_not_null(&device_vars), make_not_null(&device_errors),
-        device_history, stepper, time_step_id, next_time_step_id, time_step,
-        true, tolerances);
+        make_not_null(&device_history), stepper, time_step_id,
+        next_time_step_id, time_step, true, tolerances);
     const auto updated = to_host(device_vars);
     REQUIRE(device_errors.size() == number_of_elements);
     for (size_t e = 0; e < number_of_elements; ++e) {

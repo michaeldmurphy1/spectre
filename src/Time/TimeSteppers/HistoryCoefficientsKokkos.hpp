@@ -19,6 +19,7 @@
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/DeviceParametersKokkos.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
 #ifdef SPECTRE_KOKKOS
@@ -76,15 +77,26 @@ struct DeviceHistoryView {
 };
 
 namespace HistoryCoefficientsKokkos_detail {
-template <typename MemorySpace>
-using ConstBatchView = Kokkos::View<const double**, Kokkos::LayoutStride,
-                                    MemorySpace, Kokkos::MemoryUnmanaged>;
+// The number of orders of `ErrorCoefficients::errors`
+constexpr size_t max_error_orders =
+    std::tuple_size_v<decltype(ErrorCoefficients::errors)>;
 
-// A `HistoryLinearCombination` with the history records resolved to
-// device views, so it can be captured by a kernel.
-template <typename MemorySpace>
+// The device data of a history record as a pointer and strides, so that it
+// can be passed to kernels in device memory (see `DeviceParameters`).
+struct DeviceRecord {
+  const double* data = nullptr;
+  size_t value_stride = 0;
+  size_t element_stride = 0;
+
+  KOKKOS_FUNCTION double operator()(const size_t i, const size_t e) const {
+    return data[i * value_stride + e * element_stride];
+  }
+};
+
+// A `HistoryLinearCombination` with the history records resolved to device
+// data.
 struct ResolvedCombination {
-  Kokkos::Array<ConstBatchView<MemorySpace>, max_history_terms> data{};
+  Kokkos::Array<DeviceRecord, max_history_terms> data{};
   Kokkos::Array<double, max_history_terms> coefficients{};
   size_t size = 0;
   bool accumulate = false;
@@ -103,11 +115,10 @@ struct ResolvedCombination {
 };
 
 // The error measure of `largest_stepper_error` at one point.
-template <typename MemorySpace>
 struct ScaledError {
-  ConstBatchView<MemorySpace> reference_value;
-  double absolute;
-  double relative;
+  DeviceRecord reference_value{};
+  double absolute = 0.0;
+  double relative = 0.0;
 
   KOKKOS_FUNCTION double operator()(const size_t i, const size_t e,
                                     const double error_value) const {
@@ -118,12 +129,23 @@ struct ScaledError {
   }
 };
 
+// Everything `apply_step_coefficients_on_device` needs on the device: the
+// update and, with error estimates, the estimate at the stepper order and at
+// the lower orders.
+struct StepParameters {
+  ResolvedCombination update{};
+  ResolvedCombination error{};
+  Kokkos::Array<ResolvedCombination, max_error_orders> lower_order_errors{};
+  size_t number_of_lower_orders = 0;
+  ScaledError scaled_error{};
+};
+
 template <typename MemorySpace>
-ConstBatchView<MemorySpace> record_data(
-    const DeviceHistoryView<MemorySpace>& history,
-    const HistoryTerm::Record record, const size_t index,
-    const HistoryTerm::Field field, const size_t number_of_values,
-    const size_t number_of_elements) {
+DeviceRecord record_data(const DeviceHistoryView<MemorySpace>& history,
+                         const HistoryTerm::Record record, const size_t index,
+                         const HistoryTerm::Field field,
+                         const size_t number_of_values,
+                         const size_t number_of_elements) {
   const DeviceHistoryRecordView<MemorySpace>* const records =
       record == HistoryTerm::Record::Step ? history.steps.data()
                                           : history.substeps.data();
@@ -154,17 +176,19 @@ ConstBatchView<MemorySpace> record_data(
           << "), but the result has (" << number_of_values << ", "
           << number_of_elements << ").");
   }
-  return view;
+  return DeviceRecord{.data = view.data(),
+                      .value_stride = view.stride(0),
+                      .element_stride = view.stride(1)};
 }
 
 template <typename MemorySpace>
-ResolvedCombination<MemorySpace> resolve(
-    const DeviceHistoryView<MemorySpace>& history,
-    const HistoryLinearCombination& combination, const size_t number_of_values,
-    const size_t number_of_elements) {
+ResolvedCombination resolve(const DeviceHistoryView<MemorySpace>& history,
+                            const HistoryLinearCombination& combination,
+                            const size_t number_of_values,
+                            const size_t number_of_elements) {
   ASSERT(combination.accumulate or combination.size > 0,
          "Cannot overwrite the result with an empty linear combination.");
-  ResolvedCombination<MemorySpace> result{};
+  ResolvedCombination result{};
   result.size = combination.size;
   result.accumulate = combination.accumulate;
   for (size_t i = 0; i < combination.size; ++i) {
@@ -178,20 +202,48 @@ ResolvedCombination<MemorySpace> resolve(
 }  // namespace HistoryCoefficientsKokkos_detail
 
 /// \ingroup TimeSteppersGroup
+/// The device buffer through which `apply_history_linear_combination_on_device`
+/// passes the coefficients to its kernel (see `DeviceParameters`).
+template <typename MemorySpace =
+              typename Kokkos::DefaultExecutionSpace::memory_space>
+using HistoryCombinationParameters =
+    DeviceParameters<HistoryCoefficientsKokkos_detail::ResolvedCombination,
+                     MemorySpace>;
+
+/// \ingroup TimeSteppersGroup
+/// The device buffer through which `apply_step_coefficients_on_device` passes
+/// the coefficients to its kernel (see `DeviceParameters`).
+template <typename MemorySpace =
+              typename Kokkos::DefaultExecutionSpace::memory_space>
+using StepCoefficientsParameters =
+    DeviceParameters<HistoryCoefficientsKokkos_detail::StepParameters,
+                     MemorySpace>;
+
+/// \ingroup TimeSteppersGroup
 /// Apply \p combination to the data in \p history on the device for a
 /// batch of elements, storing the result in \p result.  This is the
 /// device version of `apply_history_linear_combination`, e.g., for
 /// dense output or the inhomogeneous terms of an implicit substep.
+///
+/// The coefficients and the locations of the history data are passed to
+/// the kernel through \p parameters, so the kernel's arguments don't
+/// change between calls.  See `DeviceParameters` for when \p parameters
+/// can be reused.
 template <typename ExecutionSpace>
 void apply_history_linear_combination_on_device(
     const ExecutionSpace& exec,
     const HistoryBatchView<typename ExecutionSpace::memory_space>& result,
     const DeviceHistoryView<typename ExecutionSpace::memory_space>& history,
-    const HistoryLinearCombination& combination) {
+    const HistoryLinearCombination& combination,
+    const gsl::not_null<
+        HistoryCombinationParameters<typename ExecutionSpace::memory_space>*>
+        parameters) {
   const size_t number_of_values = result.extent(0);
   const size_t number_of_elements = result.extent(1);
-  const auto resolved = HistoryCoefficientsKokkos_detail::resolve(
-      history, combination, number_of_values, number_of_elements);
+  parameters->set(
+      exec, HistoryCoefficientsKokkos_detail::resolve(
+                history, combination, number_of_values, number_of_elements));
+  const auto resolved = parameters->device();
   Kokkos::parallel_for(
       "apply_history_linear_combination_on_device",
       Kokkos::RangePolicy<ExecutionSpace>(
@@ -199,7 +251,7 @@ void apply_history_linear_combination_on_device(
       KOKKOS_LAMBDA(const size_t k) {
         const size_t i = k % number_of_values;
         const size_t e = k / number_of_values;
-        result(i, e) = resolved.evaluate(i, e, result(i, e));
+        result(i, e) = resolved(0).evaluate(i, e, result(i, e));
       });
 }
 
@@ -216,6 +268,12 @@ void apply_history_linear_combination_on_device(
  * computed in a single pass over the data.  Lower-order estimates (for
  * `StepperErrorTolerances::Estimates::AllOrders`) take one more pass
  * each.
+ *
+ * The coefficients and the locations of the history data are passed to
+ * the kernel through \p parameters, so the kernel's arguments don't
+ * change between calls.  See `DeviceParameters` for when \p parameters
+ * can be reused.  With error estimates, this waits for \p exec, since the
+ * estimates are needed on the host.
  */
 template <typename ExecutionSpace>
 std::vector<std::optional<StepperErrorEstimate>>
@@ -224,58 +282,70 @@ apply_step_coefficients_on_device(
     const HistoryBatchView<typename ExecutionSpace::memory_space>& u,
     const DeviceHistoryView<typename ExecutionSpace::memory_space>& history,
     const StepCoefficients& coefficients,
-    const StepperErrorTolerances& tolerances) {
+    const StepperErrorTolerances& tolerances,
+    const gsl::not_null<
+        StepCoefficientsParameters<typename ExecutionSpace::memory_space>*>
+        parameters) {
   using MemorySpace = typename ExecutionSpace::memory_space;
+  using HistoryCoefficientsKokkos_detail::max_error_orders;
   const size_t number_of_values = u.extent(0);
   const size_t number_of_elements = u.extent(1);
   std::vector<std::optional<StepperErrorEstimate>> result(number_of_elements);
+  HistoryCoefficientsKokkos_detail::StepParameters step_parameters{};
+  step_parameters.update = HistoryCoefficientsKokkos_detail::resolve(
+      history, coefficients.update, number_of_values, number_of_elements);
   if (not coefficients.error.has_value()) {
-    apply_history_linear_combination_on_device(exec, u, history,
-                                               coefficients.update);
+    parameters->set(exec, step_parameters);
+    const auto device_parameters = parameters->device();
+    Kokkos::parallel_for(
+        "apply_step_coefficients_on_device",
+        Kokkos::RangePolicy<ExecutionSpace>(
+            exec, 0, number_of_values * number_of_elements),
+        KOKKOS_LAMBDA(const size_t k) {
+          const size_t i = k % number_of_values;
+          const size_t e = k / number_of_values;
+          u(i, e) = device_parameters(0).update.evaluate(i, e, u(i, e));
+        });
     return result;
   }
 
   const ErrorCoefficients& error_coefficients = *coefficients.error;
-  constexpr size_t max_error_orders =
-      std::tuple_size_v<decltype(ErrorCoefficients::errors)>;
   if (not gsl::at(error_coefficients.errors, error_coefficients.order)
               .has_value()) {
     ERROR("No error estimate at the stepper order "
           << error_coefficients.order);
   }
-
-  const auto update = HistoryCoefficientsKokkos_detail::resolve(
-      history, coefficients.update, number_of_values, number_of_elements);
-  const auto error = HistoryCoefficientsKokkos_detail::resolve(
+  step_parameters.error = HistoryCoefficientsKokkos_detail::resolve(
       history, *gsl::at(error_coefficients.errors, error_coefficients.order),
       number_of_values, number_of_elements);
-  ASSERT(not error.accumulate, "Error estimates cannot accumulate.");
+  ASSERT(not step_parameters.error.accumulate,
+         "Error estimates cannot accumulate.");
   // The estimates at other orders than the stepper order.
-  Kokkos::Array<
-      HistoryCoefficientsKokkos_detail::ResolvedCombination<MemorySpace>,
-      max_error_orders>
-      lower_order_errors{};
   std::array<size_t, max_error_orders> lower_orders{};
-  size_t number_of_lower_orders = 0;
   for (size_t order = 0; order < max_error_orders; ++order) {
     if (order != error_coefficients.order and
         gsl::at(error_coefficients.errors, order).has_value()) {
-      lower_order_errors[number_of_lower_orders] =
-          HistoryCoefficientsKokkos_detail::resolve(
-              history, *gsl::at(error_coefficients.errors, order),
-              number_of_values, number_of_elements);
-      ASSERT(not lower_order_errors[number_of_lower_orders].accumulate,
+      auto& lower_order_error =
+          step_parameters
+              .lower_order_errors[step_parameters.number_of_lower_orders];
+      lower_order_error = HistoryCoefficientsKokkos_detail::resolve(
+          history, *gsl::at(error_coefficients.errors, order), number_of_values,
+          number_of_elements);
+      ASSERT(not lower_order_error.accumulate,
              "Error estimates cannot accumulate.");
-      gsl::at(lower_orders, number_of_lower_orders) = order;
-      ++number_of_lower_orders;
+      gsl::at(lower_orders, step_parameters.number_of_lower_orders) = order;
+      ++step_parameters.number_of_lower_orders;
     }
   }
   // The error is measured relative to the value of the latest step.
-  const auto reference_value = HistoryCoefficientsKokkos_detail::record_data(
-      history, HistoryTerm::Record::Step, history.steps.size() - 1,
-      HistoryTerm::Field::Value, number_of_values, number_of_elements);
-  const HistoryCoefficientsKokkos_detail::ScaledError<MemorySpace> scaled_error{
-      reference_value, tolerances.absolute, tolerances.relative};
+  step_parameters.scaled_error = HistoryCoefficientsKokkos_detail::ScaledError{
+      HistoryCoefficientsKokkos_detail::record_data(
+          history, HistoryTerm::Record::Step, history.steps.size() - 1,
+          HistoryTerm::Field::Value, number_of_values, number_of_elements),
+      tolerances.absolute, tolerances.relative};
+  parameters->set(exec, step_parameters);
+  const auto device_parameters = parameters->device();
+  const size_t number_of_lower_orders = step_parameters.number_of_lower_orders;
 
   // One team per element reduces the error measures of that element.
   // Column 0 is the estimate at the stepper order, followed by the
@@ -288,15 +358,16 @@ apply_step_coefficients_on_device(
       "apply_step_coefficients_on_device",
       TeamPolicy(exec, static_cast<int>(number_of_elements), Kokkos::AUTO),
       KOKKOS_LAMBDA(const typename TeamPolicy::member_type& team) {
+        const auto& params = device_parameters(0);
         const size_t e = static_cast<size_t>(team.league_rank());
         double largest_error = 0.0;
         Kokkos::parallel_reduce(
             Kokkos::TeamThreadRange(team, number_of_values),
             [&](const size_t i, double& local_largest_error) {
-              local_largest_error =
-                  std::max(local_largest_error,
-                           scaled_error(i, e, error.evaluate(i, e, 0.0)));
-              u(i, e) = update.evaluate(i, e, u(i, e));
+              local_largest_error = std::max(
+                  local_largest_error,
+                  params.scaled_error(i, e, params.error.evaluate(i, e, 0.0)));
+              u(i, e) = params.update.evaluate(i, e, u(i, e));
             },
             Kokkos::Max<double>(largest_error));
         Kokkos::single(Kokkos::PerTeam(team),
@@ -308,8 +379,9 @@ apply_step_coefficients_on_device(
               [&](const size_t i, double& local_largest_error) {
                 local_largest_error = std::max(
                     local_largest_error,
-                    scaled_error(i, e,
-                                 lower_order_errors[k].evaluate(i, e, 0.0)));
+                    params.scaled_error(
+                        i, e,
+                        params.lower_order_errors[k].evaluate(i, e, 0.0)));
               },
               Kokkos::Max<double>(largest_lower_order_error));
           Kokkos::single(Kokkos::PerTeam(team), [&]() {

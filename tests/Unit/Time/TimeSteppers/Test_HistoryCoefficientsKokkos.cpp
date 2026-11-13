@@ -126,11 +126,12 @@ void check_step(const TimeStepper& stepper, const Histories& histories,
                 const StepperErrorTolerances& tolerances) {
   const MirroredHistory mirrored(histories);
   const DeviceBatch u("u", number_of_points, histories.size());
+  TimeSteppers::StepCoefficientsParameters<> parameters{};
   const auto errors = TimeSteppers::apply_step_coefficients_on_device(
       Kokkos::DefaultExecutionSpace{}, u, mirrored.device_history(),
       stepper.step_coefficients(TimeSteppers::HistoryTimes(histories.front()),
                                 time_step, tolerances),
-      tolerances);
+      tolerances, make_not_null(&parameters));
   const auto device_u = to_host(u);
   REQUIRE(errors.size() == histories.size());
 
@@ -184,9 +185,10 @@ bool check_dense_output(const TimeStepper& stepper, const Histories& histories,
 
   const MirroredHistory mirrored(histories);
   const DeviceBatch u = to_device(initial_u);
+  TimeSteppers::HistoryCombinationParameters<> parameters{};
   TimeSteppers::apply_history_linear_combination_on_device(
       Kokkos::DefaultExecutionSpace{}, u, mirrored.device_history(),
-      *coefficients);
+      *coefficients, make_not_null(&parameters));
   const auto device_u = to_host(u);
   for (size_t e = 0; e < histories.size(); ++e) {
     CAPTURE(e);
@@ -206,9 +208,10 @@ void check_implicit_terms(const ImexTimeStepper& stepper,
       TimeSteppers::HistoryTimes(implicit_histories.front()), time_step);
   const MirroredHistory mirrored(implicit_histories);
   const DeviceBatch u = to_device(explicit_u);
+  TimeSteppers::HistoryCombinationParameters<> parameters{};
   TimeSteppers::apply_history_linear_combination_on_device(
       Kokkos::DefaultExecutionSpace{}, u, mirrored.device_history(),
-      coefficients.inhomogeneous);
+      coefficients.inhomogeneous, make_not_null(&parameters));
   const auto device_u = to_host(u);
 
   for (size_t e = 0; e < implicit_histories.size(); ++e) {

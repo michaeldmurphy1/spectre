@@ -183,7 +183,8 @@ void test_integration(const TimeStepper& stepper, const size_t order,
       Kokkos::deep_copy(device_dense_u,
                         device_history.step_start_value(dense_time));
       TimeSteppers::apply_history_linear_combination_on_device(
-          exec, device_dense_u, device_history.device_view(), *coefficients);
+          exec, device_dense_u, device_history.device_view(), *coefficients,
+          device_history.dense_output_parameters());
       CHECK_ITERABLE_APPROX(to_host(device_dense_u), dense_u);
       ++dense_outputs;
     }
@@ -194,7 +195,7 @@ void test_integration(const TimeStepper& stepper, const size_t order,
         exec, device_u, device_history.device_view(),
         stepper.step_coefficients(device_history.times(), time_step,
                                   tolerances),
-        tolerances);
+        tolerances, device_history.step_coefficients_parameters());
     CHECK_ITERABLE_APPROX(to_host(device_u), u);
     // The device estimates the error of each element, the host that of
     // all the data, which is the largest of them.

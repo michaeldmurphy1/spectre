@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 /// \cond
 namespace EquationsOfState {
@@ -50,7 +51,7 @@ struct PrimitiveRecoveryData;
 class KastaunEtAlHydro {
  public:
   template <bool EnforcePhysicality, typename EosType>
-  static std::optional<PrimitiveRecoveryData> apply(
+  KOKKOS_FUNCTION static std::optional<PrimitiveRecoveryData> apply(
       double initial_guess_pressure, double tau,
       double momentum_density_squared,
       double momentum_density_dot_magnetic_field, double magnetic_field_squared,

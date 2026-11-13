@@ -171,8 +171,6 @@ class Patch {
   Patch(const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
         const evolution::patches::PatchTable<3>& patch_table, size_t patch,
         const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
-        const domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-            grid_to_inertial_map,
         double time, const domain::FunctionsOfTimeMap& functions_of_time,
         const fd::Reconstructor& reconstructor,
         const evolution::BoundaryCorrection& boundary_correction,
@@ -255,8 +253,8 @@ class Patch {
         cache, element, patch_elements_.dg_mesh(),
         ElementMap<3, Frame::Grid>{element.id(),
                                    domain.blocks()[element.id().block_id()]},
-        patch_elements_.grid_to_inertial_map().get_clone(), time, time_step_id,
-        time_step, tci_status_sent, std::move(variables.evolved),
+        patch_elements_.grid_to_inertial_map(slot).get_clone(), time,
+        time_step_id, time_step, tci_status_sent, std::move(variables.evolved),
         std::move(variables.primitives), std::move(variables.spacetime));
   }
 

@@ -90,7 +90,10 @@ void record_on_device(const Kokkos::DefaultExecutionSpace& exec,
  *
  * The update is written to `vars` on the device in `exec`. With error
  * estimates, this waits for `exec` to complete, since the estimates are needed
- * on the host.
+ * on the host. The coefficients are passed to the kernel through
+ * `DeviceHistory::step_coefficients_parameters()`, so the device must have
+ * been waited for since the last update of this `history` (see
+ * `DeviceParameters`), e.g. once per substep.
  */
 template <typename VarsTags>
 void update_u_on_device(
@@ -99,20 +102,21 @@ void update_u_on_device(
     const gsl::not_null<
         std::vector<std::array<std::optional<StepperErrorEstimate>, 2>>*>
         errors,
-    const DeviceHistory<>& history, const TimeStepper& time_stepper,
-    const TimeStepId& time_step_id, const TimeStepId& next_time_step_id,
-    const TimeDelta& time_step, const bool error_estimates_enabled,
+    const gsl::not_null<DeviceHistory<>*> history,
+    const TimeStepper& time_stepper, const TimeStepId& time_step_id,
+    const TimeStepId& next_time_step_id, const TimeDelta& time_step,
+    const bool error_estimates_enabled,
     const StepperErrorTolerances& stepper_tolerances) {
   if (::SelfStart::step_unused(time_step_id, next_time_step_id)) {
     return;
   }
-  TimeStepperOnDevice_detail::check_sizes(history, *vars);
+  TimeStepperOnDevice_detail::check_sizes(*history, *vars);
   const auto result = TimeStepperOnDevice_detail::as_history_batch(*vars);
   if (not error_estimates_enabled) {
     apply_step_coefficients_on_device(
-        exec, result, history.device_view(),
-        time_stepper.step_coefficients(history.times(), time_step),
-        StepperErrorTolerances{});
+        exec, result, history->device_view(),
+        time_stepper.step_coefficients(history->times(), time_step),
+        StepperErrorTolerances{}, history->step_coefficients_parameters());
     return;
   }
   // As in `UpdateU`, variable-order h-refinement needs low-order error
@@ -121,14 +125,14 @@ void update_u_on_device(
   if (tolerances.estimates != StepperErrorTolerances::Estimates::None and
       variants::holds_alternative<TimeSteppers::Tags::VariableOrder>(
           time_stepper.order()) and
-      (history.bookkeeping().back().time_step_id.step_time() + time_step)
+      (history->bookkeeping().back().time_step_id.step_time() + time_step)
           .is_at_slab_boundary()) {
     tolerances.estimates = StepperErrorTolerances::Estimates::AllOrders;
   }
   const auto new_errors = apply_step_coefficients_on_device(
-      exec, result, history.device_view(),
-      time_stepper.step_coefficients(history.times(), time_step, tolerances),
-      tolerances);
+      exec, result, history->device_view(),
+      time_stepper.step_coefficients(history->times(), time_step, tolerances),
+      tolerances, history->step_coefficients_parameters());
   errors->resize(vars->number_of_elements());
   for (size_t e = 0; e < new_errors.size(); ++e) {
     const auto& new_error = new_errors[e];
@@ -153,23 +157,28 @@ void update_u_on_device(
  * Returns false if dense output is not possible yet, as `dense_update_u`
  * does. Unlike `dense_update_u`, this also sets `vars` to the value at the
  * start of the step. The result is written to `vars` on the device in `exec`.
+ * The coefficients are passed to the kernel through
+ * `DeviceHistory::dense_output_parameters()`, so the device must have been
+ * waited for since the last dense output of this `history` (see
+ * `DeviceParameters`), e.g. because its result was copied to the host.
  */
 template <typename VarsTags>
 bool dense_update_u_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
     const gsl::not_null<BatchedVariables<VarsTags>*> vars,
-    const DeviceHistory<>& history, const TimeStepper& time_stepper,
-    const double time) {
-  TimeStepperOnDevice_detail::check_sizes(history, *vars);
+    const gsl::not_null<DeviceHistory<>*> history,
+    const TimeStepper& time_stepper, const double time) {
+  TimeStepperOnDevice_detail::check_sizes(*history, *vars);
   const auto coefficients =
-      time_stepper.dense_output_coefficients(history.times(), time);
+      time_stepper.dense_output_coefficients(history->times(), time);
   if (not coefficients.has_value()) {
     return false;
   }
   const auto result = TimeStepperOnDevice_detail::as_history_batch(*vars);
-  Kokkos::deep_copy(exec, result, history.step_start_value(time));
+  Kokkos::deep_copy(exec, result, history->step_start_value(time));
   apply_history_linear_combination_on_device(
-      exec, result, history.device_view(), *coefficients);
+      exec, result, history->device_view(), *coefficients,
+      history->dense_output_parameters());
   return true;
 }
 }  // namespace TimeSteppers

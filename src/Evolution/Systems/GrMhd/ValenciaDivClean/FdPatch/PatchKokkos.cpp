@@ -348,7 +348,7 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::take_step(
   TimeSteppers::record_on_device(exec, history, time_step_id,
                                  *evolved_variables, dt_variables_);
   TimeSteppers::update_u_on_device(
-      exec, evolved_variables, make_not_null(&stepper_errors_), *history,
+      exec, evolved_variables, make_not_null(&stepper_errors_), history,
       time_stepper, time_step_id, next_time_step_id, time_step, false,
       StepperErrorTolerances{});
   history->clean(time_stepper);

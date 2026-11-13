@@ -286,22 +286,36 @@ void test_tag() {
   // Periodic: no external boundaries, so all 4 elements are FD.
   CHECK(tag::create_from_options<Metavariables<false>>(
             make_interval(true), std::nullopt,
-            Spectral::Quadrature::GaussLobatto, std::nullopt)
+            Spectral::Quadrature::GaussLobatto, std::nullopt, false)
             .number_of_elements() == 4);
   // The 2 elements at the ends are on the external boundary.
   CHECK(tag::create_from_options<Metavariables<false>>(
             make_interval(false), std::nullopt,
-            Spectral::Quadrature::GaussLobatto, std::nullopt)
+            Spectral::Quadrature::GaussLobatto, std::nullopt, false)
             .number_of_elements() == 2);
   CHECK(tag::create_from_options<Metavariables<true>>(
             make_interval(false), std::nullopt,
-            Spectral::Quadrature::GaussLobatto, std::nullopt)
+            Spectral::Quadrature::GaussLobatto, std::nullopt, false)
             .number_of_elements() == 4);
   // Split into patches of at most 3 elements
   CHECK(tag::create_from_options<Metavariables<true>>(
             make_interval(false), std::nullopt,
-            Spectral::Quadrature::GaussLobatto, 3)
+            Spectral::Quadrature::GaussLobatto, 3, false)
             .number_of_patches() == 2);
+  // The DG elements may avoid the processors of the patches
+  CHECK_FALSE(tag::create_from_options<Metavariables<true>>(
+                  make_interval(false), std::nullopt,
+                  Spectral::Quadrature::GaussLobatto, std::nullopt, false)
+                  .dedicated_procs());
+  const auto dedicated = tag::create_from_options<Metavariables<true>>(
+      make_interval(false), std::nullopt, Spectral::Quadrature::GaussLobatto,
+      std::nullopt, true);
+  CHECK(dedicated.dedicated_procs());
+  test_serialization(dedicated);
+  CHECK(dedicated != tag::create_from_options<Metavariables<true>>(
+                         make_interval(false), std::nullopt,
+                         Spectral::Quadrature::GaussLobatto, std::nullopt,
+                         false));
 }
 }  // namespace
 

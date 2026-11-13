@@ -378,9 +378,16 @@ void test(const Correction& correction, const Reconstructor& recons) {
       exec, logical_to_grid.faces.number_of_grid_points(), 3};
   BatchedVariables<fd_patch::inertial_cell_tags> cell_geometry{
       exec, number_of_cells, 1};
+  // The map of each of the 3 face sets of the element, and the divergence of
+  // the mesh velocity of the element
+  const Kokkos::View<fd_patch::AffineGridToInertial*> maps{"maps", 3};
+  Kokkos::deep_copy(exec, maps, grid_to_inertial);
+  const Kokkos::View<double*> div_mesh_velocity{"div_mesh_velocity", 1};
+  Kokkos::deep_copy(exec, div_mesh_velocity,
+                    grid_to_inertial.div_mesh_velocity);
   fd_patch::inertial_geometry_on_device(exec, make_not_null(&face_geometry),
                                         make_not_null(&cell_geometry),
-                                        logical_to_grid, grid_to_inertial);
+                                        logical_to_grid, maps);
 
   subcell::TimeDerivativeOnDevice<Correction> time_derivative{
       exec, 1, dg_mesh, fd::ReconstructorOnDevice{recons}};
@@ -393,8 +400,8 @@ void test(const Correction& correction, const Reconstructor& recons) {
   time_derivative.apply(
       exec, make_not_null(&dt_vars), make_not_null(&face_status), padded,
       evolved, primitives, cell_spacetime, face_geometry, cell_geometry,
-      grid_to_inertial, correction, *eos, &fixer, 1.0,
-      fd_patch::PackagedDataFromDg<3>{}, Kokkos::View<const double*>{});
+      grid_to_inertial.is_moving, div_mesh_velocity, correction, *eos, &fixer,
+      1.0, fd_patch::PackagedDataFromDg<3>{}, Kokkos::View<const double*>{});
   face_status.copy_to_host(exec);
   exec.fence();
   CHECK_FALSE(face_status.failed());
@@ -415,14 +422,12 @@ void test(const Correction& correction, const Reconstructor& recons) {
 
   // The moving mesh terms vanish for a mesh that doesn't move, which the host
   // doesn't support
-  auto not_moving = grid_to_inertial;
-  not_moving.is_moving = true;
   BatchedVariables<subcell::dt_tags_on_device> moving_dt_vars{
       exec, number_of_cells, 1};
   time_derivative.apply(
       exec, make_not_null(&moving_dt_vars), make_not_null(&face_status), padded,
-      evolved, primitives, cell_spacetime, face_geometry, cell_geometry,
-      not_moving, correction, *eos, &fixer, 1.0,
+      evolved, primitives, cell_spacetime, face_geometry, cell_geometry, true,
+      div_mesh_velocity, correction, *eos, &fixer, 1.0,
       fd_patch::PackagedDataFromDg<3>{}, Kokkos::View<const double*>{});
   BatchedVariables<subcell::dt_tags_on_device, Kokkos::HostSpace>
       host_moving_dt{number_of_cells, 1};

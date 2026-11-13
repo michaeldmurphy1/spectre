@@ -96,8 +96,6 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
     const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
     const patch_ns::FdPatches<3>& fd_patches, const size_t patch,
     const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
-    const domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-        grid_to_inertial_map,
     const double time, const domain::FunctionsOfTimeMap& functions_of_time,
     const fd::Reconstructor& reconstructor,
     const evolution::BoundaryCorrection& boundary_correction,
@@ -151,7 +149,6 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
       fd_patches,
       patch,
       initial_refinement_levels,
-      grid_to_inertial_map,
       time,
       functions_of_time,
       reconstructor_on_device.ghost_zone_size(),
@@ -182,7 +179,6 @@ auto Patch<OrderedListOfPrimitiveRecoverySchemes>::initial_state(
     -> tuples::tagged_tuple_from_typelist<state_tags> {
   const Mesh<3>& subcell_mesh = patch_elements_.subcell_mesh();
   const auto& element_maps = patch_elements_.element_maps();
-  const auto& grid_to_inertial_map = patch_elements_.grid_to_inertial_map();
   const size_t number_of_elements = patch_elements_.number_of_elements();
   const size_t number_of_cells = subcell_mesh.number_of_grid_points();
   Index<3> face_extents = subcell_mesh.extents();
@@ -196,6 +192,8 @@ auto Patch<OrderedListOfPrimitiveRecoverySchemes>::initial_state(
   std::vector<Variables<subcell::face_spacetime_tags>> face_spacetime(
       3 * number_of_elements);
   for (size_t slot = 0; slot < number_of_elements; ++slot) {
+    const auto& grid_to_inertial_map =
+        patch_elements_.grid_to_inertial_map(slot);
     const auto inertial_coords =
         grid_to_inertial_map(element_maps[slot](cell_logical_coords),
                              initial_time, functions_of_time);
@@ -335,7 +333,8 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::take_step(
             patch_elements_.padded_ghost_variables(), *evolved_variables,
             *primitives, *cell_spacetime_variables,
             patch_elements_.face_geometry(), patch_elements_.cell_geometry(),
-            patch_elements_.grid_to_inertial(),
+            patch_elements_.mesh_is_moving(),
+            patch_elements_.div_mesh_velocity(),
             std::get<Correction>(boundary_correction_), *equation_of_state_,
             &fix_to_atmosphere_, constraint_damping_parameter_,
             patch_elements_.packaged_data_from_dg(),

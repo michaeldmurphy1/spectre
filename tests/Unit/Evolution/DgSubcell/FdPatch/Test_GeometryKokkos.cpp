@@ -165,9 +165,13 @@ void check_inertial_geometry(
       3 * number_of_elements};
   BatchedVariables<fd_patch::inertial_cell_tags> cells{
       exec, logical_to_grid.cells.number_of_grid_points(), number_of_elements};
+  // The same map for the faces in every direction of every element
+  const Kokkos::View<fd_patch::AffineGridToInertial*> maps{
+      "maps", 3 * number_of_elements};
+  Kokkos::deep_copy(exec, maps, affine);
   fd_patch::inertial_geometry_on_device(exec, make_not_null(&faces),
                                         make_not_null(&cells), logical_to_grid,
-                                        affine);
+                                        maps);
   BatchedVariables<fd_patch::inertial_face_tags, Kokkos::HostSpace> host_faces{
       Kokkos::DefaultHostExecutionSpace{}, faces.number_of_grid_points(),
       faces.number_of_elements()};
@@ -271,6 +275,105 @@ void check_inertial_geometry(
               get(dg_det_inv_jacobian), dg_mesh, face_mesh_extents, i,
               Spectral::Parity::Even),
           custom_approx);
+    }
+  }
+
+  // Each element uses its own map: give the first element the identity map,
+  // so its geometry is the logical to grid geometry, and check that the other
+  // elements are unchanged
+  if (not affine.is_moving or number_of_elements < 2) {
+    return;
+  }
+  const auto identity = fd_patch::affine_grid_to_inertial(
+      *domain::make_coordinate_map_base<Frame::Grid, Frame::Inertial>(
+          domain::CoordinateMaps::Identity<3>{}),
+      time, {}, logical_to_grid.corners);
+  for (size_t d = 0; d < 3; ++d) {
+    Kokkos::deep_copy(exec, Kokkos::subview(maps, d * number_of_elements),
+                      identity);
+  }
+  BatchedVariables<fd_patch::inertial_face_tags> mixed_faces{
+      exec, faces.number_of_grid_points(), faces.number_of_elements()};
+  BatchedVariables<fd_patch::inertial_cell_tags> mixed_cells{
+      exec, cells.number_of_grid_points(), cells.number_of_elements()};
+  fd_patch::inertial_geometry_on_device(exec, make_not_null(&mixed_faces),
+                                        make_not_null(&mixed_cells),
+                                        logical_to_grid, maps);
+  BatchedVariables<fd_patch::inertial_face_tags, Kokkos::HostSpace>
+      host_mixed_faces{Kokkos::DefaultHostExecutionSpace{},
+                       faces.number_of_grid_points(),
+                       faces.number_of_elements()};
+  BatchedVariables<fd_patch::inertial_cell_tags, Kokkos::HostSpace>
+      host_mixed_cells{Kokkos::DefaultHostExecutionSpace{},
+                       cells.number_of_grid_points(),
+                       cells.number_of_elements()};
+  BatchedVariables<fd_patch::logical_to_grid_face_tags, Kokkos::HostSpace>
+      host_grid_faces{Kokkos::DefaultHostExecutionSpace{},
+                      faces.number_of_grid_points(),
+                      faces.number_of_elements()};
+  BatchedVariables<fd_patch::logical_to_grid_cell_tags, Kokkos::HostSpace>
+      host_grid_cells{Kokkos::DefaultHostExecutionSpace{},
+                      cells.number_of_grid_points(),
+                      cells.number_of_elements()};
+  deep_copy(exec, make_not_null(&host_mixed_faces), mixed_faces);
+  deep_copy(exec, make_not_null(&host_mixed_cells), mixed_cells);
+  deep_copy(exec, make_not_null(&host_grid_faces), logical_to_grid.faces);
+  deep_copy(exec, make_not_null(&host_grid_cells), logical_to_grid.cells);
+  exec.fence();
+  for (size_t e = 0; e < number_of_elements; ++e) {
+    CAPTURE(e);
+    const auto cell_det = to_data_vector(
+        get(get<::Tags::MirrorView<fd_patch::Tags::CellDetInverseJacobian,
+                                   Kokkos::HostSpace>>(
+            host_mixed_cells.element(e))));
+    if (e == 0) {
+      CHECK(cell_det ==
+            to_data_vector(
+                get(get<::Tags::MirrorView<
+                        fd_patch::Tags::LogicalToGridCellDetInverseJacobian,
+                        Kokkos::HostSpace>>(host_grid_cells.element(e)))));
+    } else {
+      CHECK(cell_det ==
+            to_data_vector(get(
+                get<::Tags::MirrorView<fd_patch::Tags::CellDetInverseJacobian,
+                                       Kokkos::HostSpace>>(
+                    host_cells.element(e)))));
+    }
+    for (size_t d = 0; d < 3; ++d) {
+      CAPTURE(d);
+      const auto mixed = host_mixed_faces.element(d * number_of_elements + e);
+      for (size_t j = 0; j < 3; ++j) {
+        const auto mesh_velocity = to_data_vector(
+            get<::Tags::MirrorView<fd_patch::Tags::FaceMeshVelocity,
+                                   Kokkos::HostSpace>>(mixed)
+                .get(j));
+        const auto conormal =
+            to_data_vector(get<::Tags::MirrorView<fd_patch::Tags::FaceConormal,
+                                                  Kokkos::HostSpace>>(mixed)
+                               .get(j));
+        if (e == 0) {
+          CHECK(mesh_velocity == DataVector(mesh_velocity.size(), 0.0));
+          CHECK(conormal ==
+                to_data_vector(
+                    get<::Tags::MirrorView<
+                        fd_patch::Tags::LogicalToGridFaceConormal,
+                        Kokkos::HostSpace>>(
+                        host_grid_faces.element(d * number_of_elements + e))
+                        .get(j)));
+        } else {
+          const auto original = host_faces.element(d * number_of_elements + e);
+          CHECK(mesh_velocity ==
+                to_data_vector(
+                    get<::Tags::MirrorView<fd_patch::Tags::FaceMeshVelocity,
+                                           Kokkos::HostSpace>>(original)
+                        .get(j)));
+          CHECK(conormal ==
+                to_data_vector(
+                    get<::Tags::MirrorView<fd_patch::Tags::FaceConormal,
+                                           Kokkos::HostSpace>>(original)
+                        .get(j)));
+        }
+      }
     }
   }
 }

@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
+#include "DataStructures/DataVector.hpp"
+#include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Domain/ElementMap.hpp"
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Domain/Structure/Element.hpp"
@@ -76,19 +78,18 @@ class PatchElements {
   /*!
    * \brief Set up the elements of the patch `patch` of `fd_patches`.
    *
-   * This builds the elements and their maps, checks that their cells line up
-   * with those of their neighbors in other blocks, builds the tables for the
-   * ghost zones (of width `ghost_width`, for `number_of_ghost_variables`
-   * variables) and for the packaged data from DG neighbors (with
-   * `number_of_packaged_variables` independent components), and computes the
-   * geometry at the `time`.
+   * This builds the elements and their maps (the grid to inertial map of an
+   * element is the moving mesh map of its block, or the identity), checks that
+   * their cells line up with those of their neighbors in other blocks, builds
+   * the tables for the ghost zones (of width `ghost_width`, for
+   * `number_of_ghost_variables` variables) and for the packaged data from DG
+   * neighbors (with `number_of_packaged_variables` independent components),
+   * and computes the geometry at the `time`.
    */
   PatchElements(
       const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
       const FdPatches<3>& fd_patches, size_t patch,
       const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
-      const domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-          grid_to_inertial_map,
       double time, const domain::FunctionsOfTimeMap& functions_of_time,
       size_t ghost_width, size_t number_of_ghost_variables,
       size_t number_of_packaged_variables);
@@ -108,11 +109,12 @@ class PatchElements {
   /// The subcell mesh of the elements
   const Mesh<3>& subcell_mesh() const { return subcell_mesh_; }
 
-  /// The map from the grid to the inertial frame of the block of the patch
+  /// The map from the grid to the inertial frame of the element in `slot`
   const domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-  grid_to_inertial_map() const {
-    return *grid_to_inertial_map_;
-  }
+  grid_to_inertial_map(size_t slot) const;
+
+  /// Whether the mesh of any element of the patch moves
+  bool mesh_is_moving() const { return mesh_is_moving_; }
 
   /// A description of the element in `slot` for error messages
   std::string element_description(size_t slot) const;
@@ -124,8 +126,16 @@ class PatchElements {
   TimeSteppers::DeviceHistory<> initial_history(const TimeStepper& time_stepper,
                                                 size_t number_of_values) const;
 
-  /// Update the geometry to the `time`. Only needed if the grid to inertial
-  /// map isn't the identity.
+  /*!
+   * \brief Update the geometry to the `time`. Only needed if the mesh moves.
+   *
+   * \details The host evaluates the grid to inertial maps and copies their
+   * `AffineGridToInertial` parameters to the device, from where the kernels
+   * read them, so the arguments of the kernels don't change between
+   * substeps. The copy from the host buffer is only enqueued, so the copy of
+   * the previous call must be done before the next call, e.g. because the
+   * patch waited for the device in between (which it does once per substep).
+   */
   void update_geometry(const Kokkos::DefaultExecutionSpace& exec, double time,
                        const domain::FunctionsOfTimeMap& functions_of_time);
 
@@ -137,8 +147,9 @@ class PatchElements {
   const BatchedVariables<inertial_cell_tags>& cell_geometry() const {
     return cell_geometry_;
   }
-  const AffineGridToInertial& grid_to_inertial() const {
-    return grid_to_inertial_.value();
+  /// The divergence of the mesh velocity of each element
+  Kokkos::View<const double*> div_mesh_velocity() const {
+    return div_mesh_velocity_;
   }
   /// @}
 
@@ -214,10 +225,26 @@ class PatchElements {
   std::vector<ElementMap<3, Frame::Grid>> element_maps_{};
 
   // Geometry
-  std::unique_ptr<domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>>
-      grid_to_inertial_map_{};
+  // The grid to inertial maps of the blocks of the elements, the map of each
+  // slot, and the grid coordinates of the corners of the elements of each map,
+  // where it must be affine
+  std::vector<std::unique_ptr<
+      domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>>>
+      grid_to_inertial_maps_{};
+  std::vector<size_t> map_of_slot_{};
+  std::vector<tnsr::I<DataVector, 3, Frame::Grid>> map_corners_{};
+  bool mesh_is_moving_ = false;
+  bool geometry_computed_ = false;
   LogicalToGrid logical_to_grid_{};
-  std::optional<AffineGridToInertial> grid_to_inertial_{};
+  // The parameters of the maps on the device, per face set (see
+  // `inertial_geometry_on_device()`), and the divergence of the mesh velocity
+  // per element, with their host buffers
+  Kokkos::View<AffineGridToInertial*> grid_to_inertial_{};
+  Kokkos::View<double*> div_mesh_velocity_{};
+  Kokkos::View<AffineGridToInertial*, Kokkos::SharedHostPinnedSpace>
+      host_grid_to_inertial_{};
+  Kokkos::View<double*, Kokkos::SharedHostPinnedSpace>
+      host_div_mesh_velocity_{};
   BatchedVariables<inertial_face_tags> face_geometry_{};
   BatchedVariables<inertial_cell_tags> cell_geometry_{};
 

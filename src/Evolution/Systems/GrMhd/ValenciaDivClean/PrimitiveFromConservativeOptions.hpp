@@ -10,6 +10,7 @@
 
 #include "Options/Context.hpp"
 #include "Options/String.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
@@ -66,11 +67,13 @@ class PrimitiveFromConservativeOptions {
 
   void pup(PUP::er& p);
 
-  double cutoff_d_for_inversion() const { return cutoff_d_for_inversion_; }
-  double density_when_skipping_inversion() const {
+  KOKKOS_FUNCTION double cutoff_d_for_inversion() const {
+    return cutoff_d_for_inversion_;
+  }
+  KOKKOS_FUNCTION double density_when_skipping_inversion() const {
     return density_when_skipping_inversion_;
   }
-  double kastaun_max_lorentz_factor() const {
+  KOKKOS_FUNCTION double kastaun_max_lorentz_factor() const {
     return kastaun_max_lorentz_factor_;
   }
 

@@ -14,20 +14,23 @@
 #include "NumericalAlgorithms/RootFinding/TOMS748.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 namespace grmhd::ValenciaDivClean::PrimitiveRecoverySchemes {
 
 namespace PalenzuelaEtAl_detail {
 
 // note q,r,s,t,x are defined in the documentation
+// The functions are called with the EOS on the host or its `DeviceView`
 template <typename EosType>
 class FunctionOfX {
  public:
-  FunctionOfX(const double tau, const double momentum_density_squared,
-              const double momentum_density_dot_magnetic_field,
-              const double magnetic_field_squared,
-              const double rest_mass_density_times_lorentz_factor,
-              const double electron_fraction, const EosType& equation_of_state)
+  KOKKOS_FUNCTION FunctionOfX(
+      const double tau, const double momentum_density_squared,
+      const double momentum_density_dot_magnetic_field,
+      const double magnetic_field_squared,
+      const double rest_mass_density_times_lorentz_factor,
+      const double electron_fraction, const EosType& equation_of_state)
       : q_(tau / rest_mass_density_times_lorentz_factor),
         r_(momentum_density_squared /
            square(rest_mass_density_times_lorentz_factor)),
@@ -39,8 +42,8 @@ class FunctionOfX {
         electron_fraction_(electron_fraction),
         equation_of_state_(equation_of_state) {}
 
-  double lorentz_factor(const double x) const {
-    static constexpr double v_maximum = 1.0 - 1.e-12;
+  KOKKOS_FUNCTION double lorentz_factor(const double x) const {
+    constexpr double v_maximum = 1.0 - 1.e-12;
     // Clamp v^2 to physical values.  This is needed because the bounds on
     // x used for the root solve do not guarantee a physical velocity.  Some
     // work would be needed to investigate whether better bounds could guarantee
@@ -51,15 +54,15 @@ class FunctionOfX {
     return 1.0 / sqrt(1.0 - v_squared);
   }
 
-  double specific_internal_energy(const double x,
-                                  const double lorentz_factor) const {
+  KOKKOS_FUNCTION double specific_internal_energy(
+      const double x, const double lorentz_factor) const {
     return lorentz_factor - 1.0 +
            x * (1.0 - square(lorentz_factor)) / lorentz_factor +
            lorentz_factor * (q_ - s_ + 0.5 * t_squared_ / square(x) +
                              0.5 * s_ / square(lorentz_factor));
   }
 
-  double operator()(const double x) const {
+  KOKKOS_FUNCTION double operator()(const double x) const {
     const double current_lorentz_factor = lorentz_factor(x);
     const double current_rest_mass_density =
         rest_mass_density_times_lorentz_factor_ / current_lorentz_factor;
@@ -99,7 +102,7 @@ class FunctionOfX {
 }  // namespace PalenzuelaEtAl_detail
 
 template <bool EnforcePhysicality, typename EosType>
-std::optional<PrimitiveRecoveryData> PalenzuelaEtAl::apply(
+KOKKOS_FUNCTION std::optional<PrimitiveRecoveryData> PalenzuelaEtAl::apply(
     const double /*initial_guess_pressure*/, const double tau,
     const double momentum_density_squared,
     const double momentum_density_dot_magnetic_field,

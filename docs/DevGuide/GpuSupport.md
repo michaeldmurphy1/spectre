@@ -274,10 +274,12 @@ host evolution supports (see the end of this section).
 
 Executables with DG-FD hybrid methods can evolve their FD elements on the device
 in *FD patches*, while the DG elements stay on the host in the
-`DgElementArray`. A patch holds FD elements of one block: all of them by
-default, or a piece of them if the block is split with the option
-`FdPatches.MaxElementsPerPatch`, e.g. to spread a large block over several
-GPUs. The patches are the members of the array component
+`DgElementArray`. A patch holds FD elements with the same DG mesh, possibly in
+several blocks: all of them by default, or a piece of them if they are split
+with the option `FdPatches.MaxElementsPerPatch`, e.g. to spread them over
+several GPUs. Ghost zones between blocks are copied, reoriented if the blocks
+have different orientations, so the cells of FD neighbors in different blocks
+must line up. The patches are the members of the array component
 `evolution::dg::subcell::fd_patch::FdPatchArray`, distributed over the
 processes (one per GPU) first and over the processing elements of each process
 second (see `evolution::dg::subcell::fd_patch::patch_procs`). With

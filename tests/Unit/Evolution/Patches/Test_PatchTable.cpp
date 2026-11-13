@@ -22,7 +22,7 @@
 
 namespace {
 // The membership rule decides which elements go into patches and with which
-// mesh, and the table groups them by block
+// mesh, and the table groups them by mesh
 void test_patch_mesh() {
   const auto domain = rectilinear_domain<2>(
       Index<2>{2, 1},

@@ -6,10 +6,11 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <numeric>
+#include <iterator>
 #include <optional>
 #include <pup.h>
 #include <pup_stl.h>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -25,18 +26,9 @@
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
-#include "Utilities/Literals.hpp"
 #include "Utilities/Serialization/PupStlCpp11.hpp"
 
 namespace evolution::patches {
-template <size_t Dim>
-size_t PatchTable<Dim>::block_id(const size_t patch) const {
-  ASSERT(patch < number_of_patches(),
-         "Patch " << patch << " is out of range; there are "
-                  << number_of_patches() << " patches.");
-  return block_ids_[patch];
-}
-
 template <size_t Dim>
 void PatchTable<Dim>::Location::pup(PUP::er& p) {
   p | patch;
@@ -54,70 +46,84 @@ PatchTable<Dim>::PatchTable(
   if (max_elements_per_patch.has_value() and *max_elements_per_patch == 0) {
     ERROR("The maximum number of elements per patch must be positive.");
   }
+  // The elements in patches with each DG mesh (in order of first
+  // appearance), in the order of the blocks and along the Z-curve of each
+  // block, with their positions in the order of the blocks and of
+  // `initial_element_ids()`
+  std::vector<Mesh<Dim>> meshes{};
+  std::vector<std::vector<std::pair<size_t, ElementId<Dim>>>> sequences{};
+  size_t position = 0;
   for (const auto& block : blocks) {
-    std::vector<ElementId<Dim>> block_patch_element_ids{};
-    std::optional<Mesh<Dim>> patch_dg_mesh{};
-    for (const auto& element_id : initial_element_ids(
-             block.id(), initial_refinement_levels[block.id()])) {
+    const auto block_element_ids =
+        initial_element_ids(block.id(), initial_refinement_levels[block.id()]);
+    // (Z-curve index, mesh, position, element ID) of the elements in patches
+    std::vector<std::tuple<size_t, size_t, size_t, ElementId<Dim>>>
+        block_patch_elements{};
+    for (const auto& element_id : block_element_ids) {
       const Element<Dim> element = domain::create_initial_element(
           element_id, blocks, initial_refinement_levels);
-      const std::optional<Mesh<Dim>> dg_mesh = patch_mesh(element);
-      if (not dg_mesh.has_value()) {
+      const std::optional<Mesh<Dim>> element_mesh = patch_mesh(element);
+      if (not element_mesh.has_value()) {
         ++number_of_elements_outside_patches_;
+        ++position;
         continue;
       }
-      if (not patch_dg_mesh.has_value()) {
-        patch_dg_mesh = *dg_mesh;
-      } else if (*dg_mesh != *patch_dg_mesh) {
-        ERROR("All elements of a patch must have the same DG mesh, but element "
-              << element_id << " has " << *dg_mesh << " while element "
-              << block_patch_element_ids.front() << " has " << *patch_dg_mesh);
+      const Mesh<Dim>& dg_mesh = *element_mesh;
+      const auto mesh_it = alg::find(meshes, dg_mesh);
+      const auto mesh =
+          static_cast<size_t>(std::distance(meshes.begin(), mesh_it));
+      if (mesh_it == meshes.end()) {
+        meshes.push_back(dg_mesh);
+        sequences.emplace_back();
       }
-      block_patch_element_ids.push_back(element_id);
+      block_patch_elements.emplace_back(domain::z_curve_index(element_id), mesh,
+                                        position, element_id);
+      ++position;
     }
-    if (block_patch_element_ids.empty()) {
-      continue;
+    std::sort(block_patch_elements.begin(), block_patch_elements.end(),
+              [](const auto& lhs, const auto& rhs) {
+                return std::get<0>(lhs) < std::get<0>(rhs);
+              });
+    for (const auto& [z_curve_index, mesh, element_position, element_id] :
+         block_patch_elements) {
+      sequences[mesh].emplace_back(element_position, element_id);
     }
-    const size_t number_of_patch_elements = block_patch_element_ids.size();
-    const size_t number_of_block_patches =
+  }
+
+  // Cut each sequence into consecutive pieces
+  for (size_t mesh = 0; mesh < meshes.size(); ++mesh) {
+    const auto& sequence = sequences[mesh];
+    const size_t number_of_patch_elements = sequence.size();
+    const size_t number_of_pieces =
         max_elements_per_patch.has_value()
             ? (number_of_patch_elements + *max_elements_per_patch - 1) /
                   *max_elements_per_patch
             : 1;
-    // Cut the Z-curve of the block's elements into consecutive pieces
-    std::vector<size_t> z_curve_ranks(number_of_patch_elements);
-    {
-      std::vector<size_t> z_curve_order(number_of_patch_elements);
-      std::iota(z_curve_order.begin(), z_curve_order.end(), 0_st);
-      std::vector<size_t> z_curve_indices(number_of_patch_elements);
-      for (size_t i = 0; i < number_of_patch_elements; ++i) {
-        z_curve_indices[i] = domain::z_curve_index(block_patch_element_ids[i]);
-      }
-      std::sort(z_curve_order.begin(), z_curve_order.end(),
-                [&z_curve_indices](const size_t lhs, const size_t rhs) {
-                  return z_curve_indices[lhs] < z_curve_indices[rhs];
-                });
-      for (size_t rank = 0; rank < number_of_patch_elements; ++rank) {
-        z_curve_ranks[z_curve_order[rank]] = rank;
-      }
-    }
-    const size_t first_patch = block_ids_.size();
-    block_ids_.resize(first_patch + number_of_block_patches, block.id());
-    element_ids_.resize(first_patch + number_of_block_patches);
-    dg_meshes_.resize(first_patch + number_of_block_patches, *patch_dg_mesh);
     // Piece `p` of the `k` pieces of the `n` elements holds the ranks
-    // [floor(p * n / k), floor((p + 1) * n / k)), so rank `r` is in piece
-    // ceil((r + 1) * k / n) - 1. Within each piece the elements keep the order
-    // of `initial_element_ids()`.
-    for (size_t i = 0; i < number_of_patch_elements; ++i) {
-      const size_t patch = first_patch +
-                           ((z_curve_ranks[i] + 1) * number_of_block_patches +
-                            number_of_patch_elements - 1) /
-                               number_of_patch_elements -
-                           1;
-      locations_.emplace(block_patch_element_ids[i],
-                         Location{patch, element_ids_[patch].size()});
-      element_ids_[patch].push_back(block_patch_element_ids[i]);
+    // [floor(p * n / k), floor((p + 1) * n / k)).
+    for (size_t piece = 0; piece < number_of_pieces; ++piece) {
+      std::vector<std::pair<size_t, ElementId<Dim>>> piece_elements(
+          std::next(sequence.begin(),
+                    static_cast<std::ptrdiff_t>(
+                        piece * number_of_patch_elements / number_of_pieces)),
+          std::next(
+              sequence.begin(),
+              static_cast<std::ptrdiff_t>(
+                  (piece + 1) * number_of_patch_elements / number_of_pieces)));
+      // Within a piece the elements keep the order of the blocks and of
+      // `initial_element_ids()`
+      std::sort(piece_elements.begin(), piece_elements.end(),
+                [](const auto& lhs, const auto& rhs) {
+                  return lhs.first < rhs.first;
+                });
+      const size_t patch = element_ids_.size();
+      auto& patch_element_ids = element_ids_.emplace_back();
+      dg_meshes_.push_back(meshes[mesh]);
+      for (const auto& [element_position, element_id] : piece_elements) {
+        locations_.emplace(element_id,
+                           Location{patch, patch_element_ids.size()});
+        patch_element_ids.push_back(element_id);
+      }
     }
   }
 }
@@ -151,7 +157,6 @@ auto PatchTable<Dim>::location(const ElementId<Dim>& element_id) const
 
 template <size_t Dim>
 void PatchTable<Dim>::pup(PUP::er& p) {
-  p | block_ids_;
   p | element_ids_;
   p | dg_meshes_;
   p | locations_;
@@ -161,8 +166,7 @@ void PatchTable<Dim>::pup(PUP::er& p) {
 
 template <size_t Dim>
 bool operator==(const PatchTable<Dim>& lhs, const PatchTable<Dim>& rhs) {
-  return lhs.block_ids_ == rhs.block_ids_ and
-         lhs.element_ids_ == rhs.element_ids_ and
+  return lhs.element_ids_ == rhs.element_ids_ and
          lhs.dg_meshes_ == rhs.dg_meshes_ and
          lhs.locations_ == rhs.locations_ and
          lhs.number_of_elements_outside_patches_ ==

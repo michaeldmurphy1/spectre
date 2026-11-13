@@ -24,9 +24,10 @@ struct PatchesGroup {
 struct MaxElementsPerPatch {
   using type = Options::Auto<size_t>;
   static constexpr Options::String help{
-      "The largest number of elements in a patch. The elements in patches of "
-      "a block are split along a Z-curve into the fewest patches of about "
-      "equal size. 'Auto' puts all of them in one patch."};
+      "The largest number of elements in a patch. The elements in patches "
+      "with the same DG mesh, ordered by block and along the Z-curve of each "
+      "block, are split into the fewest patches of about equal size. 'Auto' "
+      "puts all of them in one patch."};
   using group = PatchesGroup;
 };
 

@@ -96,9 +96,10 @@ void test_exchange_between_patches() {
       {}, {}, std::array{true});
   const std::vector<std::array<size_t, 1>> refinement(3, {{1}});
   const std::vector<std::array<size_t, 1>> extents(3, {{4}});
+  // One patch per block
   const auto patches = evolution::dg::subcell::fd_patch::patch_table<1>(
       domain.blocks(), refinement, extents, Spectral::Quadrature::GaussLobatto,
-      {}, false);
+      {}, false, 2);
   REQUIRE(patches.number_of_patches() == 3);
   const Mesh<1>& dg_mesh = patches.dg_mesh(0);
   const Slab slab{0.0, 1.0};

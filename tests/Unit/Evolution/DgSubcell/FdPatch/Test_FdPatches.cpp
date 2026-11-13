@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -60,7 +61,6 @@ void check_consistency(
     CHECK(location.has_value() == is_fd);
     if (location.has_value()) {
       ++number_of_fd_elements;
-      CHECK(patches.block_id(location->patch) == element_id.block_id());
       CHECK(patches.element_ids(location->patch).at(location->slot) ==
             element_id);
       CHECK(patches.dg_mesh(location->patch) == dg_mesh);
@@ -71,10 +71,14 @@ void check_consistency(
         initial_element_ids(initial_refinement_levels).size() -
             number_of_fd_elements);
   for (size_t patch = 0; patch < patches.number_of_patches(); ++patch) {
-    CHECK_FALSE(patches.element_ids(patch).empty());
-    if (patch > 0) {
-      CHECK(patches.block_id(patch) >= patches.block_id(patch - 1));
-    }
+    const auto& element_ids = patches.element_ids(patch);
+    CHECK_FALSE(element_ids.empty());
+    // In the order of the blocks
+    CHECK(std::is_sorted(
+        element_ids.begin(), element_ids.end(),
+        [](const ElementId<Dim>& lhs, const ElementId<Dim>& rhs) {
+          return lhs.block_id() < rhs.block_id();
+        }));
   }
   test_serialization(patches);
   test_copy_semantics(patches);
@@ -94,7 +98,6 @@ void test_dg_only_surrounding_blocks() {
       extents,           Spectral::Quadrature::GaussLobatto,
       only_dg_block_ids, true};
   REQUIRE(patches.number_of_patches() == 1);
-  CHECK(patches.block_id(0) == 4);
   CHECK(patches.dg_mesh(0) == Mesh<2>{5, Spectral::Basis::Legendre,
                                       Spectral::Quadrature::GaussLobatto});
   const std::vector<ElementId<2>> expected_element_ids{
@@ -133,7 +136,8 @@ void test_external_boundary() {
                                Spectral::Quadrature::GaussLobatto,
                                {},
                                enabled_at_external_boundary};
-    CHECK(patches.number_of_patches() == 9);
+    // All FD elements in one patch, across the blocks
+    CHECK(patches.number_of_patches() == 1);
     // 4 elements per block. Without subcell at the external boundary, corner
     // blocks keep 1 element, edge blocks 2 and the central block 4.
     CHECK(patches.number_of_elements() ==
@@ -161,9 +165,10 @@ void test_block_without_fd_elements() {
                     true);
 }
 
-// A block split into several patches: each patch is a consecutive piece of
-// the block's Z-curve, the pieces differ in size by at most one, and a patch
-// keeps the order of `initial_element_ids()`.
+// The FD elements of several blocks split into several patches: each patch is
+// a consecutive piece of the order of the blocks and their Z-curves, the pieces
+// differ in size by at most one, and a patch keeps the order of the blocks and
+// of `initial_element_ids()`.
 void test_split_blocks() {
   const auto domain = rectilinear_domain<2>(
       Index<2>{2, 1},
@@ -171,8 +176,20 @@ void test_split_blocks() {
   // 16 elements in block 0, 8 in block 1
   const std::vector<std::array<size_t, 2>> refinement{{{2, 2}}, {{1, 2}}};
   const std::vector<std::array<size_t, 2>> extents(2, {{4, 4}});
+  // The order of the FD elements along the Z-curves of the blocks
+  std::vector<ElementId<2>> z_curve_order{};
+  for (const size_t block : {0_st, 1_st}) {
+    auto block_ids = initial_element_ids(block, refinement[block]);
+    std::sort(block_ids.begin(), block_ids.end(),
+              [](const ElementId<2>& lhs, const ElementId<2>& rhs) {
+                return domain::z_curve_index(lhs) < domain::z_curve_index(rhs);
+              });
+    z_curve_order.insert(z_curve_order.end(), block_ids.begin(),
+                         block_ids.end());
+  }
+  const size_t number_of_elements = z_curve_order.size();
   for (const size_t max_elements :
-       {1_st, 3_st, 4_st, 5_st, 7_st, 16_st, 100_st}) {
+       {1_st, 3_st, 4_st, 5_st, 7_st, 16_st, 24_st, 100_st}) {
     CAPTURE(max_elements);
     const FdPatches<2> patches{domain.blocks(),
                                refinement,
@@ -182,40 +199,30 @@ void test_split_blocks() {
                                true,
                                max_elements};
     check_consistency(patches, domain, refinement, extents, {}, true);
-    for (const size_t block : {0_st, 1_st}) {
-      const size_t number_of_elements = block == 0 ? 16 : 8;
-      const size_t expected_number_of_patches =
-          (number_of_elements + max_elements - 1) / max_elements;
-      std::vector<size_t> block_patches{};
-      for (size_t patch = 0; patch < patches.number_of_patches(); ++patch) {
-        if (patches.block_id(patch) == block) {
-          block_patches.push_back(patch);
-        }
-      }
-      REQUIRE(block_patches.size() == expected_number_of_patches);
-      size_t last_z_curve_index = 0;
-      for (size_t i = 0; i < block_patches.size(); ++i) {
-        const auto& element_ids = patches.element_ids(block_patches[i]);
-        CHECK(element_ids.size() <= max_elements);
-        CHECK(element_ids.size() >=
-              number_of_elements / expected_number_of_patches);
-        CHECK(element_ids.size() <=
-              (number_of_elements + expected_number_of_patches - 1) /
-                  expected_number_of_patches);
-        CHECK(std::is_sorted(element_ids.begin(), element_ids.end()));
-        // Consecutive pieces of the Z-curve
-        std::vector<size_t> z_curve_indices{};
-        for (const auto& element_id : element_ids) {
-          z_curve_indices.push_back(domain::z_curve_index(element_id));
-        }
-        const auto [min_index, max_index] =
-            std::minmax_element(z_curve_indices.begin(), z_curve_indices.end());
-        if (i > 0) {
-          CHECK(*min_index > last_z_curve_index);
-        }
-        last_z_curve_index = *max_index;
-      }
+    const size_t expected_number_of_patches =
+        (number_of_elements + max_elements - 1) / max_elements;
+    REQUIRE(patches.number_of_patches() == expected_number_of_patches);
+    size_t first = 0;
+    for (size_t patch = 0; patch < patches.number_of_patches(); ++patch) {
+      CAPTURE(patch);
+      const auto& element_ids = patches.element_ids(patch);
+      CHECK(element_ids.size() <= max_elements);
+      CHECK(element_ids.size() >=
+            number_of_elements / expected_number_of_patches);
+      CHECK(element_ids.size() <=
+            (number_of_elements + expected_number_of_patches - 1) /
+                expected_number_of_patches);
+      CHECK(std::is_sorted(element_ids.begin(), element_ids.end()));
+      // The next consecutive piece of the Z-curve order
+      std::vector<ElementId<2>> expected_piece(
+          std::next(z_curve_order.begin(), static_cast<std::ptrdiff_t>(first)),
+          std::next(z_curve_order.begin(),
+                    static_cast<std::ptrdiff_t>(first + element_ids.size())));
+      std::sort(expected_piece.begin(), expected_piece.end());
+      CHECK(element_ids == expected_piece);
+      first += element_ids.size();
     }
+    CHECK(first == number_of_elements);
   }
   // Block 0 in 2 x 2 quadrants of 4 elements each, and block 1 (a column of 4
   // elements, conforming to block 0) in one patch
@@ -239,6 +246,18 @@ void test_split_blocks() {
             ElementId<2>{1, {{SegmentId{0, 0}, SegmentId{2, 1}}}},
             ElementId<2>{1, {{SegmentId{0, 0}, SegmentId{2, 2}}}},
             ElementId<2>{1, {{SegmentId{0, 0}, SegmentId{2, 3}}}}});
+  // A patch across the blocks: the last quadrant of block 0 and block 1
+  const FdPatches<2> across{domain.blocks(),
+                            {{{2, 2}}, {{0, 2}}},
+                            extents,
+                            Spectral::Quadrature::GaussLobatto,
+                            {},
+                            true,
+                            10};
+  REQUIRE(across.number_of_patches() == 2);
+  CHECK(across.element_ids(1).size() == 10);
+  CHECK(across.element_ids(1).front().block_id() == 0);
+  CHECK(across.element_ids(1).back().block_id() == 1);
   CHECK_THROWS_WITH(
       (FdPatches<2>{domain.blocks(),
                     refinement,
@@ -249,6 +268,45 @@ void test_split_blocks() {
                     0}),
       Catch::Matchers::ContainsSubstring(
           "The maximum number of elements per FD patch must be positive"));
+}
+
+// Elements with different DG meshes are in different patches, numbered by
+// the first element with each mesh
+void test_different_meshes() {
+  const auto domain = rectilinear_domain<1>(
+      Index<1>{3}, std::array<std::vector<double>, 1>{{{0.0, 1.0, 2.0, 3.0}}});
+  const std::vector<std::array<size_t, 1>> refinement(3, {{1}});
+  const std::vector<std::array<size_t, 1>> extents{{{5}}, {{6}}, {{5}}};
+  for (const std::optional<size_t> max_elements :
+       {std::optional<size_t>{}, std::optional<size_t>{3}}) {
+    const FdPatches<1> patches{domain.blocks(),
+                               refinement,
+                               extents,
+                               Spectral::Quadrature::GaussLobatto,
+                               {},
+                               true,
+                               max_elements};
+    check_consistency(patches, domain, refinement, extents, {}, true);
+    const Mesh<1> mesh_5{5, Spectral::Basis::Legendre,
+                         Spectral::Quadrature::GaussLobatto};
+    const Mesh<1> mesh_6{6, Spectral::Basis::Legendre,
+                         Spectral::Quadrature::GaussLobatto};
+    if (max_elements.has_value()) {
+      // Blocks 0 and 2 in 2 patches of 2, block 1 in one
+      REQUIRE(patches.number_of_patches() == 3);
+      CHECK(patches.dg_mesh(0) == mesh_5);
+      CHECK(patches.dg_mesh(1) == mesh_5);
+      CHECK(patches.dg_mesh(2) == mesh_6);
+      CHECK(patches.element_ids(0).front().block_id() == 0);
+      CHECK(patches.element_ids(1).front().block_id() == 2);
+    } else {
+      REQUIRE(patches.number_of_patches() == 2);
+      CHECK(patches.dg_mesh(0) == mesh_5);
+      CHECK(patches.dg_mesh(1) == mesh_6);
+      CHECK(patches.element_ids(0).size() == 4);
+      CHECK(patches.element_ids(1).size() == 2);
+    }
+  }
 }
 
 void test_patch_procs() {
@@ -325,6 +383,7 @@ SPECTRE_TEST_CASE("Unit.Evolution.Subcell.FdPatch.FdPatches",
   test_external_boundary();
   test_block_without_fd_elements();
   test_split_blocks();
+  test_different_meshes();
   test_patch_procs();
   test_tag();
 }

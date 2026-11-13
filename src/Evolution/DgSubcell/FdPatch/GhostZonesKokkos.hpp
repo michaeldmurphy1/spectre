@@ -25,6 +25,8 @@ template <size_t VolumeDim>
 class Element;
 template <size_t Dim>
 class Mesh;
+template <size_t VolumeDim>
+class OrientationMap;
 namespace evolution::dg::subcell::fd_patch {
 template <size_t Dim>
 class FdPatches;
@@ -46,11 +48,15 @@ namespace evolution::dg::subcell::fd_patch {
  *   copy the `ghost_width` cells of the neighbor next to the face into the
  *   ghost zone.
  *
- * All elements of a patch are in one block, so all neighbors in the patch are
- * aligned and conforming. The ghost zones of the faces whose neighbor isn't in
- * the patch, i.e. a DG element or an element of another patch, are listed in
- * `external_faces()`. They are filled by `fill_from_external()` from the data
- * received from the neighbors, with the same treatment as on the host (see
+ * All elements of a patch have the same mesh, and the cells of neighbors in
+ * other blocks line up with the ghost cells (see
+ * `check_cells_coincide_across_blocks`), so the ghost zones from neighbors in
+ * the patch are copies, reoriented for neighbors in blocks with another
+ * orientation (see `cells_for_neighbor_ghost_zone`). The ghost zones of the
+ * faces whose neighbor isn't in the patch, i.e. a DG element or an element of
+ * another patch, are listed in `external_faces()`. They are filled by
+ * `fill_from_external()` from the data received from the neighbors, with the
+ * same treatment as on the host (see
  * `evolution::dg::subcell::insert_or_update_neighbor_volume_data`):
  * - An FD neighbor sends the ghost data already sliced, reoriented and
  *   interpolated for this element, so it is copied.
@@ -61,7 +67,8 @@ namespace evolution::dg::subcell::fd_patch {
  *
  * `slice_for_external()` computes the ghost data to send to the neighbors of
  * the external faces, as `evolution::dg::subcell::slice_data` does on the host:
- * the cells next to the face are copied, or, where there is an interpolant in
+ * the cells next to the face are copied (and reoriented for the neighbor's
+ * frame), or, where there is an interpolant in
  * `fd_to_neighbor_fd_interpolants` (see
  * `evolution::dg::subcell::Tags::InterpolatorsFromFdToNeighborFd`),
  * interpolated to the ghost zone of the neighbor. Directions whose interpolant
@@ -193,13 +200,30 @@ class GhostZones {
 };
 
 /*!
+ * \brief The flat indices of the cells of an element next to its face in
+ * `direction`, in the order of the ghost zone of the neighbor across that face,
+ * whose frame is related to the element's by `orientation_of_neighbor`.
+ *
+ * \details The cells are the `ghost_width` layers next to the face, in the
+ * order of `fd::device::slab_points` reoriented to the neighbor's frame with
+ * `orient_variables`, i.e. as the host would orient the sliced data. Both
+ * elements must have the subcell `extents` (in their own frames).
+ */
+template <size_t Dim>
+std::vector<size_t> cells_for_neighbor_ghost_zone(
+    const Index<Dim>& extents, size_t ghost_width,
+    const Direction<Dim>& direction,
+    const OrientationMap<Dim>& orientation_of_neighbor);
+
+/*!
  * \brief Check that the `elements` of the `patch` can copy the ghost data of
  * their FD neighbors in other blocks, i.e., that the cells of the neighbor that
  * fill the ghost zones of an element are exactly where its ghost cells are.
  *
- * \details `GhostZones` copies the ghost data between blocks, so the blocks
- * must be aligned, have the same subcell extents, and their cells must line up
- * across the block boundary, up to a periodic shift (see
+ * \details `GhostZones` copies the ghost data between blocks, reoriented if
+ * the blocks have different orientations, so the blocks must have the same
+ * subcell extents, and their cells must line up across the block boundary, up
+ * to a periodic shift (see
  * `SetInterpolators_detail::periodic_offset`). Otherwise the host interpolates
  * between the blocks (see `SetInterpolators`), which FD patches don't support
  * yet, so this is an error. The check is in the grid frame, whose maps don't

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <random>
@@ -14,8 +15,10 @@
 #include "DataStructures/Index.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Domain/CreateInitialElement.hpp"
+#include "Domain/Creators/RotatedBricks.hpp"
 #include "Domain/Domain.hpp"
 #include "Domain/DomainHelpers.hpp"
+#include "Domain/ElementMap.hpp"
 #include "Domain/Structure/Direction.hpp"
 #include "Domain/Structure/DirectionalId.hpp"
 #include "Domain/Structure/DirectionalIdMap.hpp"
@@ -25,6 +28,7 @@
 #include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/FdPatch/GhostZonesKokkos.hpp"
 #include "Evolution/DgSubcell/GhostData.hpp"
+#include "Evolution/DgSubcell/GhostZoneLogicalCoordinates.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/NeighborRdmpAndVolumeData.hpp"
 #include "Evolution/DgSubcell/SliceData.hpp"
@@ -32,6 +36,8 @@
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
+#include "NumericalAlgorithms/Spectral/Basis.hpp"
+#include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "Utilities/ConstantExpressions.hpp"
@@ -349,12 +355,14 @@ void test_external_faces(const gsl::not_null<std::mt19937*> generator) {
       {}, {}, std::array{true});
   const std::vector<std::array<size_t, 1>> refinement(3, {{1}});
   const std::vector<std::array<size_t, 1>> extents(3, {{4}});
+  // One patch per block
   const FdPatches<1> patches{domain.blocks(),
                              refinement,
                              extents,
                              Spectral::Quadrature::GaussLobatto,
                              {},
-                             false};
+                             false,
+                             2};
   REQUIRE(patches.number_of_patches() == 3);
   const auto elements = patch_elements(patches, 1, domain, refinement);
   // Interpolate the data sent to the lower neighbor to random points, and
@@ -436,21 +444,263 @@ void test_cells_coincide_across_blocks() {
         std::array{true});
     const std::vector<std::array<size_t, 1>> refinement(3, {{1}});
     const std::vector<std::array<size_t, 1>> extents(3, {{4}});
-    const FdPatches<1> patches{domain.blocks(),
-                               refinement,
-                               extents,
-                               Spectral::Quadrature::GaussLobatto,
-                               {},
-                               false};
-    for (size_t patch = 0; patch < 3; ++patch) {
-      check_cells_coincide_across_blocks(
-          domain, patch_elements(patches, patch, domain, refinement), patches,
-          patch, 2);
+    // One patch per block, and all blocks in one patch
+    for (const std::optional<size_t> max_elements_per_patch :
+         {std::optional<size_t>{2}, std::optional<size_t>{}}) {
+      const FdPatches<1> patches{domain.blocks(),
+                                 refinement,
+                                 extents,
+                                 Spectral::Quadrature::GaussLobatto,
+                                 {},
+                                 false,
+                                 max_elements_per_patch};
+      for (size_t patch = 0; patch < patches.number_of_patches(); ++patch) {
+        check_cells_coincide_across_blocks(
+            domain, patch_elements(patches, patch, domain, refinement), patches,
+            patch, 2);
+      }
     }
   };
   check({0.0, 1.0, 2.0, 3.0});
   CHECK_THROWS_WITH(check({0.0, 1.0, 2.5, 3.0}),
                     Catch::Matchers::ContainsSubstring("don't line up"));
+}
+
+// Fills each cell of the elements of a patch whose faces are all inside the
+// patch with a value that depends only on the position of the cell, applies
+// `fill_from_patch`, and checks that each ghost cell holds the value at its
+// own position. This holds whatever the orientations of the blocks. The
+// domain is periodic with `cells_per_dimension` cells of width `cell_width`
+// starting at 0 in each dimension.
+template <size_t Dim>
+void check_fill_by_position(const GhostZones<Dim>& ghost_zones,
+                            const std::vector<Element<Dim>>& elements,
+                            const Domain<Dim>& domain,
+                            const long cells_per_dimension,
+                            const double cell_width) {
+  const Kokkos::DefaultExecutionSpace exec{};
+  REQUIRE(ghost_zones.external_faces().empty());
+  const size_t number_of_elements = elements.size();
+  const size_t number_of_variables = ghost_zones.number_of_variables();
+  const Index<Dim>& extents = ghost_zones.subcell_extents();
+  const size_t ghost_width = ghost_zones.ghost_width();
+  const size_t number_of_cells = extents.product();
+  const Mesh<Dim> subcell_mesh{extents.indices(),
+                               Spectral::Basis::FiniteDifference,
+                               Spectral::Quadrature::CellCentered};
+  const auto cells_in_domain = make_array<Dim>(cells_per_dimension);
+  // The value of a variable at the grid coordinates of point `i`
+  const auto value_at = [&](const size_t variable,
+                            const tnsr::I<DataVector, Dim, Frame::Grid>& coords,
+                            const size_t i) {
+    std::array<long, Dim> cell{};
+    for (size_t d = 0; d < Dim; ++d) {
+      gsl::at(cell, d) = std::lround(coords.get(d)[i] / cell_width - 0.5);
+    }
+    return value(variable, cell, cells_in_domain);
+  };
+  std::vector<ElementMap<Dim, Frame::Grid>> element_maps{};
+  for (const auto& element : elements) {
+    element_maps.emplace_back(element.id(),
+                              domain.blocks()[element.id().block_id()]);
+  }
+
+  const Kokkos::View<double*>::host_mirror_type host_ghost_variables(
+      "ghost variables",
+      number_of_elements * number_of_variables * number_of_cells);
+  for (size_t e = 0; e < number_of_elements; ++e) {
+    const auto cell_coords = element_maps[e](logical_coordinates(subcell_mesh));
+    for (size_t v = 0; v < number_of_variables; ++v) {
+      for (size_t i = 0; i < number_of_cells; ++i) {
+        host_ghost_variables((e * number_of_variables + v) * number_of_cells +
+                             i) = value_at(v, cell_coords, i);
+      }
+    }
+  }
+  const auto ghost_variables = Kokkos::create_mirror_view_and_copy(
+      Kokkos::DefaultExecutionSpace::memory_space{}, host_ghost_variables);
+  const auto padded_vars =
+      fd::device::make_volume_view(exec, "padded", number_of_elements,
+                                   number_of_variables, extents, ghost_width);
+  ghost_zones.fill_from_patch(exec, padded_vars, ghost_variables);
+  const auto host_padded =
+      Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, padded_vars);
+  const size_t nx = host_padded.extent(4);
+  const size_t ny = host_padded.extent(3);
+  for (size_t e = 0; e < number_of_elements; ++e) {
+    CAPTURE(elements[e].id());
+    for (const auto& direction : Direction<Dim>::all_directions()) {
+      CAPTURE(direction);
+      const auto ghost_coords = element_maps[e](
+          evolution::dg::subcell::fd::ghost_zone_logical_coordinates(
+              subcell_mesh, ghost_width, direction));
+      const auto points = fd::device::padded_ghost_zone_points(
+          extents, ghost_width, direction.dimension(),
+          direction.side() == Side::Upper);
+      for (size_t v = 0; v < number_of_variables; ++v) {
+        for (size_t i = 0; i < points.size(); ++i) {
+          CHECK(host_padded(e, v, points[i] / (nx * ny), (points[i] / nx) % ny,
+                            points[i] % nx) == value_at(v, ghost_coords, i));
+        }
+      }
+    }
+  }
+}
+
+// Three periodic blocks in a row in one patch, so all faces, including those
+// between the blocks, are inside the patch
+void test_patch_across_blocks() {
+  const Kokkos::DefaultExecutionSpace exec{};
+  const auto domain = rectilinear_domain<1>(
+      Index<1>{3}, std::array<std::vector<double>, 1>{{{0.0, 1.0, 2.0, 3.0}}},
+      {}, {}, std::array{true});
+  const std::vector<std::array<size_t, 1>> refinement(3, {{1}});
+  const std::vector<std::array<size_t, 1>> extents(3, {{4}});
+  const FdPatches<1> patches{domain.blocks(),
+                             refinement,
+                             extents,
+                             Spectral::Quadrature::GaussLobatto,
+                             {},
+                             false};
+  REQUIRE(patches.number_of_patches() == 1);
+  const auto elements = patch_elements(patches, 0, domain, refinement);
+  REQUIRE(elements.size() == 6);
+  for (const size_t ghost_width : {1_st, 2_st, 3_st}) {
+    CAPTURE(ghost_width);
+    check_cells_coincide_across_blocks(domain, elements, patches, 0,
+                                       ghost_width);
+    const GhostZones<1> ghost_zones{
+        exec,    elements, std::vector<Interpolants<1>>(elements.size()),
+        patches, 0,        ghost_width,
+        2};
+    // 2 elements of 7 cells per block
+    check_fill_by_position(ghost_zones, elements, domain, 42, 1.0 / 14.0);
+  }
+}
+
+// The 8 blocks of `RotatedBricks` have different orientations, so the ghost
+// zones between them are reoriented copies
+void test_rotated_blocks() {
+  const Kokkos::DefaultExecutionSpace exec{};
+  const domain::creators::RotatedBricks creator{
+      {{0.0, 0.0, 0.0}},
+      {{1.0, 1.0, 1.0}},
+      {{2.0, 2.0, 2.0}},
+      {{0, 0, 0}},
+      {{{{4, 4}}, {{4, 4}}, {{4, 4}}}},
+      {{true, true, true}},
+      nullptr};
+  const auto domain = creator.create_domain();
+  const auto refinement = creator.initial_refinement_levels();
+  const auto extents = creator.initial_extents();
+  const FdPatches<3> patches{domain.blocks(),
+                             refinement,
+                             extents,
+                             Spectral::Quadrature::GaussLobatto,
+                             {},
+                             false};
+  REQUIRE(patches.number_of_patches() == 1);
+  const auto elements = patch_elements(patches, 0, domain, refinement);
+  REQUIRE(elements.size() == 8);
+  // The blocks have different orientations
+  bool has_unaligned_neighbors = false;
+  for (const auto& element : elements) {
+    for (const auto& [direction, neighbors] : element.neighbors()) {
+      has_unaligned_neighbors =
+          has_unaligned_neighbors or
+          not neighbors.orientation(*neighbors.ids().begin()).is_aligned();
+    }
+  }
+  CHECK(has_unaligned_neighbors);
+  for (const size_t ghost_width : {1_st, 2_st, 3_st}) {
+    CAPTURE(ghost_width);
+    check_cells_coincide_across_blocks(domain, elements, patches, 0,
+                                       ghost_width);
+    const GhostZones<3> ghost_zones{
+        exec,    elements, std::vector<Interpolants<3>>(elements.size()),
+        patches, 0,        ghost_width,
+        2};
+    // 7 cells per block in each dimension
+    check_fill_by_position(ghost_zones, elements, domain, 14, 1.0 / 7.0);
+  }
+}
+
+// Slicing the data for an FD neighbor in a block with another orientation
+// reorients it to the neighbor's frame: the data sent for each face holds the
+// values at the positions of the neighbor's ghost cells
+void test_reoriented_send() {
+  const Kokkos::DefaultExecutionSpace exec{};
+  const domain::creators::RotatedBricks creator{
+      {{0.0, 0.0, 0.0}},
+      {{1.0, 1.0, 1.0}},
+      {{2.0, 2.0, 2.0}},
+      {{0, 0, 0}},
+      {{{{4, 4}}, {{4, 4}}, {{4, 4}}}},
+      {{true, true, true}},
+      nullptr};
+  const auto domain = creator.create_domain();
+  const auto refinement = creator.initial_refinement_levels();
+  const auto extents = creator.initial_extents();
+  // One patch per element, so all faces are external
+  const FdPatches<3> patches{domain.blocks(),
+                             refinement,
+                             extents,
+                             Spectral::Quadrature::GaussLobatto,
+                             {},
+                             false,
+                             1};
+  REQUIRE(patches.number_of_patches() == 8);
+  const Mesh<3> subcell_mesh =
+      evolution::dg::subcell::fd::mesh(patches.dg_mesh(0));
+  const size_t ghost_width = 2;
+  // The value at the grid coordinates of point `i`, with 7 cells of width
+  // 1/7 per block in each dimension
+  const auto value_at = [](const tnsr::I<DataVector, 3, Frame::Grid>& coords,
+                           const size_t i) {
+    std::array<long, 3> cell{};
+    for (size_t d = 0; d < 3; ++d) {
+      gsl::at(cell, d) = std::lround(coords.get(d)[i] * 7.0 - 0.5);
+    }
+    return value(0, cell, std::array{14L, 14L, 14L});
+  };
+  for (size_t patch = 0; patch < 8; ++patch) {
+    const auto elements = patch_elements(patches, patch, domain, refinement);
+    const Element<3>& element = elements[0];
+    CAPTURE(element.id());
+    const GhostZones<3> ghost_zones{
+        exec,        elements, std::vector<Interpolants<3>>(1), patches, patch,
+        ghost_width, 1};
+    REQUIRE(ghost_zones.external_faces().size() == 6);
+    const ElementMap<3, Frame::Grid> element_map{
+        element.id(), domain.blocks()[element.id().block_id()]};
+    const auto cell_coords = element_map(logical_coordinates(subcell_mesh));
+    const Kokkos::View<double*>::host_mirror_type host_ghost_variables(
+        "ghost variables", subcell_mesh.number_of_grid_points());
+    for (size_t i = 0; i < host_ghost_variables.size(); ++i) {
+      host_ghost_variables(i) = value_at(cell_coords, i);
+    }
+    const auto ghost_variables = Kokkos::create_mirror_view_and_copy(
+        Kokkos::DefaultExecutionSpace::memory_space{}, host_ghost_variables);
+    const Kokkos::View<double*> send_data("send data",
+                                          ghost_zones.send_data_size());
+    ghost_zones.slice_for_external(exec, send_data, ghost_variables);
+    const auto host_send_data =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, send_data);
+    for (const auto& face : ghost_zones.external_faces()) {
+      CAPTURE(face.neighbor);
+      CAPTURE(face.direction);
+      const ElementMap<3, Frame::Grid> neighbor_map{
+          face.neighbor, domain.blocks()[face.neighbor.block_id()]};
+      const auto neighbor_ghost_coords = neighbor_map(
+          evolution::dg::subcell::fd::ghost_zone_logical_coordinates(
+              subcell_mesh, ghost_width, face.direction_from_neighbor));
+      REQUIRE(face.send_size == get<0>(neighbor_ghost_coords).size());
+      for (size_t i = 0; i < face.send_size; ++i) {
+        CHECK(host_send_data(face.send_offset + i) ==
+              value_at(neighbor_ghost_coords, i));
+      }
+    }
+  }
 }
 }  // namespace
 
@@ -463,4 +713,7 @@ SPECTRE_TEST_CASE("Unit.Evolution.Subcell.FdPatch.GhostZonesKokkos",
   test_external_faces(make_not_null(&generator));
   test_dg_neighbors(make_not_null(&generator));
   test_cells_coincide_across_blocks();
+  test_patch_across_blocks();
+  test_rotated_blocks();
+  test_reoriented_send();
 }

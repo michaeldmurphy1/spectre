@@ -37,9 +37,10 @@ struct FdPatchesGroup {
 struct MaxElementsPerPatch {
   using type = Options::Auto<size_t>;
   static constexpr Options::String help{
-      "The largest number of FD elements in a patch. The FD elements of a "
-      "block are split along a Z-curve into the fewest patches of about equal "
-      "size. 'Auto' puts all FD elements of a block in one patch."};
+      "The largest number of FD elements in a patch. The FD elements with the "
+      "same DG mesh, ordered by block and along the Z-curve of each block, "
+      "are split into the fewest patches of about equal size. 'Auto' puts all "
+      "FD elements with the same DG mesh in one patch."};
   using group = FdPatchesGroup;
 };
 

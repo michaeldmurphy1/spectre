@@ -238,6 +238,21 @@ class DeviceHistory {
     return result;
   }
 
+  /// The device buffers through which the coefficients applied to this
+  /// history are passed to the kernels (see `DeviceParameters`): one for the
+  /// update of a step (`apply_step_coefficients_on_device`) and one for dense
+  /// output (`apply_history_linear_combination_on_device`).
+  /// @{
+  gsl::not_null<StepCoefficientsParameters<MemorySpace>*>
+  step_coefficients_parameters() {
+    return &step_coefficients_parameters_;
+  }
+  gsl::not_null<HistoryCombinationParameters<MemorySpace>*>
+  dense_output_parameters() {
+    return &dense_output_parameters_;
+  }
+  /// @}
+
   /// The number of slots allocated.
   size_t capacity() const { return storage_.extent(1); }
 
@@ -352,6 +367,11 @@ class DeviceHistory {
   // The data of slot `s` is `storage_(:, s)`, holding the data of
   // element `e` at `e * number_of_values_`.
   StorageView storage_{};
+  // Not serialized: they are set before each use
+  StepCoefficientsParameters<MemorySpace> step_coefficients_parameters_{
+      "DeviceHistory step coefficients"};
+  HistoryCombinationParameters<MemorySpace> dense_output_parameters_{
+      "DeviceHistory dense output coefficients"};
 };
 
 }  // namespace TimeSteppers

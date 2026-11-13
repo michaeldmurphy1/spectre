@@ -24,13 +24,14 @@
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Structure/OrientationMap.hpp"
+#include "Domain/Structure/OrientationMapHelpers.hpp"
 #include "Domain/Structure/Side.hpp"
 #include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/GhostZoneLogicalCoordinates.hpp"
 #include "Evolution/DgSubcell/Matrices.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/SetInterpolators.hpp"
-#include "Evolution/DgSubcell/SliceTensor.hpp"
 #include "NumericalAlgorithms/FiniteDifference/TransfersKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
@@ -89,6 +90,33 @@ Matrix dg_to_ghost_zone_projection(const Mesh<Dim>& dg_mesh,
   return result;
 }
 }  // namespace
+
+template <size_t Dim>
+std::vector<size_t> cells_for_neighbor_ghost_zone(
+    const Index<Dim>& extents, const size_t ghost_width,
+    const Direction<Dim>& direction,
+    const OrientationMap<Dim>& orientation_of_neighbor) {
+  const size_t dimension = direction.dimension();
+  const size_t first =
+      direction.side() == Side::Lower ? 0 : extents[dimension] - ghost_width;
+  auto slab =
+      ::fd::device::slab_points(extents, dimension, first, first + ghost_width);
+  if (orientation_of_neighbor.is_aligned()) {
+    return slab;
+  }
+  // Reorient the positions of the cells in the slab, as the data would be
+  Index<Dim> slab_extents = extents;
+  slab_extents[dimension] = ghost_width;
+  DataVector positions(slab.size());
+  std::iota(positions.begin(), positions.end(), 0.0);
+  const DataVector oriented_positions =
+      orient_variables(positions, slab_extents, orientation_of_neighbor);
+  std::vector<size_t> result(slab.size());
+  for (size_t i = 0; i < result.size(); ++i) {
+    result[i] = slab[static_cast<size_t>(oriented_positions[i])];
+  }
+  return result;
+}
 
 template <size_t Dim>
 GhostZones<Dim>::GhostZones(
@@ -161,7 +189,6 @@ GhostZones<Dim>::GhostZones(
       const ElementId<Dim>& neighbor_id = *neighbors.ids().begin();
       const auto location = fd_patches.location(neighbor_id);
       const size_t dimension = direction.dimension();
-      const size_t extent = subcell_extents_[dimension];
       const bool upper = direction.side() == Side::Upper;
       const auto ghost_zone_points = ::fd::device::padded_ghost_zone_points(
           subcell_extents_, ghost_width, dimension, upper);
@@ -172,16 +199,15 @@ GhostZones<Dim>::GhostZones(
                           fd_to_neighbor_fd_interpolants[slot]);
         continue;
       }
-      // Within a block, so the neighbor is aligned and has the same extents
-      ASSERT(neighbors.orientation(neighbor_id).is_aligned(),
-             "The neighbor " << neighbor_id << " of element " << element.id()
-                             << " in the same patch isn't aligned");
-      // The cells of the neighbor next to the shared face
-      const auto source_points =
-          upper ? ::fd::device::slab_points(subcell_extents_, dimension, 0,
-                                            ghost_width)
-                : ::fd::device::slab_points(subcell_extents_, dimension,
-                                            extent - ghost_width, extent);
+      // The cells of the neighbor next to the shared face, in the order of the
+      // ghost zone. The neighbor has the same subcell extents (all elements of
+      // the patch have the same mesh), and if it is in another block, its
+      // cells line up with the ghost cells (see
+      // `check_cells_coincide_across_blocks`).
+      const auto& orientation = neighbors.orientation(neighbor_id);
+      const auto source_points = cells_for_neighbor_ghost_zone(
+          subcell_extents_, ghost_width, orientation(direction.opposite()),
+          orientation.inverse_map());
       from_patch_.add_copy(location->slot * element_stride, number_of_cells,
                            slot * padded_element_stride, number_of_padded_cells,
                            source_points, ghost_zone_points);
@@ -259,20 +285,14 @@ void GhostZones<Dim>::add_external_face(
                               interpolant->second->matrix(), sent_points);
     }
   } else {
-    ASSERT(
-        element.neighbors().at(direction).orientation(neighbor_id).is_aligned(),
-        "Slicing the ghost data for the neighbor "
-            << neighbor_id << " of element " << element.id()
-            << " requires an aligned orientation or an interpolant");
-    const size_t dimension = direction.dimension();
-    const size_t first = direction.side() == Side::Lower
-                             ? 0
-                             : subcell_extents_[dimension] - ghost_width_;
+    // The cells next to the face, in the order of the ghost zone of the
+    // neighbor
     to_external_.add_copy(
         element_offset, number_of_cells, face.send_offset,
         number_of_ghost_points,
-        ::fd::device::slab_points(subcell_extents_, dimension, first,
-                                  first + ghost_width_),
+        cells_for_neighbor_ghost_zone(
+            subcell_extents_, ghost_width_, direction,
+            element.neighbors().at(direction).orientation(neighbor_id)),
         sent_points);
   }
   send_data_size_ += face.send_size;
@@ -364,12 +384,6 @@ void check_cells_coincide_across_blocks(
           continue;
         }
         const auto& orientation = neighbors.orientation(neighbor_id);
-        if (not orientation.is_aligned()) {
-          ERROR("FD patches need aligned blocks, but the neighbor "
-                << neighbor_id << " of element " << element.id()
-                << " in direction " << direction << " has the orientation "
-                << orientation);
-        }
         const Mesh<Dim> neighbor_subcell_mesh =
             fd::mesh(fd_patches.dg_mesh(location->patch));
         if (neighbor_subcell_mesh != subcell_mesh) {
@@ -385,9 +399,18 @@ void check_cells_coincide_across_blocks(
         // are copied into them, in the same order
         const auto ghost_cells = element_map(fd::ghost_zone_logical_coordinates(
             subcell_mesh, ghost_width, direction));
-        const auto neighbor_cells = neighbor_map(
-            slice_tensor_for_subcell(logical_coords, subcell_mesh.extents(),
-                                     ghost_width, direction.opposite(), {}));
+        const auto neighbor_points = cells_for_neighbor_ghost_zone(
+            subcell_mesh.extents(), ghost_width,
+            orientation(direction.opposite()), orientation.inverse_map());
+        tnsr::I<DataVector, Dim, Frame::ElementLogical> neighbor_logical_coords{
+            neighbor_points.size()};
+        for (size_t d = 0; d < Dim; ++d) {
+          for (size_t i = 0; i < neighbor_points.size(); ++i) {
+            neighbor_logical_coords.get(d)[i] =
+                logical_coords.get(d)[neighbor_points[i]];
+          }
+        }
+        const auto neighbor_cells = neighbor_map(neighbor_logical_coords);
         const auto offset = SetInterpolators_detail::periodic_offset(
             element.id(), neighbor_id, direction, orientation, element_map,
             neighbor_map);
@@ -413,12 +436,16 @@ void check_cells_coincide_across_blocks(
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
 
-#define INSTANTIATION(r, data)                              \
-  template class GhostZones<DIM(data)>;                     \
-  template void check_cells_coincide_across_blocks(         \
-      const Domain<DIM(data)>& domain,                      \
-      const std::vector<Element<DIM(data)>>& elements,      \
-      const FdPatches<DIM(data)>& fd_patches, size_t patch, \
+#define INSTANTIATION(r, data)                                   \
+  template std::vector<size_t> cells_for_neighbor_ghost_zone(    \
+      const Index<DIM(data)>& extents, size_t ghost_width,       \
+      const Direction<DIM(data)>& direction,                     \
+      const OrientationMap<DIM(data)>& orientation_of_neighbor); \
+  template class GhostZones<DIM(data)>;                          \
+  template void check_cells_coincide_across_blocks(              \
+      const Domain<DIM(data)>& domain,                           \
+      const std::vector<Element<DIM(data)>>& elements,           \
+      const FdPatches<DIM(data)>& fd_patches, size_t patch,      \
       size_t ghost_width);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))

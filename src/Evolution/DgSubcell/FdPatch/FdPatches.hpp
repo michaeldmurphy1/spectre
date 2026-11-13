@@ -32,24 +32,23 @@ namespace evolution::dg::subcell::fd_patch {
 /*!
  * \brief Which FD elements belong to which patch.
  *
- * \details A patch holds elements of one block that use the subcell (FD) grid
- * for the whole evolution, i.e. elements for which
+ * \details A patch holds elements that use the subcell (FD) grid for the
+ * whole evolution, i.e. elements for which
  * `evolution::dg::subcell::starts_on_subcell_grid()` is true (this assumes
- * `AlwaysUseSubcells`). Blocks without such elements have no patch. By default
- * a block's FD elements form one patch. With `max_elements_per_patch`, they
- * are split into the fewest patches that hold at most that many elements,
- * with sizes that differ by at most one: the elements are ordered along the
- * Z-curve of the block (see `domain::z_curve_index()`) and cut into
- * consecutive pieces, so that each patch is spatially compact and has few
- * faces with other patches. This is how a large block is spread over several
- * GPUs.
+ * `AlwaysUseSubcells`). The elements of a patch may be in several blocks.
  *
- * Patches are numbered in order of increasing block ID, and then along the
- * Z-curve. The elements of a patch (its slots) are in the order of
- * `initial_element_ids()`.
+ * All elements of a patch have the same DG mesh, so that the patch can step
+ * them with batched kernels. The FD elements with the same DG mesh are ordered
+ * by block and along the Z-curve of each block (see `domain::z_curve_index()`).
+ * By default they form one patch. With `max_elements_per_patch`, they are
+ * split into the fewest patches that hold at most that many elements, with
+ * sizes that differ by at most one, by cutting this order into consecutive
+ * pieces, so that each patch is spatially compact and has few faces with other
+ * patches. This is how the FD elements are spread over several GPUs.
  *
- * All elements of a patch must have the same DG mesh, so that the patch can
- * step them with batched kernels.
+ * Patches are numbered by DG mesh (in order of the first element with the
+ * mesh), and then in this order. The elements of a patch (its slots) are in
+ * the order of the blocks and of `initial_element_ids()`.
  *
  * The table is computed from the domain and options alone, so every process
  * computes the same table. It doesn't change during the evolution because FD
@@ -84,10 +83,7 @@ class FdPatches {
       const std::optional<size_t>& max_elements_per_patch = std::nullopt,
       bool dedicated_procs = false);
 
-  size_t number_of_patches() const { return block_ids_.size(); }
-
-  /// The block of the FD elements of the `patch`.
-  size_t block_id(size_t patch) const;
+  size_t number_of_patches() const { return element_ids_.size(); }
 
   /// The FD elements of the `patch`, in slot order.
   const std::vector<ElementId<Dim>>& element_ids(size_t patch) const;
@@ -124,7 +120,6 @@ class FdPatches {
   friend bool operator==(const FdPatches<LocalDim>& lhs,
                          const FdPatches<LocalDim>& rhs);
 
-  std::vector<size_t> block_ids_{};
   std::vector<std::vector<ElementId<Dim>>> element_ids_{};
   std::vector<Mesh<Dim>> dg_meshes_{};
   std::unordered_map<ElementId<Dim>, Location> locations_{};

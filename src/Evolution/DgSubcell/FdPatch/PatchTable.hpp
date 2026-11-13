@@ -50,7 +50,8 @@ evolution::patches::PatchTable<Dim> patch_table(
     Spectral::Quadrature i1_quadrature,
     const std::vector<size_t>& only_dg_block_ids,
     bool subcell_enabled_at_external_boundary,
-    const std::optional<size_t>& max_elements_per_patch = std::nullopt);
+    const std::optional<size_t>& max_elements_per_patch = std::nullopt,
+    bool dedicated_procs = false);
 
 namespace Tags {
 /// \ingroup DataBoxTagsGroup
@@ -65,7 +66,8 @@ struct PatchTable : db::SimpleTag {
       tmpl::list<::domain::OptionTags::DomainCreator<Dim>,
                  evolution::dg::OptionTags::OnlyDgBlocksAndGroups,
                  evolution::dg::OptionTags::Quadrature,
-                 evolution::patches::OptionTags::MaxElementsPerPatch>;
+                 evolution::patches::OptionTags::MaxElementsPerPatch,
+                 evolution::patches::OptionTags::DedicatedProcs>;
 
   static constexpr bool pass_metavariables = true;
   template <typename Metavariables>
@@ -74,7 +76,8 @@ struct PatchTable : db::SimpleTag {
       const std::optional<std::vector<std::string>>&
           only_dg_block_and_group_names,
       const Spectral::Quadrature i1_quadrature,
-      const std::optional<size_t>& max_elements_per_patch) {
+      const std::optional<size_t>& max_elements_per_patch,
+      const bool dedicated_procs) {
     const auto domain = domain_creator->create_domain();
     return patch_table(
         domain.blocks(), domain_creator->initial_refinement_levels(),
@@ -83,7 +86,7 @@ struct PatchTable : db::SimpleTag {
             only_dg_block_and_group_names, domain_creator->block_names(),
             domain_creator->block_groups(), domain.blocks()),
         Metavariables::SubcellOptions::subcell_enabled_at_external_boundary,
-        max_elements_per_patch);
+        max_elements_per_patch, dedicated_procs);
   }
 };
 }  // namespace Tags

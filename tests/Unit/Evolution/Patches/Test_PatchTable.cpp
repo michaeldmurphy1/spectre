@@ -45,7 +45,7 @@ void test_patch_mesh() {
         }
         return std::nullopt;
       },
-      std::nullopt};
+      std::nullopt, true};
   REQUIRE(table.number_of_patches() == 2);
   CHECK(table.dg_mesh(0) == mesh_a);
   CHECK(table.dg_mesh(1) == mesh_b);
@@ -53,6 +53,7 @@ void test_patch_mesh() {
   CHECK(table.element_ids(1).size() == 2);
   CHECK(table.number_of_elements() == 6);
   CHECK(table.number_of_elements_outside_patches() == 2);
+  CHECK(table.dedicated_procs());
   const ElementId<2> outside{1, {{SegmentId{1, 0}, SegmentId{1, 1}}}};
   CHECK_FALSE(table.location(outside).has_value());
   for (size_t patch = 0; patch < 2; ++patch) {

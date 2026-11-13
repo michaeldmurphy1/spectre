@@ -8,10 +8,12 @@
 #include <functional>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "Domain/Structure/ElementId.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
+#include "Parallel/Info.hpp"
 
 /// \cond
 template <size_t VolumeDim>
@@ -51,6 +53,9 @@ namespace evolution::patches {
  * The table is computed from the domain and options alone, so every process
  * computes the same table. It doesn't change during the evolution because
  * patches don't support AMR.
+ *
+ * The table also decides where the patches run (`procs()`), and whether the
+ * elements outside patches avoid those processors (`dedicated_procs()`).
  */
 template <size_t Dim>
 class PatchTable {
@@ -79,7 +84,8 @@ class PatchTable {
       const std::vector<Block<Dim>>& blocks,
       const std::vector<std::array<size_t, Dim>>& initial_refinement_levels,
       const PatchMesh& patch_mesh,
-      const std::optional<size_t>& max_elements_per_patch = std::nullopt);
+      const std::optional<size_t>& max_elements_per_patch = std::nullopt,
+      bool dedicated_procs = false);
 
   size_t number_of_patches() const { return block_ids_.size(); }
 
@@ -105,6 +111,18 @@ class PatchTable {
     return number_of_elements_outside_patches_;
   }
 
+  /// Whether the elements outside patches avoid the processors of the patches,
+  /// so that a patch's actions never wait behind those of other elements on
+  /// its processor
+  bool dedicated_procs() const { return dedicated_procs_; }
+
+  /// The processor (PE) of each patch, avoiding the `procs_to_ignore` (see
+  /// `patch_procs()`)
+  template <typename DistribObject>
+  std::vector<size_t> procs(
+      const DistribObject& distributed_object,
+      const std::unordered_set<size_t>& procs_to_ignore) const;
+
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& p);
 
@@ -118,6 +136,7 @@ class PatchTable {
   std::vector<Mesh<Dim>> dg_meshes_{};
   std::unordered_map<ElementId<Dim>, Location> locations_{};
   size_t number_of_elements_outside_patches_ = 0;
+  bool dedicated_procs_ = false;
 };
 
 template <size_t Dim>
@@ -137,6 +156,29 @@ bool operator==(const PatchTable<Dim>& lhs, const PatchTable<Dim>& rhs);
 std::vector<size_t> patch_procs(
     size_t number_of_patches,
     const std::vector<std::vector<size_t>>& procs_on_nodes);
+
+template <size_t Dim>
+template <typename DistribObject>
+std::vector<size_t> PatchTable<Dim>::procs(
+    const DistribObject& distributed_object,
+    const std::unordered_set<size_t>& procs_to_ignore) const {
+  const auto number_of_nodes =
+      Parallel::number_of_nodes<size_t>(distributed_object);
+  std::vector<std::vector<size_t>> procs_on_nodes(number_of_nodes);
+  for (size_t node = 0; node < number_of_nodes; ++node) {
+    const auto first_proc =
+        Parallel::first_proc_on_node<size_t>(node, distributed_object);
+    const auto number_of_procs =
+        Parallel::procs_on_node<size_t>(node, distributed_object);
+    for (size_t proc = first_proc; proc < first_proc + number_of_procs;
+         ++proc) {
+      if (not procs_to_ignore.contains(proc)) {
+        procs_on_nodes[node].push_back(proc);
+      }
+    }
+  }
+  return patch_procs(number_of_patches(), procs_on_nodes);
+}
 
 template <size_t Dim>
 bool operator!=(const PatchTable<Dim>& lhs, const PatchTable<Dim>& rhs);

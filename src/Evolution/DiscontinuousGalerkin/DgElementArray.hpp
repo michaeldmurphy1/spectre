@@ -32,6 +32,7 @@
 #include "Parallel/ParallelComponentHelpers.hpp"
 #include "Parallel/Phase.hpp"
 #include "Parallel/Printf/Printf.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/Numeric.hpp"
 #include "Utilities/System/ParallelInfo.hpp"
@@ -132,7 +133,29 @@ void DgElementArray<Metavariables, PhaseDepActionList>::allocate_array(
 
   const size_t number_of_procs = Parallel::number_of_procs<size_t>(local_cache);
   const size_t number_of_nodes = Parallel::number_of_nodes<size_t>(local_cache);
-  const size_t num_of_procs_to_use = number_of_procs - procs_to_ignore.size();
+  // The elements may avoid the processors of patches
+  std::unordered_set<size_t> dg_procs_to_ignore = procs_to_ignore;
+  if constexpr (uses_patches) {
+    const auto& patch_table =
+        Parallel::get<typename Metavariables::patch_table_tag>(local_cache);
+    if (patch_table.dedicated_procs() and
+        patch_table.number_of_elements_outside_patches() > 0) {
+      for (const size_t proc :
+           patch_table.procs(local_cache, procs_to_ignore)) {
+        dg_procs_to_ignore.insert(proc);
+      }
+      if (dg_procs_to_ignore.size() >= number_of_procs) {
+        ERROR(
+            "The patches have dedicated processors, so the elements of the "
+            "DgElementArray need more processors than the "
+            << dg_procs_to_ignore.size()
+            << " that patches and other components use, out of "
+            << number_of_procs << ".");
+      }
+    }
+  }
+  const size_t num_of_procs_to_use =
+      number_of_procs - dg_procs_to_ignore.size();
 
   const auto& blocks = domain.blocks();
 
@@ -162,7 +185,7 @@ void DgElementArray<Metavariables, PhaseDepActionList>::allocate_array(
       element_weight, blocks, initial_extents, initial_refinement_levels,
       i1_basis, i1_quadrature,
 
-      procs_to_ignore, number_of_procs, number_of_nodes, num_of_procs_to_use,
+      dg_procs_to_ignore, number_of_procs, number_of_nodes, num_of_procs_to_use,
       local_cache, true, weighting_extents_override);
   dg_element_array.doneInserting();
 }

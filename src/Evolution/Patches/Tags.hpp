@@ -29,4 +29,16 @@ struct MaxElementsPerPatch {
       "equal size. 'Auto' puts all of them in one patch."};
   using group = PatchesGroup;
 };
+
+/// \ingroup OptionTagsGroup
+/// Whether the elements outside patches avoid the processors of the patches
+/// (see `evolution::patches::PatchTable::dedicated_procs`)
+struct DedicatedProcs {
+  using type = bool;
+  static constexpr Options::String help{
+      "Whether the elements outside patches avoid the processors (PEs) of the "
+      "patches, so that a patch never waits for other elements on its "
+      "processor."};
+  using group = PatchesGroup;
+};
 }  // namespace evolution::patches::OptionTags

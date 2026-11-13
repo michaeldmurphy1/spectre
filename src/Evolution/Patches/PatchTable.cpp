@@ -48,7 +48,9 @@ PatchTable<Dim>::PatchTable(
     const std::vector<Block<Dim>>& blocks,
     const std::vector<std::array<size_t, Dim>>& initial_refinement_levels,
     const PatchMesh& patch_mesh,
-    const std::optional<size_t>& max_elements_per_patch) {
+    const std::optional<size_t>& max_elements_per_patch,
+    const bool dedicated_procs)
+    : dedicated_procs_(dedicated_procs) {
   if (max_elements_per_patch.has_value() and *max_elements_per_patch == 0) {
     ERROR("The maximum number of elements per patch must be positive.");
   }
@@ -154,6 +156,7 @@ void PatchTable<Dim>::pup(PUP::er& p) {
   p | dg_meshes_;
   p | locations_;
   p | number_of_elements_outside_patches_;
+  p | dedicated_procs_;
 }
 
 template <size_t Dim>
@@ -163,7 +166,8 @@ bool operator==(const PatchTable<Dim>& lhs, const PatchTable<Dim>& rhs) {
          lhs.dg_meshes_ == rhs.dg_meshes_ and
          lhs.locations_ == rhs.locations_ and
          lhs.number_of_elements_outside_patches_ ==
-             rhs.number_of_elements_outside_patches_;
+             rhs.number_of_elements_outside_patches_ and
+         lhs.dedicated_procs_ == rhs.dedicated_procs_;
 }
 
 template <size_t Dim>

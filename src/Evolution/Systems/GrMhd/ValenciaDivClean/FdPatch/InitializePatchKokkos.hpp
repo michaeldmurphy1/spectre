@@ -14,10 +14,6 @@
 #include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
-#include "Domain/Block.hpp"
-#include "Domain/CoordinateMaps/CoordinateMap.hpp"
-#include "Domain/CoordinateMaps/CoordinateMap.tpp"
-#include "Domain/CoordinateMaps/Identity.hpp"
 #include "Domain/Creators/Tags/Domain.hpp"
 #include "Domain/Creators/Tags/InitialRefinementLevels.hpp"
 #include "Domain/Domain.hpp"
@@ -79,12 +75,6 @@ fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes> make_patch(
   const Domain<3>& domain = db::get<domain::Tags::Domain<3>>(box);
   const auto& fd_patches =
       db::get<evolution::dg::subcell::fd_patch::Tags::FdPatches<3>>(box);
-  const Block<3>& block = domain.blocks()[fd_patches.block_id(patch)];
-  const auto grid_to_inertial_map =
-      block.is_time_dependent()
-          ? block.moving_mesh_grid_to_inertial_map().get_clone()
-          : domain::make_coordinate_map_base<Frame::Grid, Frame::Inertial>(
-                domain::CoordinateMaps::Identity<3>{});
   const double time = db::get<::Tags::Time>(box);
 
   const auto& exec = Parallel::device_execution_space();
@@ -96,7 +86,6 @@ fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes> make_patch(
       fd_patches,
       patch,
       db::get<domain::Tags::InitialRefinementLevels<3>>(box),
-      *grid_to_inertial_map,
       time,
       functions_of_time,
       db::get<fd::Tags::Reconstructor>(box),

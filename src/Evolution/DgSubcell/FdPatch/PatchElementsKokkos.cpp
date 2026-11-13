@@ -5,8 +5,11 @@
 
 #ifdef SPECTRE_KOKKOS
 #include <Kokkos_Profiling_ScopedRegion.hpp>
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <iterator>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -15,7 +18,10 @@
 #include <vector>
 
 #include "DataStructures/Index.hpp"
+#include "Domain/Block.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
+#include "Domain/CoordinateMaps/CoordinateMap.tpp"
+#include "Domain/CoordinateMaps/Identity.hpp"
 #include "Domain/CreateInitialElement.hpp"
 #include "Domain/Domain.hpp"
 #include "Domain/Structure/DirectionalIdMap.hpp"
@@ -24,6 +30,7 @@
 #include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
+#include "Utilities/Algorithm.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
@@ -33,26 +40,38 @@ PatchElements::PatchElements(
     const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
     const FdPatches<3>& fd_patches, const size_t patch,
     const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
-    const domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-        grid_to_inertial_map,
     const double time, const domain::FunctionsOfTimeMap& functions_of_time,
     const size_t ghost_width, const size_t number_of_ghost_variables,
     const size_t number_of_packaged_variables)
     : patch_(patch),
       dg_mesh_(fd_patches.dg_mesh(patch)),
       subcell_mesh_(evolution::dg::subcell::fd::mesh(dg_mesh_)),
-      element_ids_(fd_patches.element_ids(patch)),
-      grid_to_inertial_map_(grid_to_inertial_map.get_clone()) {
+      element_ids_(fd_patches.element_ids(patch)) {
   const size_t number_of_elements = element_ids_.size();
 
-  // Elements and their maps
+  // Elements and their maps, with one grid to inertial map per block
   elements_.reserve(number_of_elements);
   element_maps_.reserve(number_of_elements);
+  map_of_slot_.reserve(number_of_elements);
+  std::vector<size_t> map_blocks{};
   for (const auto& element_id : element_ids_) {
     elements_.push_back(domain::create_initial_element(
         element_id, domain.blocks(), initial_refinement_levels));
-    element_maps_.emplace_back(element_id,
-                               domain.blocks()[element_id.block_id()]);
+    const Block<3>& block = domain.blocks()[element_id.block_id()];
+    element_maps_.emplace_back(element_id, block);
+    const auto map_block = alg::find(map_blocks, block.id());
+    map_of_slot_.push_back(
+        static_cast<size_t>(std::distance(map_blocks.begin(), map_block)));
+    if (map_block == map_blocks.end()) {
+      map_blocks.push_back(block.id());
+      grid_to_inertial_maps_.push_back(
+          block.is_time_dependent()
+              ? block.moving_mesh_grid_to_inertial_map().get_clone()
+              : domain::make_coordinate_map_base<Frame::Grid, Frame::Inertial>(
+                    domain::CoordinateMaps::Identity<3>{}));
+      mesh_is_moving_ =
+          mesh_is_moving_ or not grid_to_inertial_maps_.back()->is_identity();
+    }
   }
 
   // Ghost zones and data from DG neighbors
@@ -106,6 +125,42 @@ PatchElements::PatchElements(
 
   // Geometry
   logical_to_grid_ = logical_to_grid(exec, element_maps_, dg_mesh_);
+  // The corners of the elements of each map, where it must be affine
+  std::vector<size_t> number_of_map_elements(grid_to_inertial_maps_.size(), 0);
+  for (const size_t map : map_of_slot_) {
+    ++number_of_map_elements[map];
+  }
+  for (const size_t number : number_of_map_elements) {
+    map_corners_.emplace_back(8 * number);
+  }
+  std::fill(number_of_map_elements.begin(), number_of_map_elements.end(), 0);
+  for (size_t slot = 0; slot < number_of_elements; ++slot) {
+    const size_t map = map_of_slot_[slot];
+    for (size_t corner = 0; corner < 8; ++corner) {
+      for (size_t d = 0; d < 3; ++d) {
+        map_corners_[map].get(d)[8 * number_of_map_elements[map] + corner] =
+            logical_to_grid_.corners.get(d)[8 * slot + corner];
+      }
+    }
+    ++number_of_map_elements[map];
+  }
+  grid_to_inertial_ = Kokkos::View<AffineGridToInertial*>(
+      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                         "FD patch grid to inertial maps"),
+      3 * number_of_elements);
+  div_mesh_velocity_ = Kokkos::View<double*>(
+      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                         "FD patch divergence of the mesh velocity"),
+      number_of_elements);
+  host_grid_to_inertial_ = decltype(host_grid_to_inertial_)(
+      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                         "FD patch grid to inertial maps on the host"),
+      grid_to_inertial_.size());
+  host_div_mesh_velocity_ = decltype(host_div_mesh_velocity_)(
+      Kokkos::view_alloc(
+          exec, Kokkos::WithoutInitializing,
+          "FD patch divergence of the mesh velocity on the host"),
+      div_mesh_velocity_.size());
   Index<3> face_extents = subcell_mesh_.extents();
   ++face_extents[0];
   face_geometry_ = BatchedVariables<inertial_face_tags>{
@@ -113,6 +168,11 @@ PatchElements::PatchElements(
   cell_geometry_ = BatchedVariables<inertial_cell_tags>{
       exec, subcell_mesh_.number_of_grid_points(), number_of_elements};
   update_geometry(exec, time, functions_of_time);
+}
+
+const domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
+PatchElements::grid_to_inertial_map(const size_t slot) const {
+  return *grid_to_inertial_maps_.at(map_of_slot_.at(slot));
 }
 
 std::string PatchElements::element_description(const size_t slot) const {
@@ -145,15 +205,28 @@ TimeSteppers::DeviceHistory<> PatchElements::initial_history(
 void PatchElements::update_geometry(
     const Kokkos::DefaultExecutionSpace& exec, const double time,
     const domain::FunctionsOfTimeMap& functions_of_time) {
-  if (grid_to_inertial_.has_value() and grid_to_inertial_map_->is_identity()) {
+  if (geometry_computed_ and not mesh_is_moving_) {
     return;
   }
-  grid_to_inertial_ =
-      affine_grid_to_inertial(*grid_to_inertial_map_, time, functions_of_time,
-                              logical_to_grid_.corners);
+  std::vector<AffineGridToInertial> maps(grid_to_inertial_maps_.size());
+  for (size_t map = 0; map < maps.size(); ++map) {
+    maps[map] = affine_grid_to_inertial(*grid_to_inertial_maps_[map], time,
+                                        functions_of_time, map_corners_[map]);
+  }
+  const size_t number_of_elements = element_ids_.size();
+  for (size_t slot = 0; slot < number_of_elements; ++slot) {
+    const AffineGridToInertial& map = maps[map_of_slot_[slot]];
+    for (size_t d = 0; d < 3; ++d) {
+      host_grid_to_inertial_(d * number_of_elements + slot) = map;
+    }
+    host_div_mesh_velocity_(slot) = map.div_mesh_velocity;
+  }
+  Kokkos::deep_copy(exec, grid_to_inertial_, host_grid_to_inertial_);
+  Kokkos::deep_copy(exec, div_mesh_velocity_, host_div_mesh_velocity_);
   inertial_geometry_on_device(exec, make_not_null(&face_geometry_),
                               make_not_null(&cell_geometry_), logical_to_grid_,
-                              grid_to_inertial_.value());
+                              grid_to_inertial_);
+  geometry_computed_ = true;
 }
 
 void PatchElements::fill_ghost_zones(

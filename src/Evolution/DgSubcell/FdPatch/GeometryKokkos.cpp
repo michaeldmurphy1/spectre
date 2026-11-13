@@ -39,14 +39,11 @@ Spectral::Parity parity(const size_t i, const size_t j) {
   return (i == 0) != (j == 0) ? Spectral::Parity::Odd : Spectral::Parity::Even;
 }
 
-struct AffineGridToInertialTag : db::SimpleTag {
-  using type = AffineGridToInertial;
-};
-
 struct InertialFaceGeometry {
   using return_tags = inertial_face_tags;
   using argument_tags =
-      tmpl::push_back<logical_to_grid_face_tags, AffineGridToInertialTag>;
+      tmpl::push_back<logical_to_grid_face_tags,
+                      ::Tags::PerElement<Tags::AffineGridToInertial>>;
 
   KOKKOS_FUNCTION static void apply(
       const gsl::not_null<tnsr::i<double, 3, Frame::Inertial>*> conormal,
@@ -74,7 +71,8 @@ struct InertialFaceGeometry {
 struct InertialCellGeometry {
   using return_tags = inertial_cell_tags;
   using argument_tags =
-      tmpl::push_back<logical_to_grid_cell_tags, AffineGridToInertialTag>;
+      tmpl::push_back<logical_to_grid_cell_tags,
+                      ::Tags::PerElement<Tags::AffineGridToInertial>>;
 
   KOKKOS_FUNCTION static void apply(
       const gsl::not_null<Scalar<double>*> det_inverse_jacobian,
@@ -268,7 +266,7 @@ void inertial_geometry_on_device(
     const gsl::not_null<BatchedVariables<inertial_face_tags>*> faces,
     const gsl::not_null<BatchedVariables<inertial_cell_tags>*> cells,
     const LogicalToGrid& logical_to_grid,
-    const AffineGridToInertial& grid_to_inertial) {
+    const Kokkos::View<const AffineGridToInertial*>& grid_to_inertial) {
   ASSERT(faces->number_of_grid_points() ==
                  logical_to_grid.faces.number_of_grid_points() and
              faces->number_of_elements() ==
@@ -276,15 +274,18 @@ void inertial_geometry_on_device(
              cells->number_of_grid_points() ==
                  logical_to_grid.cells.number_of_grid_points() and
              cells->number_of_elements() ==
-                 logical_to_grid.cells.number_of_elements(),
+                 logical_to_grid.cells.number_of_elements() and
+             grid_to_inertial.extent(0) ==
+                 logical_to_grid.faces.number_of_elements(),
          "The inertial geometry must have the shape of the logical to grid "
-         "geometry");
+         "geometry, with a map per face set");
   apply_pointwise_on_device<InertialFaceGeometry>(
       exec, faces, InertialFaceGeometry::return_tags{},
       InertialFaceGeometry::argument_tags{},
       make_device_arguments<Tags::LogicalToGridFaceConormal,
                             Tags::LogicalToGridFaceDetInverseJacobian,
-                            Tags::FaceGridCoordinates, AffineGridToInertialTag>(
+                            Tags::FaceGridCoordinates,
+                            ::Tags::PerElement<Tags::AffineGridToInertial>>(
           exec,
           get<::Tags::BatchView<Tags::LogicalToGridFaceConormal>>(
               logical_to_grid.faces),
@@ -297,11 +298,15 @@ void inertial_geometry_on_device(
       exec, cells, InertialCellGeometry::return_tags{},
       InertialCellGeometry::argument_tags{},
       make_device_arguments<Tags::LogicalToGridCellDetInverseJacobian,
-                            AffineGridToInertialTag>(
+                            ::Tags::PerElement<Tags::AffineGridToInertial>>(
           exec,
           get<::Tags::BatchView<Tags::LogicalToGridCellDetInverseJacobian>>(
               logical_to_grid.cells),
-          grid_to_inertial));
+          // The first face sets are those of the elements in order
+          Kokkos::View<const AffineGridToInertial*>{Kokkos::subview(
+              grid_to_inertial,
+              Kokkos::make_pair(size_t{0},
+                                logical_to_grid.cells.number_of_elements()))}));
 }
 }  // namespace evolution::dg::subcell::fd_patch
 #endif  // SPECTRE_KOKKOS

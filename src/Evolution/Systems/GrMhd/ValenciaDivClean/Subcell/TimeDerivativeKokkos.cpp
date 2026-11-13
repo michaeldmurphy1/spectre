@@ -197,8 +197,8 @@ struct ScaledBoundaryTerms {
 // before adding the flux divergence, including the mesh velocity term
 struct SourcesAsTimeDerivatives {
   using return_tags = dt_tags_on_device;
-  using argument_tags =
-      tmpl::push_back<ComputeSources::argument_tags, DivMeshVelocity>;
+  using argument_tags = tmpl::push_back<ComputeSources::argument_tags,
+                                        ::Tags::PerElement<DivMeshVelocity>>;
 
   template <typename... SourceArgs>
   KOKKOS_FUNCTION static void apply(
@@ -333,7 +333,8 @@ void TimeDerivativeOnDevice<Correction>::apply(
     const BatchedVariables<cell_spacetime_tags>& cell_spacetime_variables,
     const BatchedVariables<fd_patch::inertial_face_tags>& face_geometry,
     const BatchedVariables<fd_patch::inertial_cell_tags>& cell_geometry,
-    const fd_patch::AffineGridToInertial& grid_to_inertial,
+    const bool mesh_is_moving,
+    const Kokkos::View<const double*>& div_mesh_velocity,
     const Correction& correction,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere,
@@ -341,7 +342,8 @@ void TimeDerivativeOnDevice<Correction>::apply(
     const fd_patch::PackagedDataFromDg<3>& packaged_data_from_dg,
     const Kokkos::View<const double*>& received_mortar_data) {
   ASSERT(dt_vars->number_of_elements() == number_of_elements_ and
-             face_geometry.number_of_elements() == 3 * number_of_elements_,
+             face_geometry.number_of_elements() == 3 * number_of_elements_ and
+             div_mesh_velocity.extent(0) == number_of_elements_,
          "The batches don't match the " << number_of_elements_
                                         << " elements of the time derivative");
 
@@ -358,7 +360,7 @@ void TimeDerivativeOnDevice<Correction>::apply(
   const auto mesh_velocity =
       get<::Tags::BatchView<fd_patch::Tags::FaceMeshVelocity>>(face_geometry);
   const auto* const moving_mesh_velocity =
-      grid_to_inertial.is_moving ? &mesh_velocity : nullptr;
+      mesh_is_moving ? &mesh_velocity : nullptr;
   const std::array<double, 2> signs{{1.0, -1.0}};
   if constexpr (std::is_same_v<Correction, BoundaryCorrections::Rusanov>) {
     // In one kernel for each side
@@ -433,9 +435,9 @@ void TimeDerivativeOnDevice<Correction>::apply(
     } else if constexpr (std::is_same_v<Tag, domain::Tags::Mesh<3>>) {
       return dg_mesh_;
     } else {
-      static_assert(std::is_same_v<Tag, DivMeshVelocity>,
+      static_assert(std::is_same_v<Tag, ::Tags::PerElement<DivMeshVelocity>>,
                     "Unexpected argument of the sources");
-      return grid_to_inertial.div_mesh_velocity;
+      return div_mesh_velocity;
     }
   };
   apply_pointwise_on_device<SourcesAsTimeDerivatives>(

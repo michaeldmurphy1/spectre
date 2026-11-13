@@ -171,8 +171,6 @@ class Patch {
         const evolution::dg::subcell::fd_patch::FdPatches<3>& fd_patches,
         size_t patch,
         const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
-        const domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-            grid_to_inertial_map,
         double time, const domain::FunctionsOfTimeMap& functions_of_time,
         const fd::Reconstructor& reconstructor,
         const evolution::BoundaryCorrection& boundary_correction,

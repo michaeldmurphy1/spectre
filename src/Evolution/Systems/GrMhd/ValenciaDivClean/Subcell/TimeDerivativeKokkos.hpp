@@ -159,8 +159,11 @@ class TimeDerivativeOnDevice {
    * Jacobian and mesh velocities on the faces (a batch of \f$3N\f$ face sets).
    * \param cell_geometry the determinant of the inverse Jacobian at the cell
    * centers.
-   * \param grid_to_inertial the affine map from the grid to the inertial
-   * frame, for the divergence of the mesh velocity.
+   * \param mesh_is_moving whether the mesh of any element moves, so the
+   * mesh velocity on the faces is used.
+   * \param div_mesh_velocity the divergence of the mesh velocity of each
+   * element (constant on an element because the grid to inertial map is
+   * affine).
    * \param correction the boundary correction.
    * \param equation_of_state the equation of state, for the reconstruction
    * and the boundary corrections.
@@ -190,8 +193,7 @@ class TimeDerivativeOnDevice {
           evolution::dg::subcell::fd_patch::inertial_face_tags>& face_geometry,
       const BatchedVariables<
           evolution::dg::subcell::fd_patch::inertial_cell_tags>& cell_geometry,
-      const evolution::dg::subcell::fd_patch::AffineGridToInertial&
-          grid_to_inertial,
+      bool mesh_is_moving, const Kokkos::View<const double*>& div_mesh_velocity,
       const Correction& correction,
       const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
       const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere,

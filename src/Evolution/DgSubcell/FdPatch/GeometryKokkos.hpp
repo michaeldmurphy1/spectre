@@ -168,6 +168,14 @@ struct AffineGridToInertial {
   bool is_moving = false;
 };
 
+namespace Tags {
+/// The `AffineGridToInertial` map of an element, as a `::Tags::PerElement`
+/// argument of device kernels
+struct AffineGridToInertial : db::SimpleTag {
+  using type = fd_patch::AffineGridToInertial;
+};
+}  // namespace Tags
+
 /*!
  * \brief The `AffineGridToInertial` of the `grid_to_inertial` map at `time`.
  *
@@ -182,18 +190,24 @@ AffineGridToInertial affine_grid_to_inertial(
 
 /*!
  * \brief Compute the geometry of the elements of a patch in the inertial frame
- * on the device, from the `logical_to_grid` geometry and the
- * `grid_to_inertial` map at the current time. Enqueued on `exec`.
+ * on the device, from the `logical_to_grid` geometry and the grid to inertial
+ * maps of the elements at the current time. Enqueued on `exec`.
  *
  * `faces` and `cells` must have the same number of grid points and elements
  * as `logical_to_grid.faces` and `logical_to_grid.cells`. The mesh velocity is
- * zero if the mesh doesn't move.
+ * zero where the mesh doesn't move.
+ *
+ * `grid_to_inertial` holds the map of each face set of `faces`, i.e. entry
+ * `d * number_of_elements + e` holds the map of element `e` (for the faces in
+ * direction `d`). The cells of element `e` use entry `e`. The maps are read on
+ * the device, so they can change between substeps without changing the
+ * arguments of the kernels.
  */
 void inertial_geometry_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
     gsl::not_null<BatchedVariables<inertial_face_tags>*> faces,
     gsl::not_null<BatchedVariables<inertial_cell_tags>*> cells,
     const LogicalToGrid& logical_to_grid,
-    const AffineGridToInertial& grid_to_inertial);
+    const Kokkos::View<const AffineGridToInertial*>& grid_to_inertial);
 }  // namespace evolution::dg::subcell::fd_patch
 #endif  // SPECTRE_KOKKOS

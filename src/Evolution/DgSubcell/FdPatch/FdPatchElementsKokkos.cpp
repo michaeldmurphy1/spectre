@@ -5,8 +5,11 @@
 
 #ifdef SPECTRE_KOKKOS
 #include <Kokkos_Profiling_ScopedRegion.hpp>
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <iterator>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -15,7 +18,10 @@
 #include <vector>
 
 #include "DataStructures/Index.hpp"
+#include "Domain/Block.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
+#include "Domain/CoordinateMaps/CoordinateMap.tpp"
+#include "Domain/CoordinateMaps/Identity.hpp"
 #include "Domain/CreateInitialElement.hpp"
 #include "Domain/Domain.hpp"
 #include "Domain/Structure/DirectionalIdMap.hpp"
@@ -24,6 +30,7 @@
 #include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
+#include "Utilities/Algorithm.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/TMPL.hpp"
@@ -33,14 +40,11 @@ FdPatchElements::FdPatchElements(
     const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
     const evolution::patches::PatchTable<3>& patch_table, const size_t patch,
     const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
-    const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-        grid_to_inertial_map,
     const double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
     const size_t ghost_width, const size_t number_of_ghost_variables,
     const size_t number_of_packaged_variables)
     : evolution::patches::PatchElements(domain, patch_table, patch,
-                                        initial_refinement_levels,
-                                        grid_to_inertial_map),
+                                        initial_refinement_levels),
       subcell_mesh_(evolution::dg::subcell::fd::mesh(dg_mesh())) {
   const size_t number_of_elements = this->number_of_elements();
 
@@ -95,6 +99,23 @@ FdPatchElements::FdPatchElements(
 
   // Geometry
   logical_to_grid_ = logical_to_grid(exec, element_maps(), dg_mesh());
+  grid_to_inertial_ = Kokkos::View<evolution::patches::AffineGridToInertial*>(
+      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                         "FD patch grid to inertial maps"),
+      3 * number_of_elements);
+  div_mesh_velocity_ = Kokkos::View<double*>(
+      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                         "FD patch divergence of the mesh velocity"),
+      number_of_elements);
+  host_grid_to_inertial_ = decltype(host_grid_to_inertial_)(
+      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                         "FD patch grid to inertial maps on the host"),
+      grid_to_inertial_.size());
+  host_div_mesh_velocity_ = decltype(host_div_mesh_velocity_)(
+      Kokkos::view_alloc(
+          exec, Kokkos::WithoutInitializing,
+          "FD patch divergence of the mesh velocity on the host"),
+      div_mesh_velocity_.size());
   Index<3> face_extents = subcell_mesh_.extents();
   ++face_extents[0];
   face_geometry_ = BatchedVariables<inertial_face_tags>{
@@ -107,15 +128,29 @@ FdPatchElements::FdPatchElements(
 void FdPatchElements::update_geometry(
     const Kokkos::DefaultExecutionSpace& exec, const double time,
     const domain::FunctionsOfTimeMap& functions_of_time) {
-  if (grid_to_inertial_.has_value() and grid_to_inertial_map().is_identity()) {
+  if (geometry_computed_ and not mesh_is_moving()) {
     return;
   }
-  grid_to_inertial_ = evolution::patches::affine_grid_to_inertial(
-      grid_to_inertial_map(), time, functions_of_time,
-      logical_to_grid_.corners);
+  std::vector<evolution::patches::AffineGridToInertial> maps(number_of_maps());
+  for (size_t map = 0; map < maps.size(); ++map) {
+    maps[map] = evolution::patches::affine_grid_to_inertial(
+        this->map(map), time, functions_of_time, map_corners(map));
+  }
+  const size_t number_of_elements = this->number_of_elements();
+  for (size_t slot = 0; slot < number_of_elements; ++slot) {
+    const evolution::patches::AffineGridToInertial& map =
+        maps[map_of_slot(slot)];
+    for (size_t d = 0; d < 3; ++d) {
+      host_grid_to_inertial_(d * number_of_elements + slot) = map;
+    }
+    host_div_mesh_velocity_(slot) = map.div_mesh_velocity;
+  }
+  Kokkos::deep_copy(exec, grid_to_inertial_, host_grid_to_inertial_);
+  Kokkos::deep_copy(exec, div_mesh_velocity_, host_div_mesh_velocity_);
   inertial_geometry_on_device(exec, make_not_null(&face_geometry_),
                               make_not_null(&cell_geometry_), logical_to_grid_,
-                              grid_to_inertial_.value());
+                              grid_to_inertial_);
+  geometry_computed_ = true;
 }
 
 void FdPatchElements::fill_ghost_zones(

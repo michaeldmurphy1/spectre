@@ -436,6 +436,7 @@ void for_each_element_box(const db::DataBox<DbTagsList>& box,
                           Parallel::GlobalCache<Metavariables>& cache,
                           const bool copy_variables, const Function& function) {
   constexpr size_t dim = Metavariables::volume_dim;
+  const Kokkos::Profiling::ScopedRegion region{"fd_patch::element_boxes"};
   const auto& patch = db::get<PatchTag>(box);
   // Report failures of the last substep before anything sees its state
   patch.check_last_step(Parallel::device_execution_space());
@@ -445,6 +446,8 @@ void for_each_element_box(const db::DataBox<DbTagsList>& box,
       typename std::decay_t<decltype(patch)>::ElementVariables;
   std::vector<ElementVariables> variables{};
   if (copy_variables) {
+    const Kokkos::Profiling::ScopedRegion copy_region{
+        "fd_patch::element_boxes::copy_variables"};
     variables = with_state<PatchTag>(box, [&patch](const auto&... state) {
       return patch.element_variables(Parallel::device_execution_space(),
                                      state...);
@@ -493,6 +496,8 @@ void run_events_on_elements(const std::vector<const Event*>& events,
   for_each_element_box<PatchTag>(
       box, cache, copy_variables,
       [&](const auto& element_id, auto& element_box) {
+        const Kokkos::Profiling::ScopedRegion events_region{
+            "fd_patch::element_boxes::run_events"};
         auto observation_box =
             make_observation_box<observation_compute_tags<Metavariables>>(
                 make_not_null(&element_box));

@@ -200,13 +200,16 @@ class BatchedVariables<tmpl::list<Tags...>, Space> {
  * host batch `host_batch`, without copying.
  *
  * This lets host code that works on `Variables<Tags>` (with `DataVector`s)
- * write directly into a batch that is then copied to the device in one go.
+ * write directly into a batch that is then copied to the device in one go, or
+ * read a batch that was copied from the device. The batch can be in any memory
+ * space the host can access, e.g. pinned host memory.
  */
-template <typename... Tags>
+template <typename... Tags, typename Space>
+  requires(static_cast<bool>(
+      Kokkos::SpaceAccessibility<Kokkos::HostSpace, Space>::accessible))
 void set_data_ref_to_element(
     const gsl::not_null<Variables<tmpl::list<Tags...>>*> host_element,
-    BatchedVariables<tmpl::list<Tags...>, Kokkos::HostSpace>& host_batch,
-    const size_t e) {
+    BatchedVariables<tmpl::list<Tags...>, Space>& host_batch, const size_t e) {
   ASSERT(e < host_batch.number_of_elements(),
          "Element " << e << " is not in the batch of "
                     << host_batch.number_of_elements() << " elements");

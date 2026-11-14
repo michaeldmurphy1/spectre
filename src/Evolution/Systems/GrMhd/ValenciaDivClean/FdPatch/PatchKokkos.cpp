@@ -161,6 +161,14 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
       BatchedVariables<ghost_tags>{exec, number_of_cells, number_of_elements};
   dt_variables_ = BatchedVariables<subcell::dt_tags_on_device>{
       exec, number_of_cells, number_of_elements};
+  host_evolved_variables_ = decltype(host_evolved_variables_){
+      exec, number_of_cells, number_of_elements};
+  host_primitives_ =
+      decltype(host_primitives_){exec, number_of_cells, number_of_elements};
+  element_spacetime_ =
+      decltype(element_spacetime_){exec, number_of_cells, number_of_elements};
+  host_spacetime_ =
+      decltype(host_spacetime_){exec, number_of_cells, number_of_elements};
   stepper_errors_.resize(number_of_elements);
   face_status_ = decltype(face_status_){exec};
   fix_conservatives_status_ = decltype(fix_conservatives_status_){exec};
@@ -467,33 +475,36 @@ auto Patch<OrderedListOfPrimitiveRecoverySchemes>::element_variables(
     const CellSpacetimeVariables& cell_spacetime_variables,
     const FaceSpacetimeVariables& /*face_spacetime_variables*/) const
     -> std::vector<ElementVariables> {
-  const auto to_host = [&exec](const auto& batch) {
-    using TagsList = typename std::decay_t<decltype(batch)>::tags_list;
-    BatchedVariables<TagsList, Kokkos::HostSpace> host{
-        Kokkos::DefaultHostExecutionSpace{}, batch.number_of_grid_points(),
-        batch.number_of_elements()};
-    deep_copy(exec, make_not_null(&host), batch);
-    return host;
-  };
-  auto host_evolved = to_host(evolved_variables);
-  auto host_primitives = to_host(primitives);
-  auto host_spacetime = to_host(cell_spacetime_variables);
+  // Copies of the handles, which refer to the same data, so the buffers can
+  // be filled in this const function
+  auto host_evolved = host_evolved_variables_;
+  auto host_primitives = host_primitives_;
+  auto element_spacetime = element_spacetime_;
+  auto host_spacetime = host_spacetime_;
+  // The spacetime variables of the element boxes, a subset of those at the
+  // cell centers, gathered on the device so that each batch is copied in one
+  // piece
+  tmpl::for_each<element_spacetime_tags>([&]<typename Tag>(
+                                             tmpl::type_<Tag> /*meta*/) {
+    const auto& source = get<::Tags::BatchView<Tag>>(cell_spacetime_variables);
+    const auto& destination = get<::Tags::BatchView<Tag>>(element_spacetime);
+    for (size_t component = 0; component < source.size(); ++component) {
+      Kokkos::deep_copy(exec, destination[component], source[component]);
+    }
+  });
+  deep_copy(exec, make_not_null(&host_evolved), evolved_variables);
+  deep_copy(exec, make_not_null(&host_primitives), primitives);
+  deep_copy(exec, make_not_null(&host_spacetime), element_spacetime);
   exec.fence("grmhd::ValenciaDivClean::fd_patch::Patch::element_variables");
 
-  // Copies, since the batches are deallocated on return
-  const auto element = [](auto& host_batch, const size_t slot) {
-    using TagsList = typename std::decay_t<decltype(host_batch)>::tags_list;
-    Variables<TagsList> view{};
-    set_data_ref_to_element(make_not_null(&view), host_batch, slot);
-    return Variables<TagsList>{view};
-  };
   std::vector<ElementVariables> result(patch_elements_.number_of_elements());
   for (size_t slot = 0; slot < result.size(); ++slot) {
-    result[slot].evolved = element(host_evolved, slot);
-    result[slot].primitives = element(host_primitives, slot);
-    const auto spacetime = element(host_spacetime, slot);
-    result[slot].spacetime.initialize(spacetime.number_of_grid_points());
-    result[slot].spacetime.assign_subset(spacetime);
+    set_data_ref_to_element(make_not_null(&result[slot].evolved), host_evolved,
+                            slot);
+    set_data_ref_to_element(make_not_null(&result[slot].primitives),
+                            host_primitives, slot);
+    set_data_ref_to_element(make_not_null(&result[slot].spacetime),
+                            host_spacetime, slot);
   }
   return result;
 }

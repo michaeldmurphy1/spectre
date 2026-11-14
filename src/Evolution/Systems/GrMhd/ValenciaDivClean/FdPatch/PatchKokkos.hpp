@@ -222,8 +222,15 @@ class Patch {
     typename System::spacetime_variables_tag::type spacetime{};
   };
 
-  /// The variables of each element on the subcell grid, copied from the device
-  /// on `exec`, which is fenced.
+  /*!
+   * \brief The variables of each element on the subcell grid, copied from the
+   * device on `exec`, which is fenced.
+   *
+   * \details The variables are copied into pinned host buffers that the patch
+   * allocates once, and the returned `Variables` refer to them without owning
+   * the data. So they are valid until the next call (and while the patch
+   * exists), which is enough for the element boxes of one observation.
+   */
   std::vector<ElementVariables> element_variables(
       const Kokkos::DefaultExecutionSpace& exec,
       const EvolvedVariables& evolved_variables,
@@ -394,6 +401,19 @@ class Patch {
   BatchedVariables<subcell::PrimitiveGhostVariables::ghost_variables_tag_list>
       ghost_variables_{};
   BatchedVariables<subcell::dt_tags_on_device> dt_variables_{};
+  // The variables of the elements copied to the host for the element boxes
+  // (see `element_variables()`), in pinned memory and allocated once, and the
+  // spacetime variables of the element boxes gathered on the device. Their
+  // data changes in const member functions, like that of other views.
+  using HostSpace = Kokkos::SharedHostPinnedSpace;
+  using element_spacetime_tags =
+      typename System::spacetime_variables_tag::tags_list;
+  BatchedVariables<typename EvolvedVariables::tags_list, HostSpace>
+      host_evolved_variables_{};
+  BatchedVariables<typename PrimitiveVariables::tags_list, HostSpace>
+      host_primitives_{};
+  BatchedVariables<element_spacetime_tags> element_spacetime_{};
+  BatchedVariables<element_spacetime_tags, HostSpace> host_spacetime_{};
   // The values saved during the self start
   evolution::patches::SavedBatches<EvolvedVariables, PrimitiveVariables>
       initial_values_{};

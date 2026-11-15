@@ -41,6 +41,10 @@ set(LIBRARY_SOURCES
   Test_TagsTimeDependent.cpp
 )
 
+if(SPECTRE_KOKKOS)
+  list(APPEND LIBRARY_SOURCES Test_InertialGeometryKokkos.cpp)
+endif()
+
 add_subdirectory(Amr)
 add_subdirectory(BoundaryConditions)
 add_subdirectory(CoordinateMaps)

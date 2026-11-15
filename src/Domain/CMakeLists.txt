@@ -24,6 +24,7 @@ spectre_target_sources(
   ExtremaPadding.cpp
   FaceNormal.cpp
   FlatLogicalMetric.cpp
+  InertialGeometryKokkos.cpp
   InterfaceLogicalCoordinates.cpp
   JacobianDiagnostic.cpp
   MinimumGridSpacing.cpp
@@ -55,6 +56,7 @@ spectre_target_headers(
   ExtremaPadding.hpp
   FaceNormal.hpp
   FlatLogicalMetric.hpp
+  InertialGeometryKokkos.hpp
   InterfaceComputeTags.hpp
   InterfaceHelpers.hpp
   InterfaceLogicalCoordinates.hpp

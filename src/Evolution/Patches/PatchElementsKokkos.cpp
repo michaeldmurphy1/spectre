@@ -21,6 +21,7 @@
 #include "Domain/CoordinateMaps/Identity.hpp"
 #include "Domain/CreateInitialElement.hpp"
 #include "Domain/Domain.hpp"
+#include "Evolution/Patches/GridToInertial.hpp"
 #include "Evolution/Patches/PatchTable.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
 #include "Utilities/Algorithm.hpp"
@@ -28,8 +29,8 @@
 
 namespace evolution::patches {
 PatchElements::PatchElements(
-    const Domain<3>& domain, const PatchTable<3>& patch_table,
-    const size_t patch,
+    const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
+    const PatchTable<3>& patch_table, const size_t patch,
     const std::vector<std::array<size_t, 3>>& initial_refinement_levels)
     : patch_(patch),
       dg_mesh_(patch_table.dg_mesh(patch)),
@@ -86,6 +87,30 @@ PatchElements::PatchElements(
     }
     ++number_of_map_elements[map];
   }
+
+  // The maps for device kernels
+  host_device_map_table_ = decltype(host_device_map_table_)(
+      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                         "Patch device maps on the host"),
+      grid_to_inertial_maps_.size());
+  device_map_table_ = decltype(device_map_table_)(
+      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                         "Patch device maps"),
+      grid_to_inertial_maps_.size());
+  device_maps_ = decltype(device_maps_)(
+      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
+                         "Patch device maps of the elements"),
+      number_of_elements);
+  device_map_of_slot_ = Kokkos::View<size_t*>(
+      Kokkos::view_alloc(exec, "Patch map of each slot"), number_of_elements);
+  const auto host_map_of_slot = Kokkos::create_mirror_view(
+      Kokkos::WithoutInitializing, device_map_of_slot_);
+  for (size_t slot = 0; slot < number_of_elements; ++slot) {
+    host_map_of_slot(slot) = map_of_slot_[slot];
+  }
+  Kokkos::deep_copy(exec, device_map_of_slot_, host_map_of_slot);
+  // The host mirror must stay valid until the copy is done
+  exec.fence("patches::PatchElements map of each slot");
 }
 
 const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
@@ -105,6 +130,29 @@ size_t PatchElements::map_of_slot(const size_t slot) const {
 const tnsr::I<DataVector, 3, Frame::Grid>& PatchElements::map_corners(
     const size_t map) const {
   return map_corners_.at(map);
+}
+
+bool PatchElements::update_device_maps(
+    const Kokkos::DefaultExecutionSpace& exec, const double time,
+    const ::domain::FunctionsOfTimeMap& functions_of_time) {
+  bool all_affine = true;
+  for (size_t map = 0; map < grid_to_inertial_maps_.size(); ++map) {
+    host_device_map_table_(map) =
+        device_grid_to_inertial(*grid_to_inertial_maps_[map], time,
+                                functions_of_time, map_corners_[map]);
+    all_affine = all_affine and host_device_map_table_(map).is_affine();
+  }
+  Kokkos::deep_copy(exec, device_map_table_, host_device_map_table_);
+  const auto table = device_map_table_;
+  const auto map_of_slot = device_map_of_slot_;
+  const auto device_maps = device_maps_;
+  Kokkos::parallel_for(
+      "patches::PatchElements gather maps",
+      Kokkos::RangePolicy<>(exec, 0, device_maps.extent(0)),
+      KOKKOS_LAMBDA(const size_t slot) {
+        device_maps(slot) = table(map_of_slot(slot));
+      });
+  return all_affine;
 }
 
 std::string PatchElements::element_description(const size_t slot) const {

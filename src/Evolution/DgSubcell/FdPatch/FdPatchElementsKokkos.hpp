@@ -29,6 +29,7 @@
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Time/DeviceHistoryKokkos.hpp"
+#include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
@@ -87,6 +88,12 @@ class FdPatchElements : public evolution::patches::PatchElements {
    * and for the packaged data from DG neighbors (with
    * `number_of_packaged_variables` independent components), and computes the
    * geometry at the `time`.
+   *
+   * With `compute_cell_geometry` the patch also computes the
+   * `cell_geometry()` and `cell_mesh_velocity()` (see
+   * `TimeDependentGeometry`), as systems that evolve the spacetime need, and
+   * supports grid to inertial maps that aren't affine. Without it the maps
+   * must be affine.
    */
   FdPatchElements(
       const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
@@ -94,7 +101,7 @@ class FdPatchElements : public evolution::patches::PatchElements {
       const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
       double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
       size_t ghost_width, size_t number_of_ghost_variables,
-      size_t number_of_packaged_variables);
+      size_t number_of_packaged_variables, bool compute_cell_geometry = false);
 
   /// The subcell mesh of the elements
   const Mesh<3>& subcell_mesh() const { return subcell_mesh_; }
@@ -103,12 +110,13 @@ class FdPatchElements : public evolution::patches::PatchElements {
    * \brief Update the geometry to the `time`. Only needed if the mesh moves.
    *
    * \details The host evaluates the grid to inertial maps (one per block)
-   * and copies their `evolution::patches::AffineGridToInertial` parameters to
-   * the device, from where the kernels read them, so the arguments of the
-   * kernels don't change between substeps. The copy from the host buffer is
-   * only enqueued, so the copy of the previous call must be done before the
-   * next call, e.g. because the patch waited for the device in between (which
-   * it does once per substep).
+   * and copies their parameters (`evolution::patches::AffineGridToInertial`
+   * for affine maps, and the `device_maps()` for the cell geometry) to the
+   * device, from where the kernels read them, so the arguments of the kernels
+   * don't change between substeps. The copy from the host buffer is only
+   * enqueued, so the copy of the previous call must be done before the next
+   * call, e.g. because the patch waited for the device in between (which it
+   * does once per substep).
    */
   void update_geometry(const Kokkos::DefaultExecutionSpace& exec, double time,
                        const ::domain::FunctionsOfTimeMap& functions_of_time);
@@ -118,12 +126,28 @@ class FdPatchElements : public evolution::patches::PatchElements {
   const BatchedVariables<inertial_face_tags>& face_geometry() const {
     return face_geometry_;
   }
-  const BatchedVariables<inertial_cell_tags>& cell_geometry() const {
+  const BatchedVariables<inertial_cell_tags>& cell_det_inverse_jacobian()
+      const {
     return cell_geometry_;
   }
-  /// The divergence of the mesh velocity of each element
+  /// The divergence of the mesh velocity of each element, which is constant
+  /// on an element only for affine maps. Otherwise use `cell_mesh_velocity()`.
   Kokkos::View<const double*> div_mesh_velocity() const {
+    ASSERT(maps_are_affine_,
+           "The divergence of the mesh velocity of each element is only "
+           "computed for affine grid to inertial maps (FD patch "
+               << patch() << "). Use the cell_mesh_velocity().");
     return div_mesh_velocity_;
+  }
+  /// The inertial coordinates, inverse Jacobian and its determinant at the
+  /// cell centers. Only with `compute_cell_geometry`.
+  const BatchedVariables<cell_geometry_tags>& cell_geometry() const {
+    return cell_inertial_geometry_;
+  }
+  /// The mesh velocity and its divergence at the cell centers. Only with
+  /// `compute_cell_geometry`.
+  const BatchedVariables<cell_mesh_velocity_tags>& cell_mesh_velocity() const {
+    return cell_mesh_velocity_;
   }
   /// @}
 
@@ -198,6 +222,9 @@ class FdPatchElements : public evolution::patches::PatchElements {
 
   // Geometry
   bool geometry_computed_ = false;
+  // Whether the grid to inertial maps were affine at the last
+  // `update_geometry()`
+  bool maps_are_affine_ = true;
   LogicalToGrid logical_to_grid_{};
   // The parameters of the maps on the device, per face set (see
   // `inertial_geometry_on_device()`), and the divergence of the mesh velocity
@@ -211,6 +238,10 @@ class FdPatchElements : public evolution::patches::PatchElements {
       host_div_mesh_velocity_{};
   BatchedVariables<inertial_face_tags> face_geometry_{};
   BatchedVariables<inertial_cell_tags> cell_geometry_{};
+  bool compute_cell_geometry_ = false;
+  TimeDependentGeometry time_dependent_geometry_{};
+  BatchedVariables<cell_geometry_tags> cell_inertial_geometry_{};
+  BatchedVariables<cell_mesh_velocity_tags> cell_mesh_velocity_{};
 
   // Communication
   GhostZones<3> ghost_zones_{};

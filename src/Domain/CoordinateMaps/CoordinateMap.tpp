@@ -605,6 +605,34 @@ auto CoordinateMap<SourceFrame, TargetFrame, Maps...>::
 }
 
 template <typename SourceFrame, typename TargetFrame, typename... Maps>
+auto CoordinateMap<SourceFrame, TargetFrame, Maps...>::device_map(
+    const double time, const FunctionsOfTimeMap& functions_of_time) const
+    -> std::optional<CoordinateMaps::DeviceMap<dim>> {
+  CoordinateMaps::DeviceMap<dim> result{};
+  bool supported = true;
+  tuple_fold(maps_, [&result, &supported, time, &functions_of_time](
+                        const auto& tuple_map) {
+    using TupleMap = std::decay_t<decltype(tuple_map)>;
+    const auto& map = [&tuple_map]() -> const auto& {
+      if constexpr (tt::is_a_v<std::unique_ptr, TupleMap>) {
+        return *tuple_map;
+      } else {
+        return tuple_map;
+      }
+    }();
+    if constexpr (requires { map.device_map(time, functions_of_time); }) {
+      result.push_back(map.device_map(time, functions_of_time));
+    } else if (not map.is_identity()) {
+      supported = false;
+    }
+  });
+  if (not supported) {
+    return std::nullopt;
+  }
+  return result;
+}
+
+template <typename SourceFrame, typename TargetFrame, typename... Maps>
 template <size_t... Is>
 auto CoordinateMap<SourceFrame, TargetFrame, Maps...>::get_to_grid_frame_impl(
     std::index_sequence<Is...> /*meta*/) const

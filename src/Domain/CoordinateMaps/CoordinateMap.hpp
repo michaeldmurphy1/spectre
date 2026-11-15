@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Domain/CoordinateMaps/DeviceMap.hpp"
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Utilities/Autodiff/Autodiff.hpp"
 #include "Utilities/PrettyType.hpp"
@@ -278,6 +279,15 @@ class CoordinateMapBase : public PUP::able {
                     Jacobian<DataVector, Dim, SourceFrame, TargetFrame>,
                     tnsr::I<DataVector, Dim, TargetFrame>> = 0;
   /// @}
+
+  /// The map at `time` in a form that device kernels can evaluate (see
+  /// `domain::CoordinateMaps::DeviceMap`), or `std::nullopt` if one of its
+  /// maps can't be evaluated on the device.
+  virtual std::optional<CoordinateMaps::DeviceMap<Dim>> device_map(
+      const double /*time*/,
+      const FunctionsOfTimeMap& /*functions_of_time*/) const {
+    return std::nullopt;
+  }
 
  private:
   virtual bool is_equal_to(const CoordinateMapBase& other) const = 0;
@@ -577,6 +587,11 @@ class CoordinateMap
                                                 functions_of_time);
   }
   /// @}
+
+  /// The maps at `time` in a form that device kernels can evaluate, if all
+  /// maps that aren't the identity have a `device_map` member function
+  std::optional<CoordinateMaps::DeviceMap<dim>> device_map(
+      double time, const FunctionsOfTimeMap& functions_of_time) const override;
 
   WRAPPED_PUPable_decl_base_template(  // NOLINT
       SINGLE_ARG(CoordinateMapBase<SourceFrame, TargetFrame, dim>),

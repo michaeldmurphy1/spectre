@@ -62,6 +62,7 @@ spectre_target_headers(
   CylindricalFlatSide.hpp
   CylindricalSide.hpp
   CylindricalSphericalShell.hpp
+  DeviceMap.hpp
   DiscreteRotation.hpp
   Distribution.hpp
   EquatorialCompression.hpp

@@ -12,6 +12,7 @@
 #include <unordered_set>
 
 #include "DataStructures/Tensor/TypeAliases.hpp"
+#include "Domain/CoordinateMaps/TimeDependent/DeviceRotScaleTrans.hpp"
 #include "PointwiseFunctions/MathFunctions/MathFunction.hpp"
 
 /// \cond
@@ -323,6 +324,14 @@ class RotScaleTrans {
   template <typename T>
   tnsr::Ij<T, Dim, Frame::NoFrame> jacobian(
       const std::array<T, Dim>& source_coords, double time,
+      const std::unordered_map<
+          std::string,
+          std::unique_ptr<domain::FunctionsOfTime::FunctionOfTime>>&
+          functions_of_time) const;
+
+  /// The map at `time` in a form that device kernels can evaluate
+  DeviceRotScaleTrans<Dim> device_map(
+      double time,
       const std::unordered_map<
           std::string,
           std::unique_ptr<domain::FunctionsOfTime::FunctionOfTime>>&

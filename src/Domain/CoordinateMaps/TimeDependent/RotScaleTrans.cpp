@@ -849,6 +849,62 @@ tnsr::Ij<T, Dim, Frame::NoFrame> RotScaleTrans<Dim>::inv_jacobian(
 }
 
 template <size_t Dim>
+DeviceRotScaleTrans<Dim> RotScaleTrans<Dim>::device_map(
+    const double time,
+    const std::unordered_map<
+        std::string, std::unique_ptr<domain::FunctionsOfTime::FunctionOfTime>>&
+        functions_of_time) const {
+  DeviceRotScaleTrans<Dim> result{};
+  result.inner_radius = inner_radius_;
+  result.outer_radius = outer_radius_;
+  using Region = typename DeviceRotScaleTrans<Dim>::Region;
+  result.region = Region::Outer;
+  if (region_ == BlockRegion::Inner) {
+    result.region = Region::Inner;
+  } else if (region_ == BlockRegion::Transition) {
+    result.region = Region::Transition;
+  }
+  if (rot_f_of_t_.has_value()) {
+    result.has_rotation = true;
+    const auto& rotation_f_of_t = *(functions_of_time.at(rot_f_of_t_.value()));
+    const Matrix rot_matrix = rotation_matrix<Dim>(time, rotation_f_of_t);
+    const Matrix rot_matrix_deriv =
+        rotation_matrix_deriv<Dim>(time, rotation_f_of_t);
+    for (size_t i = 0; i < Dim; i++) {
+      for (size_t j = 0; j < Dim; j++) {
+        result.rotation.get(i, j) = rot_matrix(i, j);
+        result.rotation_derivative.get(i, j) = rot_matrix_deriv(i, j);
+      }
+    }
+  }
+  if (scale_f_of_t_a_.has_value()) {
+    result.has_expansion = true;
+    const std::array<DataVector, 2> scale_a_func_and_deriv =
+        functions_of_time.at(scale_f_of_t_a_.value())->func_and_deriv(time);
+    const std::array<DataVector, 2> scale_b_func_and_deriv =
+        functions_of_time.at(scale_f_of_t_b_.value())->func_and_deriv(time);
+    result.expansion_a = scale_a_func_and_deriv[0][0];
+    result.expansion_b = scale_b_func_and_deriv[0][0];
+    result.expansion_a_derivative = scale_a_func_and_deriv[1][0];
+    result.expansion_b_derivative = scale_b_func_and_deriv[1][0];
+  }
+  if (trans_f_of_t_.has_value()) {
+    result.has_translation = true;
+    const std::array<DataVector, 2> trans_func_and_deriv =
+        functions_of_time.at(trans_f_of_t_.value())->func_and_deriv(time);
+    ASSERT(trans_func_and_deriv[0].size() == Dim,
+           "The dimension of the function of time ("
+               << trans_func_and_deriv[0].size()
+               << ") does not match the dimension of the map (" << Dim << ").");
+    for (size_t i = 0; i < Dim; i++) {
+      gsl::at(result.translation, i) = trans_func_and_deriv[0][i];
+      gsl::at(result.translation_derivative, i) = trans_func_and_deriv[1][i];
+    }
+  }
+  return result;
+}
+
+template <size_t Dim>
 double RotScaleTrans<Dim>::root_helper(
     const std::optional<std::array<double, 2>> roots) const {
   ASSERT(roots.has_value(), "No roots found");

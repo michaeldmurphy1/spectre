@@ -12,7 +12,9 @@
 #include "DataStructures/Tensor/EagerMath/Determinant.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
+#include "Domain/CoordinateMaps/DeviceMap.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
+#include "Utilities/Gsl.hpp"
 
 namespace evolution::patches {
 AffineGridToInertial affine_grid_to_inertial(
@@ -109,4 +111,37 @@ AffineGridToInertial affine_grid_to_inertial(
   }
   return result;
 }
+
+::domain::CoordinateMaps::DeviceMap<3> device_grid_to_inertial(
+    const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
+        grid_to_inertial,
+    const double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
+    const tnsr::I<DataVector, 3, Frame::Grid>& sample_points) {
+  if (auto device_map = grid_to_inertial.device_map(time, functions_of_time);
+      device_map.has_value()) {
+    return *device_map;
+  }
+  // Errors if the map isn't affine
+  const AffineGridToInertial affine = affine_grid_to_inertial(
+      grid_to_inertial, time, functions_of_time, sample_points);
+  ::domain::CoordinateMaps::DeviceMap<3> result{};
+  if (not affine.is_moving) {
+    return result;
+  }
+  const auto [offset, inverse_jacobian, jacobian, velocity] =
+      grid_to_inertial.coords_frame_velocity_jacobians(
+          tnsr::I<double, 3, Frame::Grid>{0.0}, time, functions_of_time);
+  ::domain::CoordinateMaps::DeviceAffineMap<3> map{};
+  for (size_t i = 0; i < 3; ++i) {
+    gsl::at(map.offset, i) = offset.get(i);
+    gsl::at(map.offset_derivative, i) = affine.velocity_offset.get(i);
+    for (size_t j = 0; j < 3; ++j) {
+      map.matrix.get(i, j) = jacobian.get(i, j);
+      map.matrix_derivative.get(i, j) = affine.velocity_matrix.get(i, j);
+    }
+  }
+  result.push_back(map);
+  return result;
+}
+
 }  // namespace evolution::patches

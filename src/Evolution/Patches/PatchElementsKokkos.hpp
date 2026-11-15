@@ -11,6 +11,7 @@
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
+#include "Domain/CoordinateMaps/DeviceMap.hpp"
 #include "Domain/ElementMap.hpp"
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Domain/Structure/Element.hpp"
@@ -46,6 +47,9 @@ namespace evolution::patches {
  *
  * The grid to inertial map of an element is the moving mesh map of its block,
  * or the identity. The patch holds one map per block of its elements.
+ * `update_device_maps()` evaluates them at a time for device kernels (see
+ * `device_grid_to_inertial`), which read the map of each element from
+ * `device_maps()`.
  */
 class PatchElements {
  public:
@@ -57,9 +61,10 @@ class PatchElements {
   ~PatchElements() = default;
 
   /// Set up the elements of the patch `patch` of `patch_table` and their
-  /// maps.
+  /// maps. Allocates the device maps on `exec` (see `update_device_maps()`).
   PatchElements(
-      const Domain<3>& domain, const PatchTable<3>& patch_table, size_t patch,
+      const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
+      const PatchTable<3>& patch_table, size_t patch,
       const std::vector<std::array<size_t, 3>>& initial_refinement_levels);
 
   /// The index of the patch in the `PatchTable`
@@ -88,14 +93,35 @@ class PatchElements {
   /// @{
   /// The grid to inertial maps of the blocks of the elements, the map of the
   /// element in `slot`, and the grid coordinates of the corners of the
-  /// elements with the `map` (where it must be affine, see
-  /// `affine_grid_to_inertial`)
+  /// elements with the `map` (where it must be affine if it has no device
+  /// version, see `device_grid_to_inertial`)
   size_t number_of_maps() const { return grid_to_inertial_maps_.size(); }
   const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>& map(
       size_t map) const;
   size_t map_of_slot(size_t slot) const;
   const tnsr::I<DataVector, 3, Frame::Grid>& map_corners(size_t map) const;
   /// @}
+
+  /*!
+   * \brief Evaluate the maps at `time` for device kernels, and return whether
+   * all of them are affine.
+   *
+   * \details The host evaluates the maps of the blocks into a pinned buffer,
+   * and enqueues copying them to the device and gathering the map of each
+   * element into `device_maps()` on `exec`, so the arguments of the kernels
+   * don't change between substeps. Since the copy is only enqueued, the
+   * previous call's copy must be done before the next call, e.g. because the
+   * patch waited for the device in between (which it does once per substep).
+   */
+  bool update_device_maps(
+      const Kokkos::DefaultExecutionSpace& exec, double time,
+      const ::domain::FunctionsOfTimeMap& functions_of_time);
+
+  /// The map of each element at the time of the last `update_device_maps()`
+  Kokkos::View<const ::domain::CoordinateMaps::DeviceMap<3>*> device_maps()
+      const {
+    return device_maps_;
+  }
 
   /// A description of the element in `slot` for error messages
   std::string element_description(size_t slot) const;
@@ -119,6 +145,14 @@ class PatchElements {
   std::vector<size_t> map_of_slot_{};
   std::vector<tnsr::I<DataVector, 3, Frame::Grid>> map_corners_{};
   bool mesh_is_moving_ = false;
+  // The maps for device kernels: one per block (with its host buffer), the
+  // map of each slot, and the map of each element, gathered on the device
+  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*> device_map_table_{};
+  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*,
+               Kokkos::SharedHostPinnedSpace>
+      host_device_map_table_{};
+  Kokkos::View<size_t*> device_map_of_slot_{};
+  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*> device_maps_{};
 };
 }  // namespace evolution::patches
 #endif  // SPECTRE_KOKKOS

@@ -9,6 +9,7 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   ApplyMatrices.cpp
+  ApplyMatricesKokkos.cpp
   CompressedMatrix.cpp
   CompressedVector.cpp
   DynamicBuffer.cpp
@@ -30,6 +31,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   ApplyMatrices.hpp
+  ApplyMatricesKokkos.hpp
   ApplyPointwiseOnDeviceKokkos.hpp
   BatchedVariablesKokkos.hpp
   BoostMultiArray.hpp

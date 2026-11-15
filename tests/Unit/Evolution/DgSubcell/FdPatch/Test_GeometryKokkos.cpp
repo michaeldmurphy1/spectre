@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -17,9 +18,11 @@
 #include "DataStructures/Index.hpp"
 #include "DataStructures/Tensor/EagerMath/Determinant.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "DataStructures/Variables.hpp"
 #include "Domain/CoordinateMaps/Affine.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.tpp"
+#include "Domain/CoordinateMaps/DeviceMap.hpp"
 #include "Domain/CoordinateMaps/Identity.hpp"
 #include "Domain/CoordinateMaps/ProductMaps.hpp"
 #include "Domain/CoordinateMaps/ProductMaps.tpp"
@@ -378,6 +381,174 @@ void check_inertial_geometry(
   }
 }
 
+// The grid to inertial map of the shells of the BNS domain creator: the
+// transition region of a RotScaleTrans, which isn't affine
+std::unique_ptr<GridToInertial> make_rot_scale_trans_transition() {
+  using Map = domain::CoordinateMaps::TimeDependent::RotScaleTrans<3>;
+  return domain::make_coordinate_map_base<Frame::Grid, Frame::Inertial>(
+      Map{std::pair<std::string, std::string>{"ExpansionA", "ExpansionB"},
+          "Rotation", "Translation", 0.5, 10.0, Map::BlockRegion::Transition});
+}
+
+// Compares `TimeDependentGeometry` with the host computation of
+// `grmhd::GhValenciaDivClean::subcell::TimeDerivative` and the subcell and
+// domain compute tags
+void check_time_dependent_geometry(
+    const std::vector<ElementMap<3, Frame::Grid>>& element_maps,
+    const Mesh<3>& dg_mesh, const GridToInertial& grid_to_inertial,
+    const double time, const domain::FunctionsOfTimeMap& functions_of_time) {
+  const Kokkos::DefaultExecutionSpace exec{};
+  const size_t number_of_elements = element_maps.size();
+  const auto logical_to_grid =
+      fd_patch::logical_to_grid(exec, element_maps, dg_mesh);
+  const auto device_map = fd_patch::device_grid_to_inertial(
+      grid_to_inertial, time, functions_of_time, logical_to_grid.corners);
+  const Kokkos::View<domain::CoordinateMaps::DeviceMap<3>*> maps{
+      "maps", number_of_elements};
+  Kokkos::deep_copy(exec, maps, device_map);
+
+  const Mesh<3> subcell_mesh = evolution::dg::subcell::fd::mesh(dg_mesh);
+  const size_t number_of_cells = subcell_mesh.number_of_grid_points();
+  BatchedVariables<fd_patch::cell_geometry_tags> cells{exec, number_of_cells,
+                                                       number_of_elements};
+  BatchedVariables<fd_patch::cell_mesh_velocity_tags> cell_mesh_velocity{
+      exec, number_of_cells, number_of_elements};
+  BatchedVariables<fd_patch::inertial_face_tags> faces{
+      exec, logical_to_grid.faces.number_of_grid_points(),
+      3 * number_of_elements};
+  fd_patch::TimeDependentGeometry geometry{exec, dg_mesh, number_of_elements};
+  // Twice, to check that the buffers are reused
+  for (size_t repeat = 0; repeat < 2; ++repeat) {
+    geometry.compute_cells(exec, make_not_null(&cells),
+                           make_not_null(&cell_mesh_velocity), logical_to_grid,
+                           maps);
+    geometry.compute_faces(exec, make_not_null(&faces));
+  }
+  BatchedVariables<fd_patch::cell_geometry_tags, Kokkos::HostSpace> host_cells{
+      Kokkos::DefaultHostExecutionSpace{}, number_of_cells, number_of_elements};
+  BatchedVariables<fd_patch::cell_mesh_velocity_tags, Kokkos::HostSpace>
+      host_cell_mesh_velocity{Kokkos::DefaultHostExecutionSpace{},
+                              number_of_cells, number_of_elements};
+  BatchedVariables<fd_patch::inertial_face_tags, Kokkos::HostSpace> host_faces{
+      Kokkos::DefaultHostExecutionSpace{}, faces.number_of_grid_points(),
+      faces.number_of_elements()};
+  deep_copy(exec, make_not_null(&host_cells), cells);
+  deep_copy(exec, make_not_null(&host_cell_mesh_velocity), cell_mesh_velocity);
+  deep_copy(exec, make_not_null(&host_faces), faces);
+  exec.fence();
+
+  const auto dg_logical_coords = logical_coordinates(dg_mesh);
+  const auto cell_logical_coords = logical_coordinates(subcell_mesh);
+  const Approx custom_approx = Approx::custom().epsilon(1.0e-12).scale(1.0);
+  for (size_t e = 0; e < number_of_elements; ++e) {
+    CAPTURE(e);
+    const auto& element_map = element_maps[e];
+    // As the domain and subcell compute tags
+    const auto inertial_geometry =
+        [&](const tnsr::I<DataVector, 3, Frame::ElementLogical>& logical) {
+          const auto grid_coords = element_map(logical);
+          const auto grid_inv_jacobian = element_map.inv_jacobian(logical);
+          const auto [inertial_coords, inertial_inv_jacobian, jacobian,
+                      mesh_velocity] =
+              grid_to_inertial.coords_frame_velocity_jacobians(
+                  grid_coords, time, functions_of_time);
+          InverseJacobian<DataVector, 3, Frame::ElementLogical, Frame::Inertial>
+              inv_jacobian{get<0>(logical).size(), 0.0};
+          for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 3; ++j) {
+              for (size_t k = 0; k < 3; ++k) {
+                inv_jacobian.get(i, j) += grid_inv_jacobian.get(i, k) *
+                                          inertial_inv_jacobian.get(k, j);
+              }
+            }
+          }
+          return std::tuple{inertial_coords, inv_jacobian, mesh_velocity};
+        };
+    const auto [cell_coords, cell_inv_jacobian, cell_velocity_unused] =
+        inertial_geometry(cell_logical_coords);
+    (void)cell_velocity_unused;
+    const auto [dg_coords, dg_inv_jacobian, dg_mesh_velocity] =
+        inertial_geometry(dg_logical_coords);
+
+    Variables<fd_patch::cell_geometry_tags> element_cells{};
+    set_data_ref_to_element(make_not_null(&element_cells), host_cells, e);
+    CHECK_ITERABLE_CUSTOM_APPROX(
+        (get<domain::Tags::Coordinates<3, Frame::Inertial>>(element_cells)),
+        cell_coords, custom_approx);
+    CHECK_ITERABLE_CUSTOM_APPROX(
+        (get<domain::Tags::InverseJacobian<3, Frame::ElementLogical,
+                                           Frame::Inertial>>(element_cells)),
+        cell_inv_jacobian, custom_approx);
+    CHECK_ITERABLE_CUSTOM_APPROX(
+        (get<domain::Tags::DetInvJacobian<Frame::ElementLogical,
+                                          Frame::Inertial>>(element_cells)),
+        determinant(cell_inv_jacobian), custom_approx);
+
+    // As `grmhd::GhValenciaDivClean::subcell::TimeDerivative`
+    Variables<fd_patch::cell_mesh_velocity_tags> element_cell_mesh_velocity{};
+    set_data_ref_to_element(make_not_null(&element_cell_mesh_velocity),
+                            host_cell_mesh_velocity, e);
+    std::optional<Scalar<DataVector>> div_mesh_velocity{};
+    evolution::domain::Tags::DivMeshVelocityCompute<3>::function(
+        make_not_null(&div_mesh_velocity), std::optional{dg_mesh_velocity},
+        dg_mesh, dg_inv_jacobian, dg_coords);
+    CHECK_ITERABLE_CUSTOM_APPROX(
+        get(get<fd_patch::Tags::CellDivMeshVelocity>(
+            element_cell_mesh_velocity)),
+        evolution::dg::subcell::fd::project(get(div_mesh_velocity.value()),
+                                            dg_mesh, subcell_mesh.extents(),
+                                            Spectral::Parity::Even),
+        custom_approx);
+    for (size_t j = 0; j < 3; ++j) {
+      CHECK_ITERABLE_CUSTOM_APPROX(
+          get<fd_patch::Tags::CellMeshVelocity>(element_cell_mesh_velocity)
+              .get(j),
+          evolution::dg::subcell::fd::project(
+              dg_mesh_velocity.get(j), dg_mesh, subcell_mesh.extents(),
+              j == 0 ? Spectral::Parity::Odd : Spectral::Parity::Even),
+          custom_approx);
+    }
+
+    // As `grmhd::GhValenciaDivClean::subcell::TimeDerivative` on the faces
+    const auto dg_det_inv_jacobian = determinant(dg_inv_jacobian);
+    for (size_t i = 0; i < 3; ++i) {
+      CAPTURE(i);
+      Index<3> face_mesh_extents = subcell_mesh.extents();
+      face_mesh_extents[i] += 1;
+      const auto element_faces = host_faces.element(i * number_of_elements + e);
+      for (size_t j = 0; j < 3; ++j) {
+        CAPTURE(j);
+        CHECK_ITERABLE_CUSTOM_APPROX(
+            to_data_vector(
+                get<::Tags::MirrorView<fd_patch::Tags::FaceConormal,
+                                       Kokkos::HostSpace>>(element_faces)
+                    .get(j)),
+            evolution::dg::subcell::fd::project_to_faces(
+                dg_inv_jacobian.get(i, j), dg_mesh, face_mesh_extents, i,
+                Spectral::Parity::Even),
+            custom_approx);
+        CHECK_ITERABLE_CUSTOM_APPROX(
+            to_data_vector(
+                get<::Tags::MirrorView<fd_patch::Tags::FaceMeshVelocity,
+                                       Kokkos::HostSpace>>(element_faces)
+                    .get(j)),
+            evolution::dg::subcell::fd::project_to_faces(
+                dg_mesh_velocity.get(j), dg_mesh, face_mesh_extents, i,
+                Spectral::Parity::Even),
+            custom_approx);
+      }
+      CHECK_ITERABLE_CUSTOM_APPROX(
+          to_data_vector(
+              get(get<::Tags::MirrorView<fd_patch::Tags::FaceDetInverseJacobian,
+                                         Kokkos::HostSpace>>(element_faces))),
+          evolution::dg::subcell::fd::project_to_faces(
+              get(dg_det_inv_jacobian), dg_mesh, face_mesh_extents, i,
+              Spectral::Parity::Even),
+          custom_approx);
+    }
+  }
+}
+
 void test_geometry() {
   const Mesh<3> dg_mesh{5, Spectral::Basis::Legendre,
                         Spectral::Quadrature::GaussLobatto};
@@ -395,6 +566,23 @@ void test_geometry() {
     check_inertial_geometry(element_maps, dg_mesh, *make_rot_scale_trans(),
                             time, make_rot_scale_trans_functions_of_time(time),
                             curved);
+    // Maps with and without a device version, affine and not
+    check_time_dependent_geometry(element_maps, dg_mesh,
+                                  *make_grid_to_inertial(), time,
+                                  make_functions_of_time(time, true));
+    check_time_dependent_geometry(element_maps, dg_mesh,
+                                  *make_rot_scale_trans(), time,
+                                  make_rot_scale_trans_functions_of_time(time));
+    check_time_dependent_geometry(element_maps, dg_mesh,
+                                  *make_rot_scale_trans_transition(), time,
+                                  make_rot_scale_trans_functions_of_time(time));
+    CHECK_FALSE(fd_patch::device_grid_to_inertial(
+                    *make_rot_scale_trans_transition(), time,
+                    make_rot_scale_trans_functions_of_time(time),
+                    fd_patch::logical_to_grid(Kokkos::DefaultExecutionSpace{},
+                                              element_maps, dg_mesh)
+                        .corners)
+                    .is_affine());
   }
 }
 

@@ -85,6 +85,12 @@ class PatchElements {
    * `number_of_ghost_variables` variables) and for the packaged data from DG
    * neighbors (with `number_of_packaged_variables` independent components),
    * and computes the geometry at the `time`.
+   *
+   * With `compute_cell_geometry` the patch also computes the
+   * `cell_geometry()` and `cell_mesh_velocity()` (see
+   * `TimeDependentGeometry`), as systems that evolve the spacetime need, and
+   * supports grid to inertial maps that aren't affine. Without it the maps
+   * must be affine.
    */
   PatchElements(
       const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
@@ -92,7 +98,7 @@ class PatchElements {
       const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
       double time, const domain::FunctionsOfTimeMap& functions_of_time,
       size_t ghost_width, size_t number_of_ghost_variables,
-      size_t number_of_packaged_variables);
+      size_t number_of_packaged_variables, bool compute_cell_geometry = false);
 
   /// @{
   /// The elements of the patch, in slot order, and their maps
@@ -129,12 +135,14 @@ class PatchElements {
   /*!
    * \brief Update the geometry to the `time`. Only needed if the mesh moves.
    *
-   * \details The host evaluates the grid to inertial maps and copies their
-   * `AffineGridToInertial` parameters to the device, from where the kernels
-   * read them, so the arguments of the kernels don't change between
-   * substeps. The copy from the host buffer is only enqueued, so the copy of
-   * the previous call must be done before the next call, e.g. because the
-   * patch waited for the device in between (which it does once per substep).
+   * \details The host evaluates the grid to inertial maps (one per block)
+   * and copies their parameters (`AffineGridToInertial` for affine maps, and
+   * `domain::CoordinateMaps::DeviceMap`s for the cell geometry) to the
+   * device, from where the kernels read them, so the arguments of the kernels
+   * don't change between substeps. The copy from the host buffer is only
+   * enqueued, so the copy of the previous call must be done before the next
+   * call, e.g. because the patch waited for the device in between (which it
+   * does once per substep).
    */
   void update_geometry(const Kokkos::DefaultExecutionSpace& exec, double time,
                        const domain::FunctionsOfTimeMap& functions_of_time);
@@ -144,12 +152,23 @@ class PatchElements {
   const BatchedVariables<inertial_face_tags>& face_geometry() const {
     return face_geometry_;
   }
-  const BatchedVariables<inertial_cell_tags>& cell_geometry() const {
+  const BatchedVariables<inertial_cell_tags>& cell_det_inverse_jacobian()
+      const {
     return cell_geometry_;
   }
-  /// The divergence of the mesh velocity of each element
+  /// The divergence of the mesh velocity of each element, for affine maps
   Kokkos::View<const double*> div_mesh_velocity() const {
     return div_mesh_velocity_;
+  }
+  /// The inertial coordinates, inverse Jacobian and its determinant at the
+  /// cell centers. Only with `compute_cell_geometry`.
+  const BatchedVariables<cell_geometry_tags>& cell_geometry() const {
+    return cell_inertial_geometry_;
+  }
+  /// The mesh velocity and its divergence at the cell centers. Only with
+  /// `compute_cell_geometry`.
+  const BatchedVariables<cell_mesh_velocity_tags>& cell_mesh_velocity() const {
+    return cell_mesh_velocity_;
   }
   /// @}
 
@@ -247,6 +266,18 @@ class PatchElements {
       host_div_mesh_velocity_{};
   BatchedVariables<inertial_face_tags> face_geometry_{};
   BatchedVariables<inertial_cell_tags> cell_geometry_{};
+  // The maps for device kernels: one per block (with its host buffer), the
+  // map of each slot, and the map of each element, gathered on the device
+  bool compute_cell_geometry_ = false;
+  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*> device_map_table_{};
+  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*,
+               Kokkos::SharedHostPinnedSpace>
+      host_device_map_table_{};
+  Kokkos::View<size_t*> device_map_of_slot_{};
+  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*> device_maps_{};
+  TimeDependentGeometry time_dependent_geometry_{};
+  BatchedVariables<cell_geometry_tags> cell_inertial_geometry_{};
+  BatchedVariables<cell_mesh_velocity_tags> cell_mesh_velocity_{};
 
   // Communication
   GhostZones<3> ghost_zones_{};

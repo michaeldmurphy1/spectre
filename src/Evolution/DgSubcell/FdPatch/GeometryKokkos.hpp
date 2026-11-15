@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <vector>
 
@@ -15,7 +16,12 @@
 #include "Utilities/TMPL.hpp"
 
 #ifdef SPECTRE_KOKKOS
+#include "DataStructures/ApplyMatricesKokkos.hpp"
 #include "DataStructures/BatchedVariablesKokkos.hpp"
+#include "DataStructures/Tags/TempTensor.hpp"
+#include "Domain/CoordinateMaps/DeviceMap.hpp"
+#include "Domain/InertialGeometryKokkos.hpp"
+#include "NumericalAlgorithms/Spectral/Mesh.hpp"
 
 /// \cond
 namespace domain {
@@ -24,8 +30,6 @@ class CoordinateMapBase;
 }  // namespace domain
 template <size_t Dim, typename TargetFrame>
 class ElementMap;
-template <size_t Dim>
-class Mesh;
 /// \endcond
 
 namespace evolution::dg::subcell::fd_patch {
@@ -80,6 +84,17 @@ struct FaceMeshVelocity : db::SimpleTag {
 struct CellDetInverseJacobian : db::SimpleTag {
   using type = Scalar<DataVector>;
 };
+
+/// The mesh velocity at the cell centers, projected from the DG grid
+struct CellMeshVelocity : db::SimpleTag {
+  using type = tnsr::I<DataVector, 3, Frame::Inertial>;
+};
+
+/// The divergence of the mesh velocity at the cell centers, computed on the DG
+/// grid and projected
+struct CellDivMeshVelocity : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
 }  // namespace Tags
 
 /// The time-independent geometry on the faces of a patch
@@ -96,6 +111,16 @@ using inertial_face_tags =
                Tags::FaceMeshVelocity>;
 /// The geometry at the cell centers of a patch at a time
 using inertial_cell_tags = tmpl::list<Tags::CellDetInverseJacobian>;
+/// The inertial coordinates, the logical to inertial inverse Jacobian and its
+/// determinant at the cell centers of a patch at a time, evaluated there as
+/// `evolution::dg::subcell::Tags::InertialCoordinatesCompute` and
+/// `evolution::dg::subcell::fd::Tags::InverseJacobianLogicalToInertialCompute`
+using cell_geometry_tags = ::domain::inertial_geometry_tags<3, false>;
+/// The mesh velocity and its divergence at the cell centers of a patch at a
+/// time, projected from the DG grid as
+/// `grmhd::GhValenciaDivClean::subcell::TimeDerivative` does
+using cell_mesh_velocity_tags =
+    tmpl::list<Tags::CellMeshVelocity, Tags::CellDivMeshVelocity>;
 
 /*!
  * \brief The time-independent part of the geometry of the elements of a patch,
@@ -112,6 +137,11 @@ using inertial_cell_tags = tmpl::list<Tags::CellDetInverseJacobian>;
 struct LogicalToGrid {
   BatchedVariables<logical_to_grid_face_tags> faces{};
   BatchedVariables<logical_to_grid_cell_tags> cells{};
+  /// The grid coordinates and the logical to grid inverse Jacobian at the cell
+  /// centers and at the DG grid points, where the grid to inertial maps are
+  /// evaluated (see `TimeDependentGeometry`). Empty if not requested.
+  BatchedVariables<::domain::logical_to_grid_geometry_tags<3>> cell_points{};
+  BatchedVariables<::domain::logical_to_grid_geometry_tags<3>> dg_points{};
   /// The grid coordinates of the corners of all elements on the host, e.g. to
   /// check where a grid to inertial map is affine.
   tnsr::I<DataVector, 3, Frame::Grid> corners{};
@@ -121,11 +151,14 @@ struct LogicalToGrid {
  * \brief Compute the `LogicalToGrid` geometry of the elements with the
  * `element_maps` (in slot order) and the shared `dg_mesh`, and copy it to the
  * device on `exec`.
+ *
+ * The `LogicalToGrid::cell_points` and `LogicalToGrid::dg_points` are only
+ * computed `with_evaluation_points`.
  */
 LogicalToGrid logical_to_grid(
     const Kokkos::DefaultExecutionSpace& exec,
     const std::vector<ElementMap<3, Frame::Grid>>& element_maps,
-    const Mesh<3>& dg_mesh);
+    const Mesh<3>& dg_mesh, bool with_evaluation_points = true);
 
 /*!
  * \brief A grid to inertial map at one time that is affine:
@@ -209,5 +242,84 @@ void inertial_geometry_on_device(
     gsl::not_null<BatchedVariables<inertial_cell_tags>*> cells,
     const LogicalToGrid& logical_to_grid,
     const Kokkos::View<const AffineGridToInertial*>& grid_to_inertial);
+
+/*!
+ * \brief The `grid_to_inertial` map at `time` for device kernels.
+ *
+ * \details This is the map's `CoordinateMapBase::device_map`. Maps without a
+ * device version must be affine at the `sample_points` (see
+ * `affine_grid_to_inertial`), and are sampled into a
+ * `domain::CoordinateMaps::DeviceAffineMap`.
+ */
+::domain::CoordinateMaps::DeviceMap<3> device_grid_to_inertial(
+    const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
+        grid_to_inertial,
+    double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
+    const tnsr::I<DataVector, 3, Frame::Grid>& sample_points);
+
+/*!
+ * \brief Computes the geometry of the elements of a patch at a time on the
+ * device for grid to inertial maps that aren't affine, as the host does.
+ *
+ * \details `compute_cells` evaluates the maps (`domain::CoordinateMaps::
+ * DeviceMap`s, one per element) at the DG grid points and at the cell centers
+ * with `domain::inertial_geometry_on_device` and then
+ * - evaluates the `cell_geometry_tags` at the cell centers, as the host
+ *   subcell compute tags;
+ * - projects the mesh velocity from the DG grid to the cell centers, and
+ *   computes its divergence on the DG grid with spectral derivatives (as
+ *   `evolution::domain::Tags::DivMeshVelocityCompute`) and projects it, as
+ *   `grmhd::GhValenciaDivClean::subcell::TimeDerivative`.
+ *
+ * `compute_faces` then projects the logical to inertial inverse Jacobian, its
+ * determinant and the mesh velocity from the DG grid to the faces, as the
+ * host does. For affine maps `inertial_geometry_on_device` with
+ * `AffineGridToInertial` gives the same faces with less work.
+ *
+ * Everything is only enqueued, and the buffers are allocated once, so the
+ * geometry can be updated in every substep. The projections are applied
+ * dimension by dimension (see `DeviceApplyMatrices`).
+ *
+ * \note Only Legendre bases on Cartesian (isotropic) subcell grids are
+ * supported, as for FD patches in general.
+ */
+class TimeDependentGeometry {
+ public:
+  TimeDependentGeometry() = default;
+  TimeDependentGeometry(const Kokkos::DefaultExecutionSpace& exec,
+                        const Mesh<3>& dg_mesh, size_t number_of_elements);
+
+  /// Enqueue computing the geometry at the cell centers for the maps
+  /// `grid_to_inertial` (one per element)
+  void compute_cells(
+      const Kokkos::DefaultExecutionSpace& exec,
+      gsl::not_null<BatchedVariables<cell_geometry_tags>*> cell_geometry,
+      gsl::not_null<BatchedVariables<cell_mesh_velocity_tags>*>
+          cell_mesh_velocity,
+      const LogicalToGrid& logical_to_grid,
+      const Kokkos::View<const ::domain::CoordinateMaps::DeviceMap<3>*>&
+          grid_to_inertial);
+
+  /// Enqueue projecting the geometry on the DG grid of the last
+  /// `compute_cells` to the faces (laid out as `LogicalToGrid::faces`)
+  void compute_faces(
+      const Kokkos::DefaultExecutionSpace& exec,
+      gsl::not_null<BatchedVariables<inertial_face_tags>*> faces);
+
+ private:
+  size_t number_of_elements_ = 0;
+  // The inertial geometry and the divergence of the mesh velocity on the DG
+  // grid, and the logical derivatives of the mesh velocity
+  BatchedVariables<::domain::inertial_geometry_tags<3, true>> dg_geometry_{};
+  BatchedVariables<tmpl::list<::Tags::TempScalar<0>>> dg_div_mesh_velocity_{};
+  BatchedVariables<tmpl::list<::Tags::TempI<0, 3, Frame::Inertial>,
+                              ::Tags::TempI<1, 3, Frame::Inertial>,
+                              ::Tags::TempI<2, 3, Frame::Inertial>>>
+      dg_logical_derivatives_{};
+  std::array<DeviceApplyMatrices, 3> logical_derivatives_{};
+  DeviceApplyMatrices mesh_velocity_to_cells_{};
+  DeviceApplyMatrices div_mesh_velocity_to_cells_{};
+  std::array<DeviceApplyMatrices, 3> to_faces_{};
+};
 }  // namespace evolution::dg::subcell::fd_patch
 #endif  // SPECTRE_KOKKOS

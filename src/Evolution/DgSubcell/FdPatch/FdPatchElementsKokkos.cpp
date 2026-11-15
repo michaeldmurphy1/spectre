@@ -42,10 +42,11 @@ FdPatchElements::FdPatchElements(
     const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
     const double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
     const size_t ghost_width, const size_t number_of_ghost_variables,
-    const size_t number_of_packaged_variables)
-    : evolution::patches::PatchElements(domain, patch_table, patch,
+    const size_t number_of_packaged_variables, const bool compute_cell_geometry)
+    : evolution::patches::PatchElements(exec, domain, patch_table, patch,
                                         initial_refinement_levels),
-      subcell_mesh_(evolution::dg::subcell::fd::mesh(dg_mesh())) {
+      subcell_mesh_(evolution::dg::subcell::fd::mesh(dg_mesh())),
+      compute_cell_geometry_(compute_cell_geometry) {
   const size_t number_of_elements = this->number_of_elements();
 
   // Ghost zones and data from DG neighbors
@@ -98,7 +99,8 @@ FdPatchElements::FdPatchElements(
       pinned_buffer("FD patch send data on the host", send_data_.size());
 
   // Geometry
-  logical_to_grid_ = logical_to_grid(exec, element_maps(), dg_mesh());
+  logical_to_grid_ =
+      logical_to_grid(exec, element_maps(), dg_mesh(), compute_cell_geometry);
   grid_to_inertial_ = Kokkos::View<evolution::patches::AffineGridToInertial*>(
       Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
                          "FD patch grid to inertial maps"),
@@ -122,6 +124,14 @@ FdPatchElements::FdPatchElements(
       exec, face_extents.product(), 3 * number_of_elements};
   cell_geometry_ = BatchedVariables<inertial_cell_tags>{
       exec, subcell_mesh_.number_of_grid_points(), number_of_elements};
+  if (compute_cell_geometry_) {
+    time_dependent_geometry_ =
+        TimeDependentGeometry{exec, dg_mesh(), number_of_elements};
+    cell_inertial_geometry_ = BatchedVariables<cell_geometry_tags>{
+        exec, subcell_mesh_.number_of_grid_points(), number_of_elements};
+    cell_mesh_velocity_ = BatchedVariables<cell_mesh_velocity_tags>{
+        exec, subcell_mesh_.number_of_grid_points(), number_of_elements};
+  }
   update_geometry(exec, time, functions_of_time);
 }
 
@@ -131,25 +141,44 @@ void FdPatchElements::update_geometry(
   if (geometry_computed_ and not mesh_is_moving()) {
     return;
   }
-  std::vector<evolution::patches::AffineGridToInertial> maps(number_of_maps());
-  for (size_t map = 0; map < maps.size(); ++map) {
-    maps[map] = evolution::patches::affine_grid_to_inertial(
-        this->map(map), time, functions_of_time, map_corners(map));
-  }
-  const size_t number_of_elements = this->number_of_elements();
-  for (size_t slot = 0; slot < number_of_elements; ++slot) {
-    const evolution::patches::AffineGridToInertial& map =
-        maps[map_of_slot(slot)];
-    for (size_t d = 0; d < 3; ++d) {
-      host_grid_to_inertial_(d * number_of_elements + slot) = map;
+  // The maps of the blocks for device kernels
+  const bool all_affine = update_device_maps(exec, time, functions_of_time);
+  if (all_affine) {
+    std::vector<evolution::patches::AffineGridToInertial> maps(
+        number_of_maps());
+    for (size_t map = 0; map < maps.size(); ++map) {
+      maps[map] = evolution::patches::affine_grid_to_inertial(
+          this->map(map), time, functions_of_time, map_corners(map));
     }
-    host_div_mesh_velocity_(slot) = map.div_mesh_velocity;
+    const size_t number_of_elements = this->number_of_elements();
+    for (size_t slot = 0; slot < number_of_elements; ++slot) {
+      const evolution::patches::AffineGridToInertial& map =
+          maps[map_of_slot(slot)];
+      for (size_t d = 0; d < 3; ++d) {
+        host_grid_to_inertial_(d * number_of_elements + slot) = map;
+      }
+      host_div_mesh_velocity_(slot) = map.div_mesh_velocity;
+    }
+    Kokkos::deep_copy(exec, grid_to_inertial_, host_grid_to_inertial_);
+    Kokkos::deep_copy(exec, div_mesh_velocity_, host_div_mesh_velocity_);
+    inertial_geometry_on_device(exec, make_not_null(&face_geometry_),
+                                make_not_null(&cell_geometry_),
+                                logical_to_grid_, grid_to_inertial_);
+  } else if (not compute_cell_geometry_) {
+    ERROR("The grid to inertial map of an element of FD patch "
+          << patch()
+          << " isn't affine. Only patches that compute the cell geometry (e.g. "
+             "of systems that evolve the spacetime) support such maps.");
   }
-  Kokkos::deep_copy(exec, grid_to_inertial_, host_grid_to_inertial_);
-  Kokkos::deep_copy(exec, div_mesh_velocity_, host_div_mesh_velocity_);
-  inertial_geometry_on_device(exec, make_not_null(&face_geometry_),
-                              make_not_null(&cell_geometry_), logical_to_grid_,
-                              grid_to_inertial_);
+  if (compute_cell_geometry_) {
+    time_dependent_geometry_.compute_cells(
+        exec, make_not_null(&cell_inertial_geometry_),
+        make_not_null(&cell_mesh_velocity_), logical_to_grid_, device_maps());
+    if (not all_affine) {
+      time_dependent_geometry_.compute_faces(exec,
+                                             make_not_null(&face_geometry_));
+    }
+  }
   geometry_computed_ = true;
 }
 

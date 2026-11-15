@@ -19,6 +19,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   CubicScale.hpp
+  DeviceRotScaleTrans.hpp
   ProductMaps.hpp
   ProductMaps.tpp
   Rotation.hpp

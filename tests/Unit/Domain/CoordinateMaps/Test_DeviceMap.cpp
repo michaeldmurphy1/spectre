@@ -207,6 +207,72 @@ void test_chain(const gsl::not_null<std::mt19937*> generator) {
                         outer_radius, false);
 }
 
+// An affine map after a RotScaleTrans, checked against composing them by hand
+void test_affine(const gsl::not_null<std::mt19937*> generator) {
+  using Region = RotScaleTrans3D::BlockRegion;
+  const auto functions_of_time = make_functions_of_time<3>();
+  const double time = 0.4;
+  const domain::CoordinateMap<Frame::Grid, Frame::Inertial, RotScaleTrans3D>
+      first{RotScaleTrans3D{
+          std::pair<std::string, std::string>{"ExpansionA", "ExpansionB"},
+          "Rotation", "Translation", inner_radius, outer_radius,
+          Region::Transition}};
+  domain::CoordinateMaps::DeviceAffineMap<3> affine{};
+  std::uniform_real_distribution<double> distribution{-1.0, 1.0};
+  for (size_t i = 0; i < 3; ++i) {
+    for (size_t j = 0; j < 3; ++j) {
+      affine.matrix.get(i, j) = (i == j ? 2.0 : 0.0) + distribution(*generator);
+      affine.matrix_derivative.get(i, j) = distribution(*generator);
+    }
+    gsl::at(affine.offset, i) = distribution(*generator);
+    gsl::at(affine.offset_derivative, i) = distribution(*generator);
+  }
+  auto device_map = first.device_map(time, functions_of_time).value();
+  device_map.push_back(affine);
+  CHECK(device_map.number_of_stages == 2);
+  CHECK_FALSE(device_map.is_affine());
+  domain::CoordinateMaps::DeviceMap<3> only_affine{};
+  only_affine.push_back(affine);
+  CHECK(only_affine.is_affine());
+  for (size_t p = 0; p < 10; ++p) {
+    const auto point = random_point<3>(generator, inner_radius, outer_radius);
+    const auto [coords, inv_jacobian, jacobian, frame_velocity] =
+        first.coords_frame_velocity_jacobians(point, time, functions_of_time);
+    tnsr::I<double, 3, Frame::NoFrame> source{};
+    for (size_t i = 0; i < 3; ++i) {
+      source.get(i) = point.get(i);
+    }
+    const auto result = device_map(source);
+    for (size_t i = 0; i < 3; ++i) {
+      double expected_coords = gsl::at(affine.offset, i);
+      double expected_velocity = gsl::at(affine.offset_derivative, i);
+      for (size_t j = 0; j < 3; ++j) {
+        expected_coords += affine.matrix.get(i, j) * coords.get(j);
+        expected_velocity += affine.matrix.get(i, j) * frame_velocity.get(j) +
+                             affine.matrix_derivative.get(i, j) * coords.get(j);
+        double expected_jacobian = 0.0;
+        for (size_t k = 0; k < 3; ++k) {
+          expected_jacobian += affine.matrix.get(i, k) * jacobian.get(k, j);
+        }
+        CHECK(result.jacobian.get(i, j) == approx(expected_jacobian));
+      }
+      CHECK(result.coords.get(i) == approx(expected_coords));
+      CHECK(result.frame_velocity.get(i) == approx(expected_velocity));
+    }
+    // The inverse Jacobian inverts the Jacobian
+    for (size_t i = 0; i < 3; ++i) {
+      for (size_t j = 0; j < 3; ++j) {
+        double product = 0.0;
+        for (size_t k = 0; k < 3; ++k) {
+          product +=
+              result.jacobian.get(i, k) * result.inverse_jacobian.get(k, j);
+        }
+        CHECK(product == approx(i == j ? 1.0 : 0.0));
+      }
+    }
+  }
+}
+
 void test_identity_and_unsupported() {
   const auto functions_of_time = make_functions_of_time<3>();
   const domain::CoordinateMap<Frame::Grid, Frame::Inertial,
@@ -256,5 +322,6 @@ SPECTRE_TEST_CASE("Unit.Domain.CoordinateMaps.DeviceMap", "[Domain][Unit]") {
   test_rot_scale_trans<2>(make_not_null(&generator));
   test_rot_scale_trans<3>(make_not_null(&generator));
   test_chain(make_not_null(&generator));
+  test_affine(make_not_null(&generator));
   test_identity_and_unsupported();
 }

@@ -14,6 +14,7 @@ set(LIBRARY_SOURCES
   Test_CylindricalFlatSide.cpp
   Test_CylindricalSide.cpp
   Test_CylindricalSphericalShell.cpp
+  Test_DeviceMap.cpp
   Test_DiscreteRotation.cpp
   Test_Distribution.cpp
   Test_EquatorialCompression.cpp
@@ -37,6 +38,10 @@ set(LIBRARY_SOURCES
   Test_Wedge2D.cpp
   Test_Wedge3D.cpp
   )
+
+if(SPECTRE_KOKKOS)
+  list(APPEND LIBRARY_SOURCES Test_DeviceMapKokkos.cpp)
+endif()
 
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")
 

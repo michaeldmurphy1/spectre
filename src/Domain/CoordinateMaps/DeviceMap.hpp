@@ -13,14 +13,49 @@
 #include "Utilities/Kokkos/KokkosMacros.hpp"
 
 namespace domain::CoordinateMaps {
+/*!
+ * \brief An affine map \f$x^i \to M^i{}_j x^j + T^i\f$ at one time, with
+ * frame velocity \f$\dot{M}^i{}_j x^j + \dot{T}^i\f$, in a form that device
+ * kernels can evaluate.
+ *
+ * \details This can hold any affine map, e.g. one sampled from a host map
+ * that has no device version.
+ */
+template <size_t Dim>
+struct DeviceAffineMap {
+  tnsr::Ij<double, Dim, Frame::NoFrame> matrix{};
+  tnsr::Ij<double, Dim, Frame::NoFrame> matrix_derivative{};
+  std::array<double, Dim> offset{};
+  std::array<double, Dim> offset_derivative{};
+
+  /// Compute the Jacobian and the frame velocity of the map at `point`, and
+  /// then map `point`
+  KOKKOS_FUNCTION void apply(
+      const gsl::not_null<std::array<double, Dim>*> point,
+      const gsl::not_null<tnsr::Ij<double, Dim, Frame::NoFrame>*> jacobian,
+      const gsl::not_null<std::array<double, Dim>*> frame_velocity) const {
+    const std::array<double, Dim> source = *point;
+    *jacobian = matrix;
+    for (size_t i = 0; i < Dim; ++i) {
+      (*frame_velocity)[i] = offset_derivative[i];
+      (*point)[i] = offset[i];
+      for (size_t j = 0; j < Dim; ++j) {
+        (*frame_velocity)[i] += matrix_derivative.get(i, j) * source[j];
+        (*point)[i] += matrix.get(i, j) * source[j];
+      }
+    }
+  }
+};
+
 /// The kinds of maps a `DeviceMap` can hold
-enum class DeviceMapKind { RotScaleTrans };
+enum class DeviceMapKind { RotScaleTrans, Affine };
 
 /// One map of a `DeviceMap`: its kind and its data
 template <size_t Dim>
 struct DeviceMapStage {
   DeviceMapKind kind = DeviceMapKind::RotScaleTrans;
   TimeDependent::DeviceRotScaleTrans<Dim> rot_scale_trans{};
+  DeviceAffineMap<Dim> affine{};
 };
 
 /// The mapped point, the inverse Jacobian, the Jacobian and the frame velocity
@@ -62,6 +97,11 @@ struct DeviceMap {
     stage.kind = DeviceMapKind::RotScaleTrans;
     stage.rot_scale_trans = map;
   }
+  void push_back(const DeviceAffineMap<Dim>& map) {
+    DeviceMapStage<Dim>& stage = next_stage();
+    stage.kind = DeviceMapKind::Affine;
+    stage.affine = map;
+  }
 
   /// Whether the map is the identity, i.e. holds no maps
   bool is_identity() const { return number_of_stages == 0; }
@@ -75,6 +115,8 @@ struct DeviceMap {
           if (not stage.rot_scale_trans.is_affine()) {
             return false;
           }
+          break;
+        case DeviceMapKind::Affine:
           break;
         default:
           ERROR("Unknown kind of map " << static_cast<int>(stage.kind));
@@ -164,6 +206,11 @@ KOKKOS_FUNCTION DeviceMappedPoint<Dim> DeviceMap<Dim>::operator()(
         stage.rot_scale_trans.apply(make_not_null(&point),
                                     make_not_null(&stage_jacobian),
                                     make_not_null(&stage_frame_velocity));
+        break;
+      case DeviceMapKind::Affine:
+        stage.affine.apply(make_not_null(&point),
+                           make_not_null(&stage_jacobian),
+                           make_not_null(&stage_frame_velocity));
         break;
       default:
         // Unreachable, since `push_back` sets the kind

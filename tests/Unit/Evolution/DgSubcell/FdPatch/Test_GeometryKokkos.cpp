@@ -41,6 +41,7 @@
 #include "Evolution/DgSubcell/FdPatch/GeometryKokkos.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/Projection.hpp"
+#include "Evolution/Patches/GridToInertial.hpp"
 #include "Evolution/TagsDomain.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
@@ -159,7 +160,7 @@ void check_inertial_geometry(
   const auto logical_to_grid =
       fd_patch::logical_to_grid(exec, element_maps, dg_mesh);
   CHECK(get<0>(logical_to_grid.corners).size() == 8 * number_of_elements);
-  const auto affine = fd_patch::affine_grid_to_inertial(
+  const auto affine = evolution::patches::affine_grid_to_inertial(
       grid_to_inertial, time, functions_of_time, logical_to_grid.corners);
   CHECK(affine.is_moving == not grid_to_inertial.is_identity());
 
@@ -169,7 +170,7 @@ void check_inertial_geometry(
   BatchedVariables<fd_patch::inertial_cell_tags> cells{
       exec, logical_to_grid.cells.number_of_grid_points(), number_of_elements};
   // The same map for the faces in every direction of every element
-  const Kokkos::View<fd_patch::AffineGridToInertial*> maps{
+  const Kokkos::View<evolution::patches::AffineGridToInertial*> maps{
       "maps", 3 * number_of_elements};
   Kokkos::deep_copy(exec, maps, affine);
   fd_patch::inertial_geometry_on_device(exec, make_not_null(&faces),
@@ -287,7 +288,7 @@ void check_inertial_geometry(
   if (not affine.is_moving or number_of_elements < 2) {
     return;
   }
-  const auto identity = fd_patch::affine_grid_to_inertial(
+  const auto identity = evolution::patches::affine_grid_to_inertial(
       *domain::make_coordinate_map_base<Frame::Grid, Frame::Inertial>(
           domain::CoordinateMaps::Identity<3>{}),
       time, {}, logical_to_grid.corners);
@@ -401,7 +402,7 @@ void check_time_dependent_geometry(
   const size_t number_of_elements = element_maps.size();
   const auto logical_to_grid =
       fd_patch::logical_to_grid(exec, element_maps, dg_mesh);
-  const auto device_map = fd_patch::device_grid_to_inertial(
+  const auto device_map = evolution::patches::device_grid_to_inertial(
       grid_to_inertial, time, functions_of_time, logical_to_grid.corners);
   const Kokkos::View<domain::CoordinateMaps::DeviceMap<3>*> maps{
       "maps", number_of_elements};
@@ -576,7 +577,7 @@ void test_geometry() {
     check_time_dependent_geometry(element_maps, dg_mesh,
                                   *make_rot_scale_trans_transition(), time,
                                   make_rot_scale_trans_functions_of_time(time));
-    CHECK_FALSE(fd_patch::device_grid_to_inertial(
+    CHECK_FALSE(evolution::patches::device_grid_to_inertial(
                     *make_rot_scale_trans_transition(), time,
                     make_rot_scale_trans_functions_of_time(time),
                     fd_patch::logical_to_grid(Kokkos::DefaultExecutionSpace{},
@@ -594,9 +595,9 @@ void test_non_affine_map() {
       fd_patch::logical_to_grid(exec, make_element_maps(true), dg_mesh);
   const double time = 0.7;
   CHECK_THROWS_WITH(
-      fd_patch::affine_grid_to_inertial(*make_grid_to_inertial(), time,
-                                        make_functions_of_time(time, false),
-                                        logical_to_grid.corners),
+      evolution::patches::affine_grid_to_inertial(
+          *make_grid_to_inertial(), time, make_functions_of_time(time, false),
+          logical_to_grid.corners),
       Catch::Matchers::ContainsSubstring(
           "FD patches only support affine grid to inertial maps"));
 }

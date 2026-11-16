@@ -295,13 +295,16 @@ The code is in three layers, so that FD and (later) DG patches of any system
 share what they can:
 
 - **Generic** (`src/Evolution/Patches`, `evolution::patches`): the parallel
-  component, the `PatchTable`, the actions (sending and receiving boundary
+  component, the `PatchTable`, the elements of a patch and their maps
+  (`evolution::patches::PatchElements`), the actions (sending and receiving boundary
   data, taking steps, the self start, events and observations, slab size
   changes), the inbox and `send_to_patch` for the elements of the
   `DgElementArray`, and the batched state tags. These don't depend on the
   method or the system.
 - **Method** (FD: `src/Evolution/DgSubcell/FdPatch`,
-  `evolution::dg::subcell::fd_patch`): which elements are FD
+  `evolution::dg::subcell::fd_patch`): the elements of a patch with what FD
+  needs (`evolution::dg::subcell::fd_patch::FdPatchElements`, derived from
+  `evolution::patches::PatchElements`), which elements are FD
   (`evolution::dg::subcell::fd_patch::patch_table`), ghost zones, the FD
   geometry, the packaged data
   from DG neighbors, the FD message format, the initial TCI exchange with DG
@@ -360,7 +363,7 @@ state, and the patch object holds the operations*.
   data they need, e.g. the geometry and the ghost-zone transfers, and scratch
   space. The parts that don't depend on the system, i.e. the elements, their
   geometry and the exchange of boundary data, are in the method layer's
-  `evolution::dg::subcell::fd_patch::PatchElements` that the patch holds. The
+  `evolution::dg::subcell::fd_patch::FdPatchElements` that the patch holds. The
   actions of the patch component pass the patch the state from the DataBox:
   operations that change the state get pointers to all of it, the others
   references.

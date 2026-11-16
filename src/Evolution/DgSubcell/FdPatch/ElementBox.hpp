@@ -53,7 +53,7 @@ using cell_geometry_tags =
                fd::Tags::DetInverseJacobianLogicalToGrid>;
 
 // The time-independent geometry at the cell centers, computed once by the patch
-// (see `PatchElements::host_cell_geometry`)
+// (see `FdPatchElements::host_cell_geometry`)
 template <size_t Dim>
 struct CellGeometry : db::SimpleTag {
   using type = Variables<cell_geometry_tags<Dim>>;
@@ -175,7 +175,7 @@ using element_box_type = db::compute_databox_type<
  * Jacobians and global cache items are the compute and reference items of an
  * element, except for the time-independent grid coordinates and logical to
  * grid Jacobians at the cell centers, which the patch computes once in the
- * same way (`cell_geometry`, see `PatchElements::host_cell_geometry`). Events
+ * same way (`cell_geometry`, see `FdPatchElements::host_cell_geometry`). Events
  * can then run on the elements of patches as they do on the elements of the
  * `DgElementArray`, with the same results.
  *

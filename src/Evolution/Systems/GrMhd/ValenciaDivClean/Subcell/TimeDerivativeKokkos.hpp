@@ -86,7 +86,7 @@ using cell_spacetime_tags =
  * \f$\rho T\f$), finite difference
  * derivative order 2 (no high-order flux corrections), the boundary correction
  * `Correction` (`Rusanov` or `Hll`), and an affine grid to inertial map (see
- * `evolution::dg::subcell::fd_patch::AffineGridToInertial`). Unlike the host,
+ * `evolution::patches::AffineGridToInertial`). Unlike the host,
  * it supports a moving mesh, following `GhValenciaDivClean`.
  *
  * The time derivative is computed as on the host:

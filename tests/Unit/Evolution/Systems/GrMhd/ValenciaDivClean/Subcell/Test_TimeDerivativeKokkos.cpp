@@ -52,6 +52,7 @@
 #include "Evolution/DgSubcell/Tags/ReconstructionOrder.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarTags.hpp"
 #include "Evolution/DiscontinuousGalerkin/NormalVectorTags.hpp"
+#include "Evolution/Patches/GridToInertial.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryConditions/BoundaryCondition.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryConditions/Factory.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Factory.hpp"
@@ -372,7 +373,7 @@ void test(const Correction& correction, const Reconstructor& recons) {
   element_maps.emplace_back(element.id(), element_map.block_map().get_clone());
   const auto logical_to_grid =
       fd_patch::logical_to_grid(exec, element_maps, dg_mesh);
-  const auto grid_to_inertial = fd_patch::affine_grid_to_inertial(
+  const auto grid_to_inertial = evolution::patches::affine_grid_to_inertial(
       *grid_to_inertial_map, time, {}, logical_to_grid.corners);
   BatchedVariables<fd_patch::inertial_face_tags> face_geometry{
       exec, logical_to_grid.faces.number_of_grid_points(), 3};
@@ -380,7 +381,7 @@ void test(const Correction& correction, const Reconstructor& recons) {
       exec, number_of_cells, 1};
   // The map of each of the 3 face sets of the element, and the divergence of
   // the mesh velocity of the element
-  const Kokkos::View<fd_patch::AffineGridToInertial*> maps{"maps", 3};
+  const Kokkos::View<evolution::patches::AffineGridToInertial*> maps{"maps", 3};
   Kokkos::deep_copy(exec, maps, grid_to_inertial);
   const Kokkos::View<double*> div_mesh_velocity{"div_mesh_velocity", 1};
   Kokkos::deep_copy(exec, div_mesh_velocity,

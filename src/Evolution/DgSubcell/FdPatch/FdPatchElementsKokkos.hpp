@@ -25,6 +25,7 @@
 #include "Evolution/DgSubcell/FdPatch/PackagedDataFromDgKokkos.hpp"
 #include "Evolution/DgSubcell/RdmpTciData.hpp"
 #include "Evolution/Patches/InboxTags.hpp"
+#include "Evolution/Patches/PatchElementsKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Time/DeviceHistoryKokkos.hpp"
@@ -49,11 +50,12 @@ class PatchTable;
 
 namespace evolution::dg::subcell::fd_patch {
 /*!
- * \brief The parts of an FD patch that don't depend on the evolved system:
- * its elements, their geometry, and the exchange of ghost data and packaged
- * data with the neighbors outside the patch.
+ * \brief The elements of a patch of FD elements: the parts of FD patches that
+ * don't depend on the evolved system, i.e. the elements and their maps (see
+ * `evolution::patches::PatchElements`), their FD geometry, and the exchange
+ * of ghost data and packaged data with the neighbors outside the patch.
  *
- * \details System-specific patches (e.g.
+ * \details System-specific FD patches (e.g.
  * `grmhd::ValenciaDivClean::fd_patch::Patch`) hold one and add the operations
  * of their system. In each substep they
  * 1. compute the ghost variables of all elements (a `BatchedVariables`, see
@@ -66,25 +68,25 @@ namespace evolution::dg::subcell::fd_patch {
  *    `packaged_data_from_dg()`,
  * 3. compute the time derivative with the geometry (see `update_geometry()`).
  */
-class PatchElements {
+class FdPatchElements : public evolution::patches::PatchElements {
  public:
-  PatchElements() = default;
-  PatchElements(const PatchElements&) = delete;
-  PatchElements& operator=(const PatchElements&) = delete;
-  PatchElements(PatchElements&&) = default;
-  PatchElements& operator=(PatchElements&&) = default;
-  ~PatchElements() = default;
+  FdPatchElements() = default;
+  FdPatchElements(const FdPatchElements&) = delete;
+  FdPatchElements& operator=(const FdPatchElements&) = delete;
+  FdPatchElements(FdPatchElements&&) = default;
+  FdPatchElements& operator=(FdPatchElements&&) = default;
+  ~FdPatchElements() = default;
 
   /*!
    * \brief Set up the elements of the patch `patch` of `patch_table`.
    *
-   * This builds the elements and their maps (the grid to inertial map of an
-   * element is the moving mesh map of its block, or the identity), checks that
-   * their cells line up with those of their neighbors in other blocks, builds
-   * the tables for the ghost zones (of width `ghost_width`, for
-   * `number_of_ghost_variables` variables) and for the packaged data from DG
-   * neighbors (with `number_of_packaged_variables` independent components),
-   * and computes the geometry at the `time`.
+   * This builds the elements and their maps (see
+   * `evolution::patches::PatchElements`), checks that their cells line up with
+   * those of their neighbors in other blocks, builds the tables for the ghost
+   * zones (of width `ghost_width`, for `number_of_ghost_variables` variables)
+   * and for the packaged data from DG neighbors (with
+   * `number_of_packaged_variables` independent components), and computes the
+   * geometry at the `time`.
    *
    * With `compute_cell_geometry` the patch also computes the
    * `cell_geometry()` and `cell_mesh_velocity()` (see
@@ -92,7 +94,7 @@ class PatchElements {
    * supports grid to inertial maps that aren't affine. Without it the maps
    * must be affine.
    */
-  PatchElements(
+  FdPatchElements(
       const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
       const evolution::patches::PatchTable<3>& patch_table, size_t patch,
       const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
@@ -100,27 +102,8 @@ class PatchElements {
       size_t ghost_width, size_t number_of_ghost_variables,
       size_t number_of_packaged_variables, bool compute_cell_geometry = false);
 
-  /// @{
-  /// The elements of the patch, in slot order, and their maps
-  size_t number_of_elements() const { return element_ids_.size(); }
-  const std::vector<ElementId<3>>& element_ids() const { return element_ids_; }
-  const std::vector<Element<3>>& elements() const { return elements_; }
-  const std::vector<ElementMap<3, Frame::Grid>>& element_maps() const {
-    return element_maps_;
-  }
-  /// @}
-
-  /// The DG mesh of the elements
-  const Mesh<3>& dg_mesh() const { return dg_mesh_; }
   /// The subcell mesh of the elements
   const Mesh<3>& subcell_mesh() const { return subcell_mesh_; }
-
-  /// The map from the grid to the inertial frame of the element in `slot`
-  const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-  grid_to_inertial_map(size_t slot) const;
-
-  /// Whether the mesh of any element of the patch moves
-  bool mesh_is_moving() const { return mesh_is_moving_; }
 
   /// The time-independent geometry at the cell centers of the element in
   /// `slot` on the host (see `LogicalToGrid::host_cells`), referring to the
@@ -128,22 +111,12 @@ class PatchElements {
   Variables<host_logical_to_grid_cell_tags> host_cell_geometry(
       size_t slot) const;
 
-  /// A description of the element in `slot` for error messages
-  std::string element_description(size_t slot) const;
-
-  /// The time stepper history of the elements for `number_of_values` evolved
-  /// values per element, empty and at the starting order of the
-  /// `time_stepper`, as `Initialization::TimeStepperHistory` sets it up for an
-  /// element
-  TimeSteppers::DeviceHistory<> initial_history(const TimeStepper& time_stepper,
-                                                size_t number_of_values) const;
-
   /*!
    * \brief Update the geometry to the `time`. Only needed if the mesh moves.
    *
    * \details The host evaluates the grid to inertial maps (one per block)
-   * and copies their parameters (`AffineGridToInertial` for affine maps, and
-   * `domain::CoordinateMaps::DeviceMap`s for the cell geometry) to the
+   * and copies their parameters (`evolution::patches::AffineGridToInertial`
+   * for affine maps, and the `device_maps()` for the cell geometry) to the
    * device, from where the kernels read them, so the arguments of the kernels
    * don't change between substeps. The copy from the host buffer is only
    * enqueued, so the copy of the previous call must be done before the next
@@ -245,45 +218,24 @@ class PatchElements {
   }
 
  private:
-  size_t patch_ = 0;
-  Mesh<3> dg_mesh_{};
   Mesh<3> subcell_mesh_{};
-  std::vector<ElementId<3>> element_ids_{};
-  std::vector<Element<3>> elements_{};
-  std::vector<ElementMap<3, Frame::Grid>> element_maps_{};
 
   // Geometry
-  // The grid to inertial maps of the blocks of the elements, the map of each
-  // slot, and the grid coordinates of the corners of the elements of each map,
-  // where it must be affine
-  std::vector<std::unique_ptr<
-      ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>>>
-      grid_to_inertial_maps_{};
-  std::vector<size_t> map_of_slot_{};
-  std::vector<tnsr::I<DataVector, 3, Frame::Grid>> map_corners_{};
-  bool mesh_is_moving_ = false;
   bool geometry_computed_ = false;
   LogicalToGrid logical_to_grid_{};
   // The parameters of the maps on the device, per face set (see
   // `inertial_geometry_on_device()`), and the divergence of the mesh velocity
   // per element, with their host buffers
-  Kokkos::View<AffineGridToInertial*> grid_to_inertial_{};
+  Kokkos::View<evolution::patches::AffineGridToInertial*> grid_to_inertial_{};
   Kokkos::View<double*> div_mesh_velocity_{};
-  Kokkos::View<AffineGridToInertial*, Kokkos::SharedHostPinnedSpace>
+  Kokkos::View<evolution::patches::AffineGridToInertial*,
+               Kokkos::SharedHostPinnedSpace>
       host_grid_to_inertial_{};
   Kokkos::View<double*, Kokkos::SharedHostPinnedSpace>
       host_div_mesh_velocity_{};
   BatchedVariables<inertial_face_tags> face_geometry_{};
   BatchedVariables<inertial_cell_tags> cell_geometry_{};
-  // The maps for device kernels: one per block (with its host buffer), the
-  // map of each slot, and the map of each element, gathered on the device
   bool compute_cell_geometry_ = false;
-  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*> device_map_table_{};
-  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*,
-               Kokkos::SharedHostPinnedSpace>
-      host_device_map_table_{};
-  Kokkos::View<size_t*> device_map_of_slot_{};
-  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*> device_maps_{};
   TimeDependentGeometry time_dependent_geometry_{};
   BatchedVariables<cell_geometry_tags> cell_inertial_geometry_{};
   BatchedVariables<cell_mesh_velocity_tags> cell_mesh_velocity_{};
@@ -303,42 +255,5 @@ class PatchElements {
   HostBuffer host_send_data_{};
 };
 
-/*!
- * \brief Copies of batches saved on the device, e.g. the variables of the
- * elements of a patch at the start of the self start.
- *
- * \details Copying a `BatchedVariables` doesn't copy its data (see
- * `BatchedVariables`), so this makes deep copies.
- */
-template <typename... Batches>
-class SavedBatches {
- public:
-  /// Save copies of the `batches`
-  void save(const Kokkos::DefaultExecutionSpace& exec,
-            const Batches&... batches) {
-    saved_ =
-        std::tuple<Batches...>{Batches{exec, batches.number_of_grid_points(),
-                                       batches.number_of_elements()}...};
-    std::apply(
-        [&](auto&... saved) {
-          (deep_copy(exec, make_not_null(&saved), batches), ...);
-        },
-        saved_);
-  }
-
-  /// Copy the saved values into the `batches`
-  void restore(const Kokkos::DefaultExecutionSpace& exec,
-               const gsl::not_null<Batches*>... batches) const {
-    std::apply(
-        [&](const auto&... saved) { (deep_copy(exec, batches, saved), ...); },
-        saved_);
-  }
-
-  /// Free the saved values
-  void discard() { saved_ = {}; }
-
- private:
-  std::tuple<Batches...> saved_{};
-};
 }  // namespace evolution::dg::subcell::fd_patch
 #endif  // SPECTRE_KOKKOS

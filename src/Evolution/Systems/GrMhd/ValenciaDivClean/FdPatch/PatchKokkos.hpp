@@ -24,8 +24,9 @@
 #include "Domain/Structure/Element.hpp"
 #include "Evolution/DgSubcell/FdPatch/BoundaryMessagesKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/ElementBox.hpp"
-#include "Evolution/DgSubcell/FdPatch/PatchElementsKokkos.hpp"
+#include "Evolution/DgSubcell/FdPatch/FdPatchElementsKokkos.hpp"
 #include "Evolution/Patches/InboxTags.hpp"
+#include "Evolution/Patches/SavedBatchesKokkos.hpp"
 #include "Evolution/Patches/TagsKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hll.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Rusanov.hpp"
@@ -91,11 +92,11 @@ using InitialDataFunction = std::function<Variables<initial_data_tags>(
  * \details A patch steps all its elements together with batched kernels. The
  * parts that don't depend on the system, i.e. the elements, their geometry
  * and the exchange of boundary data, are in its
- * `evolution::dg::subcell::fd_patch::PatchElements`. Each substep is:
+ * `evolution::dg::subcell::fd_patch::FdPatchElements`. Each substep is:
  * 1. `prepare_send()`: compute the ghost variables, fill the ghost zones
  *    between the elements of the patch, and pack the boundary data for the
  *    neighbors outside the patch, in the layout of an FD element on the host.
- * 2. `PatchElements::receive()`: fill the ghost zones from the received
+ * 2. `FdPatchElements::receive()`: fill the ghost zones from the received
  *    boundary data, and keep the data that DG neighbors send for the packaged
  *    data.
  * 3. `take_step()`: compute the time derivative (`subcell::TimeDerivative` on
@@ -117,7 +118,7 @@ using InitialDataFunction = std::function<Variables<initial_data_tags>(
  * reconstruction (of the temperature), the `Rusanov` and `Hll` boundary
  * corrections, FD derivative order 2, global time stepping, and affine grid to
  * inertial maps (see
- * `evolution::dg::subcell::fd_patch::AffineGridToInertial`). Anything else is
+ * `evolution::patches::AffineGridToInertial`). Anything else is
  * an error.
  *
  * The elements of the patch never switch to DG, so no TCI runs. They send the
@@ -203,11 +204,11 @@ class Patch {
   /// @{
   /// The elements of the patch, their geometry and the exchange of boundary
   /// data
-  const evolution::dg::subcell::fd_patch::PatchElements& patch_elements()
+  const evolution::dg::subcell::fd_patch::FdPatchElements& patch_elements()
       const {
     return patch_elements_;
   }
-  evolution::dg::subcell::fd_patch::PatchElements& patch_elements() {
+  evolution::dg::subcell::fd_patch::FdPatchElements& patch_elements() {
     return patch_elements_;
   }
   /// @}
@@ -266,14 +267,14 @@ class Patch {
   }
 
   /// Whether `messages` hold all the boundary data that the patch receives in
-  /// a substep (see `PatchElements::received_all()`)
+  /// a substep (see `FdPatchElements::received_all()`)
   bool received_all(
       const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
           messages) const {
     return patch_elements_.received_all(messages);
   }
 
-  /// Receive the boundary data of a substep (see `PatchElements::receive()`)
+  /// Receive the boundary data of a substep (see `FdPatchElements::receive()`)
   void receive(
       const Kokkos::DefaultExecutionSpace& exec,
       const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
@@ -296,7 +297,7 @@ class Patch {
   /// elements of the patch, and return the boundary data for the neighbors
   /// outside the patch, valid until `next_time_step_id`. The
   /// `integration_order` is that of the time stepper history. The received
-  /// boundary data goes to `PatchElements::receive()`.
+  /// boundary data goes to `FdPatchElements::receive()`.
   std::vector<evolution::dg::subcell::fd_patch::OutgoingBoundaryData<3>>
   prepare_send(const Kokkos::DefaultExecutionSpace& exec,
                const EvolvedVariables& evolved_variables,
@@ -382,7 +383,7 @@ class Patch {
       const PrimitiveVariables& primitives,
       const CellSpacetimeVariables& cell_spacetime_variables) const;
 
-  evolution::dg::subcell::fd_patch::PatchElements patch_elements_{};
+  evolution::dg::subcell::fd_patch::FdPatchElements patch_elements_{};
 
   // Configuration
   std::unique_ptr<EquationsOfState::EquationOfState<true, 3>>
@@ -415,8 +416,7 @@ class Patch {
   BatchedVariables<element_spacetime_tags> element_spacetime_{};
   BatchedVariables<element_spacetime_tags, HostSpace> host_spacetime_{};
   // The values saved during the self start
-  evolution::dg::subcell::fd_patch::SavedBatches<EvolvedVariables,
-                                                 PrimitiveVariables>
+  evolution::patches::SavedBatches<EvolvedVariables, PrimitiveVariables>
       initial_values_{};
   std::vector<std::array<std::optional<StepperErrorEstimate>, 2>>
       stepper_errors_{};

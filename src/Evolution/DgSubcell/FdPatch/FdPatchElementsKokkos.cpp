@@ -1,7 +1,7 @@
 // Distributed under the MIT License.
 // See LICENSE.txt for details.
 
-#include "Evolution/DgSubcell/FdPatch/PatchElementsKokkos.hpp"
+#include "Evolution/DgSubcell/FdPatch/FdPatchElementsKokkos.hpp"
 
 #ifdef SPECTRE_KOKKOS
 #include <Kokkos_Profiling_ScopedRegion.hpp>
@@ -36,50 +36,25 @@
 #include "Utilities/TMPL.hpp"
 
 namespace evolution::dg::subcell::fd_patch {
-PatchElements::PatchElements(
+FdPatchElements::FdPatchElements(
     const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
     const evolution::patches::PatchTable<3>& patch_table, const size_t patch,
     const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
-    const double time, const domain::FunctionsOfTimeMap& functions_of_time,
+    const double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
     const size_t ghost_width, const size_t number_of_ghost_variables,
     const size_t number_of_packaged_variables, const bool compute_cell_geometry)
-    : patch_(patch),
-      dg_mesh_(patch_table.dg_mesh(patch)),
-      subcell_mesh_(evolution::dg::subcell::fd::mesh(dg_mesh_)),
-      element_ids_(patch_table.element_ids(patch)) {
-  const size_t number_of_elements = element_ids_.size();
-
-  // Elements and their maps, with one grid to inertial map per block
-  elements_.reserve(number_of_elements);
-  element_maps_.reserve(number_of_elements);
-  map_of_slot_.reserve(number_of_elements);
-  std::vector<size_t> map_blocks{};
-  for (const auto& element_id : element_ids_) {
-    elements_.push_back(domain::create_initial_element(
-        element_id, domain.blocks(), initial_refinement_levels));
-    const Block<3>& block = domain.blocks()[element_id.block_id()];
-    element_maps_.emplace_back(element_id, block);
-    const auto map_block = alg::find(map_blocks, block.id());
-    map_of_slot_.push_back(
-        static_cast<size_t>(std::distance(map_blocks.begin(), map_block)));
-    if (map_block == map_blocks.end()) {
-      map_blocks.push_back(block.id());
-      grid_to_inertial_maps_.push_back(
-          block.is_time_dependent()
-              ? block.moving_mesh_grid_to_inertial_map().get_clone()
-              : domain::make_coordinate_map_base<Frame::Grid, Frame::Inertial>(
-                    domain::CoordinateMaps::Identity<3>{}));
-      mesh_is_moving_ =
-          mesh_is_moving_ or not grid_to_inertial_maps_.back()->is_identity();
-    }
-  }
+    : evolution::patches::PatchElements(exec, domain, patch_table, patch,
+                                        initial_refinement_levels),
+      subcell_mesh_(evolution::dg::subcell::fd::mesh(dg_mesh())),
+      compute_cell_geometry_(compute_cell_geometry) {
+  const size_t number_of_elements = this->number_of_elements();
 
   // Ghost zones and data from DG neighbors
-  check_cells_coincide_across_blocks(domain, elements_, patch_table, patch,
+  check_cells_coincide_across_blocks(domain, elements(), patch_table, patch,
                                      ghost_width);
   ghost_zones_ = GhostZones<3>{
       exec,
-      elements_,
+      elements(),
       std::vector<DirectionalIdMap<3, std::optional<intrp::Irregular<3>>>>(
           number_of_elements),
       patch_table,
@@ -98,7 +73,7 @@ PatchElements::PatchElements(
                          "FD patch send data"),
       ghost_zones_.send_data_size());
   packaged_data_from_dg_ = PackagedDataFromDg<3>{exec,
-                                                 elements_,
+                                                 elements(),
                                                  patch_table,
                                                  patch,
                                                  number_of_packaged_variables,
@@ -125,27 +100,8 @@ PatchElements::PatchElements(
 
   // Geometry
   logical_to_grid_ =
-      logical_to_grid(exec, element_maps_, dg_mesh_, compute_cell_geometry);
-  // The corners of the elements of each map, where it must be affine
-  std::vector<size_t> number_of_map_elements(grid_to_inertial_maps_.size(), 0);
-  for (const size_t map : map_of_slot_) {
-    ++number_of_map_elements[map];
-  }
-  for (const size_t number : number_of_map_elements) {
-    map_corners_.emplace_back(8 * number);
-  }
-  std::fill(number_of_map_elements.begin(), number_of_map_elements.end(), 0);
-  for (size_t slot = 0; slot < number_of_elements; ++slot) {
-    const size_t map = map_of_slot_[slot];
-    for (size_t corner = 0; corner < 8; ++corner) {
-      for (size_t d = 0; d < 3; ++d) {
-        map_corners_[map].get(d)[8 * number_of_map_elements[map] + corner] =
-            logical_to_grid_.corners.get(d)[8 * slot + corner];
-      }
-    }
-    ++number_of_map_elements[map];
-  }
-  grid_to_inertial_ = Kokkos::View<AffineGridToInertial*>(
+      logical_to_grid(exec, element_maps(), dg_mesh(), compute_cell_geometry);
+  grid_to_inertial_ = Kokkos::View<evolution::patches::AffineGridToInertial*>(
       Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
                          "FD patch grid to inertial maps"),
       3 * number_of_elements);
@@ -168,47 +124,18 @@ PatchElements::PatchElements(
       exec, face_extents.product(), 3 * number_of_elements};
   cell_geometry_ = BatchedVariables<inertial_cell_tags>{
       exec, subcell_mesh_.number_of_grid_points(), number_of_elements};
-  compute_cell_geometry_ = compute_cell_geometry;
-  host_device_map_table_ = decltype(host_device_map_table_)(
-      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
-                         "FD patch device maps on the host"),
-      grid_to_inertial_maps_.size());
   if (compute_cell_geometry_) {
-    device_map_table_ = decltype(device_map_table_)(
-        Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
-                           "FD patch device maps"),
-        grid_to_inertial_maps_.size());
-    device_maps_ = decltype(device_maps_)(
-        Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
-                           "FD patch device maps of the elements"),
-        number_of_elements);
-    device_map_of_slot_ = Kokkos::View<size_t*>(
-        Kokkos::view_alloc(exec, "FD patch map of each slot"),
-        number_of_elements);
-    const auto host_map_of_slot = Kokkos::create_mirror_view(
-        Kokkos::WithoutInitializing, device_map_of_slot_);
-    for (size_t slot = 0; slot < number_of_elements; ++slot) {
-      host_map_of_slot(slot) = map_of_slot_[slot];
-    }
-    Kokkos::deep_copy(exec, device_map_of_slot_, host_map_of_slot);
     time_dependent_geometry_ =
-        TimeDependentGeometry{exec, dg_mesh_, number_of_elements};
+        TimeDependentGeometry{exec, dg_mesh(), number_of_elements};
     cell_inertial_geometry_ = BatchedVariables<cell_geometry_tags>{
         exec, subcell_mesh_.number_of_grid_points(), number_of_elements};
     cell_mesh_velocity_ = BatchedVariables<cell_mesh_velocity_tags>{
         exec, subcell_mesh_.number_of_grid_points(), number_of_elements};
-    // The host mirror must stay valid until the copy is done
-    exec.fence("fd_patch::PatchElements map of each slot");
   }
   update_geometry(exec, time, functions_of_time);
 }
 
-const domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
-PatchElements::grid_to_inertial_map(const size_t slot) const {
-  return *grid_to_inertial_maps_.at(map_of_slot_.at(slot));
-}
-
-Variables<host_logical_to_grid_cell_tags> PatchElements::host_cell_geometry(
+Variables<host_logical_to_grid_cell_tags> FdPatchElements::host_cell_geometry(
     const size_t slot) const {
   // A copy of the handle to the same memory, which the result refers to
   auto host_cells = logical_to_grid_.host_cells;
@@ -217,58 +144,27 @@ Variables<host_logical_to_grid_cell_tags> PatchElements::host_cell_geometry(
   return result;
 }
 
-std::string PatchElements::element_description(const size_t slot) const {
-  std::ostringstream description{};
-  description << "element " << element_ids_.at(slot) << " of FD patch "
-              << patch_;
-  return description.str();
-}
-
-TimeSteppers::DeviceHistory<> PatchElements::initial_history(
-    const TimeStepper& time_stepper, const size_t number_of_values) const {
-  // The order that needs no past steps, as
-  // `Initialization::TimeStepperHistory`
-  const size_t starting_order =
-      visit(
-          []<typename Tag>(
-              const std::pair<tmpl::type_<Tag>, typename Tag::type&&> order) {
-            if constexpr (std::is_same_v<Tag, TimeSteppers::Tags::FixedOrder>) {
-              return order.second;
-            } else {
-              return order.second.minimum;
-            }
-          },
-          time_stepper.order()) -
-      time_stepper.number_of_past_steps();
-  return TimeSteppers::DeviceHistory<>{starting_order, number_of_values,
-                                       number_of_elements()};
-}
-
-void PatchElements::update_geometry(
+void FdPatchElements::update_geometry(
     const Kokkos::DefaultExecutionSpace& exec, const double time,
     const domain::FunctionsOfTimeMap& functions_of_time) {
-  if (geometry_computed_ and not mesh_is_moving_) {
+  if (geometry_computed_ and not mesh_is_moving()) {
     return;
   }
   const Kokkos::Profiling::ScopedRegion region{
-      "fd_patch::PatchElements::update_geometry"};
+      "fd_patch::FdPatchElements::update_geometry"};
   // The maps of the blocks for device kernels
-  bool all_affine = true;
-  for (size_t map = 0; map < grid_to_inertial_maps_.size(); ++map) {
-    host_device_map_table_(map) =
-        device_grid_to_inertial(*grid_to_inertial_maps_[map], time,
-                                functions_of_time, map_corners_[map]);
-    all_affine = all_affine and host_device_map_table_(map).is_affine();
-  }
+  const bool all_affine = update_device_maps(exec, time, functions_of_time);
   if (all_affine) {
-    std::vector<AffineGridToInertial> maps(grid_to_inertial_maps_.size());
+    std::vector<evolution::patches::AffineGridToInertial> maps(
+        number_of_maps());
     for (size_t map = 0; map < maps.size(); ++map) {
-      maps[map] = affine_grid_to_inertial(*grid_to_inertial_maps_[map], time,
-                                          functions_of_time, map_corners_[map]);
+      maps[map] = evolution::patches::affine_grid_to_inertial(
+          this->map(map), time, functions_of_time, map_corners(map));
     }
-    const size_t number_of_elements = element_ids_.size();
+    const size_t number_of_elements = this->number_of_elements();
     for (size_t slot = 0; slot < number_of_elements; ++slot) {
-      const AffineGridToInertial& map = maps[map_of_slot_[slot]];
+      const evolution::patches::AffineGridToInertial& map =
+          maps[map_of_slot(slot)];
       for (size_t d = 0; d < 3; ++d) {
         host_grid_to_inertial_(d * number_of_elements + slot) = map;
       }
@@ -281,24 +177,14 @@ void PatchElements::update_geometry(
                                 logical_to_grid_, grid_to_inertial_);
   } else if (not compute_cell_geometry_) {
     ERROR("The grid to inertial map of an element of FD patch "
-          << patch_
+          << patch()
           << " isn't affine. Only patches that compute the cell geometry (e.g. "
              "of systems that evolve the spacetime) support such maps.");
   }
   if (compute_cell_geometry_) {
-    Kokkos::deep_copy(exec, device_map_table_, host_device_map_table_);
-    const auto table = device_map_table_;
-    const auto map_of_slot = device_map_of_slot_;
-    const auto device_maps = device_maps_;
-    Kokkos::parallel_for(
-        "fd_patch::PatchElements gather maps",
-        Kokkos::RangePolicy<>(exec, 0, device_maps.extent(0)),
-        KOKKOS_LAMBDA(const size_t slot) {
-          device_maps(slot) = table(map_of_slot(slot));
-        });
     time_dependent_geometry_.compute_cells(
         exec, make_not_null(&cell_inertial_geometry_),
-        make_not_null(&cell_mesh_velocity_), logical_to_grid_, device_maps_);
+        make_not_null(&cell_mesh_velocity_), logical_to_grid_, device_maps());
     if (not all_affine) {
       time_dependent_geometry_.compute_faces(exec,
                                              make_not_null(&face_geometry_));
@@ -307,51 +193,51 @@ void PatchElements::update_geometry(
   geometry_computed_ = true;
 }
 
-void PatchElements::fill_ghost_zones(
+void FdPatchElements::fill_ghost_zones(
     const Kokkos::DefaultExecutionSpace& exec,
     const Kokkos::View<const double*>& ghost_variables) {
   ghost_zones_.fill_from_patch(exec, padded_ghost_variables_, ghost_variables);
 }
 
-void PatchElements::enqueue_boundary_data(
+void FdPatchElements::enqueue_boundary_data(
     const Kokkos::DefaultExecutionSpace& exec,
     const Kokkos::View<const double*>& ghost_variables) {
   const Kokkos::Profiling::ScopedRegion region{
-      "fd_patch::PatchElements::enqueue_boundary_data"};
+      "fd_patch::FdPatchElements::enqueue_boundary_data"};
   ghost_zones_.slice_for_external(exec, send_data_, ghost_variables);
   Kokkos::deep_copy(exec, host_send_data_, send_data_);
 }
 
-std::vector<OutgoingBoundaryData<3>> PatchElements::boundary_data_to_send(
+std::vector<OutgoingBoundaryData<3>> FdPatchElements::boundary_data_to_send(
     const std::vector<RdmpTciData>& rdmp_tci_data,
     const TimeStepId& next_time_step_id, const int tci_status,
     const size_t integration_order) const {
   const Kokkos::Profiling::ScopedRegion region{
-      "fd_patch::PatchElements::boundary_data_to_send"};
+      "fd_patch::FdPatchElements::boundary_data_to_send"};
   return pack_boundary_data(
       ghost_zones_,
       gsl::span<const double>{host_send_data_.data(), host_send_data_.size()},
-      element_ids_, dg_mesh_, rdmp_tci_data, next_time_step_id, tci_status,
+      element_ids(), dg_mesh(), rdmp_tci_data, next_time_step_id, tci_status,
       integration_order);
 }
 
-std::vector<OutgoingInitialRdmpData<3>> PatchElements::initial_rdmp_data(
+std::vector<OutgoingInitialRdmpData<3>> FdPatchElements::initial_rdmp_data(
     const std::vector<RdmpTciData>& rdmp_tci_data) const {
-  return initial_rdmp_data_for_dg_neighbors(ghost_zones_, element_ids_,
+  return initial_rdmp_data_for_dg_neighbors(ghost_zones_, element_ids(),
                                             rdmp_tci_data);
 }
 
-size_t PatchElements::number_of_dg_faces() const {
+size_t FdPatchElements::number_of_dg_faces() const {
   return fd_patch::number_of_dg_faces(ghost_zones_);
 }
 
-bool PatchElements::received_all(
+bool FdPatchElements::received_all(
     const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
         messages) const {
-  return received_all_boundary_data(ghost_zones_, element_ids_, messages);
+  return received_all_boundary_data(ghost_zones_, element_ids(), messages);
 }
 
-void PatchElements::receive(
+void FdPatchElements::receive(
     const Kokkos::DefaultExecutionSpace& exec,
     const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
         messages,
@@ -360,13 +246,13 @@ void PatchElements::receive(
     return;
   }
   const Kokkos::Profiling::ScopedRegion region{
-      "fd_patch::PatchElements::receive"};
+      "fd_patch::FdPatchElements::receive"};
   const auto& host_ghost_data = host_received_ghost_data_;
   const auto& host_mortar_data = host_received_mortar_data_;
   unpack_boundary_data(
       gsl::span<double>{host_ghost_data.data(), host_ghost_data.size()},
       gsl::span<double>{host_mortar_data.data(), host_mortar_data.size()},
-      ghost_zones_, packaged_data_from_dg_, element_ids_, messages,
+      ghost_zones_, packaged_data_from_dg_, element_ids(), messages,
       number_of_rdmp_values);
   Kokkos::deep_copy(exec, received_ghost_data_, host_ghost_data);
   Kokkos::deep_copy(exec, received_mortar_data_, host_mortar_data);

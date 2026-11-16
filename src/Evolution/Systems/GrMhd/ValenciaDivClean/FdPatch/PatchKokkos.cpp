@@ -143,7 +143,7 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
   }
 
   using ghost_tags = subcell::PrimitiveGhostVariables::ghost_variables_tag_list;
-  patch_elements_ = patch_ns::PatchElements{
+  patch_elements_ = patch_ns::FdPatchElements{
       exec,
       domain,
       patch_table,

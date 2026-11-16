@@ -12,11 +12,11 @@ spectre_target_headers(
   ActionsKokkos.hpp
   BoundaryMessagesKokkos.hpp
   ElementBox.hpp
+  FdPatchElementsKokkos.hpp
   GeometryKokkos.hpp
   GhostZonesKokkos.hpp
   InboxTags.hpp
   PackagedDataFromDgKokkos.hpp
-  PatchElementsKokkos.hpp
   PatchTable.hpp
   )
 
@@ -24,10 +24,10 @@ spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   BoundaryMessagesKokkos.cpp
+  FdPatchElementsKokkos.cpp
   GeometryKokkos.cpp
   GhostZonesKokkos.cpp
   PackagedDataFromDgKokkos.cpp
-  PatchElementsKokkos.cpp
   PatchTable.cpp
   )
 

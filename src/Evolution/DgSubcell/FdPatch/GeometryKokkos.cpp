@@ -127,26 +127,47 @@ LogicalToGrid logical_to_grid(
       number_of_point_elements};
   LogicalToGrid result{};
   result.corners = tnsr::I<DataVector, 3, Frame::Grid>{8 * number_of_elements};
+  result.host_cells =
+      BatchedVariables<host_logical_to_grid_cell_tags, Kokkos::HostSpace>{
+          Kokkos::DefaultHostExecutionSpace{},
+          subcell_mesh.number_of_grid_points(), number_of_elements};
 
   const auto dg_logical_coords = logical_coordinates(dg_mesh);
   const auto cell_logical_coords = logical_coordinates(subcell_mesh);
   for (size_t e = 0; e < number_of_elements; ++e) {
     const auto& element_map = element_maps[e];
-    // As `fd::Tags::DetInverseJacobianLogicalToGridCompute`
+    // As the subcell compute tags `domain::Tags::MappedCoordinates`,
+    // `fd::Tags::InverseJacobianLogicalToGridCompute` and
+    // `fd::Tags::DetInverseJacobianLogicalToGridCompute` of an element
+    Variables<host_logical_to_grid_cell_tags> host_element_cells{};
+    set_data_ref_to_element(make_not_null(&host_element_cells),
+                            result.host_cells, e);
+    auto& cell_grid_coords =
+        get<evolution::dg::subcell::Tags::Coordinates<3, Frame::Grid>>(
+            host_element_cells);
+    auto& cell_inv_jacobian =
+        get<evolution::dg::subcell::fd::Tags::InverseJacobianLogicalToGrid<3>>(
+            host_element_cells);
+    auto& cell_det_inv_jacobian =
+        get<evolution::dg::subcell::fd::Tags::DetInverseJacobianLogicalToGrid>(
+            host_element_cells);
+    cell_grid_coords = element_map(cell_logical_coords);
+    cell_inv_jacobian = element_map.inv_jacobian(cell_logical_coords);
+    cell_det_inv_jacobian = determinant(cell_inv_jacobian);
     Variables<logical_to_grid_cell_tags> cells{};
     set_data_ref_to_element(make_not_null(&cells), host_cells, e);
     get<Tags::LogicalToGridCellDetInverseJacobian>(cells) =
-        determinant(element_map.inv_jacobian(cell_logical_coords));
+        cell_det_inv_jacobian;
 
-    // As the subcell and domain compute tags
+    // As the domain compute tags
     if (with_evaluation_points) {
       Variables<PointTags> cell_points{};
       set_data_ref_to_element(make_not_null(&cell_points), host_cell_points, e);
       get<::domain::Tags::Coordinates<3, Frame::Grid>>(cell_points) =
-          element_map(cell_logical_coords);
+          cell_grid_coords;
       get<::domain::Tags::InverseJacobian<3, Frame::ElementLogical,
                                           Frame::Grid>>(cell_points) =
-          element_map.inv_jacobian(cell_logical_coords);
+          cell_inv_jacobian;
       Variables<PointTags> dg_points{};
       set_data_ref_to_element(make_not_null(&dg_points), host_dg_points, e);
       get<::domain::Tags::Coordinates<3, Frame::Grid>>(dg_points) =

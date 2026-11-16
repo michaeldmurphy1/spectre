@@ -122,6 +122,12 @@ class PatchElements {
   /// Whether the mesh of any element of the patch moves
   bool mesh_is_moving() const { return mesh_is_moving_; }
 
+  /// The time-independent geometry at the cell centers of the element in
+  /// `slot` on the host (see `LogicalToGrid::host_cells`), referring to the
+  /// memory of the patch without copying it. It must not be modified.
+  Variables<host_logical_to_grid_cell_tags> host_cell_geometry(
+      size_t slot) const;
+
   /// A description of the element in `slot` for error messages
   std::string element_description(size_t slot) const;
 

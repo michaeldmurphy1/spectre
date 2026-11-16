@@ -135,12 +135,23 @@ FdPatchElements::FdPatchElements(
   update_geometry(exec, time, functions_of_time);
 }
 
+Variables<host_logical_to_grid_cell_tags> FdPatchElements::host_cell_geometry(
+    const size_t slot) const {
+  // A copy of the handle to the same memory, which the result refers to
+  auto host_cells = logical_to_grid_.host_cells;
+  Variables<host_logical_to_grid_cell_tags> result{};
+  set_data_ref_to_element(make_not_null(&result), host_cells, slot);
+  return result;
+}
+
 void FdPatchElements::update_geometry(
     const Kokkos::DefaultExecutionSpace& exec, const double time,
     const domain::FunctionsOfTimeMap& functions_of_time) {
   if (geometry_computed_ and not mesh_is_moving()) {
     return;
   }
+  const Kokkos::Profiling::ScopedRegion region{
+      "fd_patch::FdPatchElements::update_geometry"};
   // The maps of the blocks for device kernels
   const bool all_affine = update_device_maps(exec, time, functions_of_time);
   if (all_affine) {

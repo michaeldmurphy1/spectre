@@ -105,6 +105,12 @@ class FdPatchElements : public evolution::patches::PatchElements {
   /// The subcell mesh of the elements
   const Mesh<3>& subcell_mesh() const { return subcell_mesh_; }
 
+  /// The time-independent geometry at the cell centers of the element in
+  /// `slot` on the host (see `LogicalToGrid::host_cells`), referring to the
+  /// memory of the patch without copying it. It must not be modified.
+  Variables<host_logical_to_grid_cell_tags> host_cell_geometry(
+      size_t slot) const;
+
   /*!
    * \brief Update the geometry to the `time`. Only needed if the mesh moves.
    *

@@ -208,6 +208,15 @@ PatchElements::grid_to_inertial_map(const size_t slot) const {
   return *grid_to_inertial_maps_.at(map_of_slot_.at(slot));
 }
 
+Variables<host_logical_to_grid_cell_tags> PatchElements::host_cell_geometry(
+    const size_t slot) const {
+  // A copy of the handle to the same memory, which the result refers to
+  auto host_cells = logical_to_grid_.host_cells;
+  Variables<host_logical_to_grid_cell_tags> result{};
+  set_data_ref_to_element(make_not_null(&result), host_cells, slot);
+  return result;
+}
+
 std::string PatchElements::element_description(const size_t slot) const {
   std::ostringstream description{};
   description << "element " << element_ids_.at(slot) << " of FD patch "
@@ -241,6 +250,8 @@ void PatchElements::update_geometry(
   if (geometry_computed_ and not mesh_is_moving_) {
     return;
   }
+  const Kokkos::Profiling::ScopedRegion region{
+      "fd_patch::PatchElements::update_geometry"};
   // The maps of the blocks for device kernels
   bool all_affine = true;
   for (size_t map = 0; map < grid_to_inertial_maps_.size(); ++map) {

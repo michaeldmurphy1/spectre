@@ -474,6 +474,7 @@ void for_each_element_box(const db::DataBox<DbTagsList>& box,
         db::get<::Tags::Time>(box), db::get<::Tags::TimeStepId>(box),
         db::get<::Tags::TimeStep>(box),
         std::decay_t<decltype(patch)>::tci_status_sent,
+        patch_elements.host_cell_geometry(slot),
         std::move(variables[slot].evolved),
         std::move(variables[slot].primitives),
         std::move(variables[slot].spacetime));

@@ -21,6 +21,8 @@
 #include "DataStructures/Tags/TempTensor.hpp"
 #include "Domain/CoordinateMaps/DeviceMap.hpp"
 #include "Domain/InertialGeometryKokkos.hpp"
+#include "Evolution/DgSubcell/Tags/Coordinates.hpp"
+#include "Evolution/DgSubcell/Tags/Jacobians.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 
 /// \cond
@@ -105,6 +107,13 @@ using logical_to_grid_face_tags =
 /// The time-independent geometry at the cell centers of a patch
 using logical_to_grid_cell_tags =
     tmpl::list<Tags::LogicalToGridCellDetInverseJacobian>;
+/// The time-independent geometry at the cell centers of the elements of a
+/// patch on the host, as the subcell compute tags of an element compute it
+/// (see `make_element_box`)
+using host_logical_to_grid_cell_tags = tmpl::list<
+    evolution::dg::subcell::Tags::Coordinates<3, Frame::Grid>,
+    evolution::dg::subcell::fd::Tags::InverseJacobianLogicalToGrid<3>,
+    evolution::dg::subcell::fd::Tags::DetInverseJacobianLogicalToGrid>;
 /// The geometry on the faces of a patch at a time
 using inertial_face_tags =
     tmpl::list<Tags::FaceConormal, Tags::FaceDetInverseJacobian,
@@ -142,6 +151,11 @@ struct LogicalToGrid {
   /// evaluated (see `TimeDependentGeometry`). Empty if not requested.
   BatchedVariables<::domain::logical_to_grid_geometry_tags<3>> cell_points{};
   BatchedVariables<::domain::logical_to_grid_geometry_tags<3>> dg_points{};
+  /// The same geometry at the cell centers on the host, as the subcell compute
+  /// tags of an element compute it, so the DataBoxes of the elements for
+  /// events don't have to compute it again (see `make_element_box`)
+  BatchedVariables<host_logical_to_grid_cell_tags, Kokkos::HostSpace>
+      host_cells{};
   /// The grid coordinates of the corners of all elements on the host, e.g. to
   /// check where a grid to inertial map is affine.
   tnsr::I<DataVector, 3, Frame::Grid> corners{};
@@ -153,7 +167,8 @@ struct LogicalToGrid {
  * device on `exec`.
  *
  * The `LogicalToGrid::cell_points` and `LogicalToGrid::dg_points` are only
- * computed `with_evaluation_points`.
+ * computed `with_evaluation_points`. The `LogicalToGrid::host_cells` are
+ * always computed.
  */
 LogicalToGrid logical_to_grid(
     const Kokkos::DefaultExecutionSpace& exec,

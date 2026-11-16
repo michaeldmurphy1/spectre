@@ -17,6 +17,7 @@ spectre_target_sources(
   SphericalShellPowerMonitor.cpp
   TensorYlmTransforms.cpp
   TimeDerivative.cpp
+  TimeDerivativeKokkos.cpp
   )
 
 spectre_target_headers(
@@ -37,6 +38,7 @@ spectre_target_headers(
   TagsDeclarations.hpp
   TensorYlmTransforms.hpp
   TimeDerivative.hpp
+  TimeDerivativeKokkos.hpp
   TimeDerivative.tpp
   )
 

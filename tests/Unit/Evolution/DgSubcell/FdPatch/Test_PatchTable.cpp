@@ -24,9 +24,9 @@
 #include "Domain/Structure/InitialElementIds.hpp"
 #include "Domain/Structure/SegmentId.hpp"
 #include "Domain/Structure/ZCurve.hpp"
-#include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
-#include "Evolution/DgSubcell/FdPatch/Tags.hpp"
+#include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/DgSubcell/SubcellAllowed.hpp"
+#include "Evolution/Patches/PatchTable.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/DataBox/TestHelpers.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
@@ -35,13 +35,14 @@
 #include "Utilities/Literals.hpp"
 
 namespace {
-using evolution::dg::subcell::fd_patch::FdPatches;
+using evolution::dg::subcell::fd_patch::patch_table;
 
 // Every element of the domain is in a patch exactly when it starts on the
 // subcell grid, and its location matches its position in the patch.
 template <size_t Dim>
 void check_consistency(
-    const FdPatches<Dim>& patches, const Domain<Dim>& domain,
+    const evolution::patches::PatchTable<Dim>& patches,
+    const Domain<Dim>& domain,
     const std::vector<std::array<size_t, Dim>>& initial_refinement_levels,
     const std::vector<std::array<size_t, Dim>>& initial_extents,
     const std::vector<size_t>& only_dg_block_ids,
@@ -67,7 +68,7 @@ void check_consistency(
     }
   }
   CHECK(patches.number_of_elements() == number_of_fd_elements);
-  CHECK(patches.number_of_dg_elements() ==
+  CHECK(patches.number_of_elements_outside_patches() ==
         initial_element_ids(initial_refinement_levels).size() -
             number_of_fd_elements);
   for (size_t patch = 0; patch < patches.number_of_patches(); ++patch) {
@@ -93,10 +94,9 @@ void test_dg_only_surrounding_blocks() {
   const std::vector<std::array<size_t, 2>> refinement(9, {{2, 2}});
   const std::vector<std::array<size_t, 2>> extents(9, {{5, 5}});
   const std::vector<size_t> only_dg_block_ids{0, 1, 2, 3, 5, 6, 7, 8};
-  const FdPatches<2> patches{
-      domain.blocks(),   refinement,
-      extents,           Spectral::Quadrature::GaussLobatto,
-      only_dg_block_ids, true};
+  const auto patches = patch_table<2>(domain.blocks(), refinement, extents,
+                                      Spectral::Quadrature::GaussLobatto,
+                                      only_dg_block_ids, true);
   REQUIRE(patches.number_of_patches() == 1);
   CHECK(patches.dg_mesh(0) == Mesh<2>{5, Spectral::Basis::Legendre,
                                       Spectral::Quadrature::GaussLobatto});
@@ -108,7 +108,7 @@ void test_dg_only_surrounding_blocks() {
   CHECK(patches.element_ids(0) == expected_element_ids);
   for (size_t slot = 0; slot < expected_element_ids.size(); ++slot) {
     CHECK(patches.location(expected_element_ids[slot]) ==
-          FdPatches<2>::Location{0, slot});
+          evolution::patches::PatchTable<2>::Location{0, slot});
   }
   CHECK_FALSE(
       patches.location(ElementId<2>{4, {{SegmentId{2, 0}, SegmentId{2, 1}}}})
@@ -130,12 +130,9 @@ void test_external_boundary() {
   const std::vector<std::array<size_t, 2>> extents(9, {{4, 4}});
   for (const bool enabled_at_external_boundary : {true, false}) {
     CAPTURE(enabled_at_external_boundary);
-    const FdPatches<2> patches{domain.blocks(),
-                               refinement,
-                               extents,
-                               Spectral::Quadrature::GaussLobatto,
-                               {},
-                               enabled_at_external_boundary};
+    const auto patches = patch_table<2>(domain.blocks(), refinement, extents,
+                                        Spectral::Quadrature::GaussLobatto, {},
+                                        enabled_at_external_boundary);
     // All FD elements in one patch, across the blocks
     CHECK(patches.number_of_patches() == 1);
     // 4 elements per block. Without subcell at the external boundary, corner
@@ -155,10 +152,9 @@ void test_block_without_fd_elements() {
   const std::vector<std::array<size_t, 1>> refinement(3, {{0}});
   const std::vector<std::array<size_t, 1>> extents(3, {{5}});
   const std::vector<size_t> only_dg_block_ids{0, 2};
-  const FdPatches<1> patches{
-      domain.blocks(),   refinement,
-      extents,           Spectral::Quadrature::GaussLobatto,
-      only_dg_block_ids, true};
+  const auto patches = patch_table<1>(domain.blocks(), refinement, extents,
+                                      Spectral::Quadrature::GaussLobatto,
+                                      only_dg_block_ids, true);
   CHECK(patches.number_of_patches() == 0);
   CHECK(patches.number_of_elements() == 0);
   check_consistency(patches, domain, refinement, extents, only_dg_block_ids,
@@ -191,13 +187,9 @@ void test_split_blocks() {
   for (const size_t max_elements :
        {1_st, 3_st, 4_st, 5_st, 7_st, 16_st, 24_st, 100_st}) {
     CAPTURE(max_elements);
-    const FdPatches<2> patches{domain.blocks(),
-                               refinement,
-                               extents,
-                               Spectral::Quadrature::GaussLobatto,
-                               {},
-                               true,
-                               max_elements};
+    const auto patches = patch_table<2>(domain.blocks(), refinement, extents,
+                                        Spectral::Quadrature::GaussLobatto, {},
+                                        true, max_elements);
     check_consistency(patches, domain, refinement, extents, {}, true);
     const size_t expected_number_of_patches =
         (number_of_elements + max_elements - 1) / max_elements;
@@ -226,13 +218,9 @@ void test_split_blocks() {
   }
   // Block 0 in 2 x 2 quadrants of 4 elements each, and block 1 (a column of 4
   // elements, conforming to block 0) in one patch
-  const FdPatches<2> quadrants{domain.blocks(),
-                               {{{2, 2}}, {{0, 2}}},
-                               extents,
-                               Spectral::Quadrature::GaussLobatto,
-                               {},
-                               true,
-                               4};
+  const auto quadrants =
+      patch_table<2>(domain.blocks(), {{{2, 2}}, {{0, 2}}}, extents,
+                     Spectral::Quadrature::GaussLobatto, {}, true, 4);
   REQUIRE(quadrants.number_of_patches() == 5);
   CHECK(quadrants.element_ids(0) ==
         std::vector<ElementId<2>>{
@@ -247,27 +235,18 @@ void test_split_blocks() {
             ElementId<2>{1, {{SegmentId{0, 0}, SegmentId{2, 2}}}},
             ElementId<2>{1, {{SegmentId{0, 0}, SegmentId{2, 3}}}}});
   // A patch across the blocks: the last quadrant of block 0 and block 1
-  const FdPatches<2> across{domain.blocks(),
-                            {{{2, 2}}, {{0, 2}}},
-                            extents,
-                            Spectral::Quadrature::GaussLobatto,
-                            {},
-                            true,
-                            10};
+  const auto across =
+      patch_table<2>(domain.blocks(), {{{2, 2}}, {{0, 2}}}, extents,
+                     Spectral::Quadrature::GaussLobatto, {}, true, 10);
   REQUIRE(across.number_of_patches() == 2);
   CHECK(across.element_ids(1).size() == 10);
   CHECK(across.element_ids(1).front().block_id() == 0);
   CHECK(across.element_ids(1).back().block_id() == 1);
   CHECK_THROWS_WITH(
-      (FdPatches<2>{domain.blocks(),
-                    refinement,
-                    extents,
-                    Spectral::Quadrature::GaussLobatto,
-                    {},
-                    true,
-                    0}),
+      (patch_table<2>(domain.blocks(), refinement, extents,
+                      Spectral::Quadrature::GaussLobatto, {}, true, 0)),
       Catch::Matchers::ContainsSubstring(
-          "The maximum number of elements per FD patch must be positive"));
+          "The maximum number of elements per patch must be positive"));
 }
 
 // Elements with different DG meshes are in different patches, numbered by
@@ -279,13 +258,9 @@ void test_different_meshes() {
   const std::vector<std::array<size_t, 1>> extents{{{5}}, {{6}}, {{5}}};
   for (const std::optional<size_t> max_elements :
        {std::optional<size_t>{}, std::optional<size_t>{3}}) {
-    const FdPatches<1> patches{domain.blocks(),
-                               refinement,
-                               extents,
-                               Spectral::Quadrature::GaussLobatto,
-                               {},
-                               true,
-                               max_elements};
+    const auto patches = patch_table<1>(domain.blocks(), refinement, extents,
+                                        Spectral::Quadrature::GaussLobatto, {},
+                                        true, max_elements);
     check_consistency(patches, domain, refinement, extents, {}, true);
     const Mesh<1> mesh_5{5, Spectral::Basis::Legendre,
                          Spectral::Quadrature::GaussLobatto};
@@ -309,21 +284,6 @@ void test_different_meshes() {
   }
 }
 
-void test_patch_procs() {
-  using evolution::dg::subcell::fd_patch::patch_procs;
-  CHECK(patch_procs(0, {}).empty());
-  // One node: round-robin over its processors
-  CHECK(patch_procs(5, {{0, 1, 2}}) == std::vector<size_t>{0, 1, 2, 0, 1});
-  // Two nodes (e.g. one per GPU): first over the nodes
-  CHECK(patch_procs(4, {{0, 1, 2}, {3, 4, 5}}) ==
-        std::vector<size_t>{0, 3, 1, 4});
-  // Nodes without usable processors are skipped
-  CHECK(patch_procs(4, {{}, {3, 5}, {7}}) == std::vector<size_t>{3, 7, 5, 7});
-  CHECK_THROWS_WITH(patch_procs(1, {{}, {}}),
-                    Catch::Matchers::ContainsSubstring(
-                        "No processor may hold the 1 FD patches"));
-}
-
 template <bool EnabledAtExternalBoundary>
 struct Metavariables {
   struct SubcellOptions {
@@ -334,13 +294,13 @@ struct Metavariables {
 
 void test_tag() {
   TestHelpers::db::test_simple_tag<
-      evolution::dg::subcell::fd_patch::Tags::FdPatches<1>>("FdPatches");
+      evolution::dg::subcell::fd_patch::Tags::PatchTable<1>>("PatchTable");
   const auto make_interval = [](const bool periodic) {
     return std::make_unique<domain::creators::Interval>(
         std::array{0.0}, std::array{1.0}, std::array{size_t{2}},
         std::array{size_t{5}}, std::array{periodic});
   };
-  using tag = evolution::dg::subcell::fd_patch::Tags::FdPatches<1>;
+  using tag = evolution::dg::subcell::fd_patch::Tags::PatchTable<1>;
   // Periodic: no external boundaries, so all 4 elements are FD.
   CHECK(tag::create_from_options<Metavariables<false>>(
             make_interval(true), std::nullopt,
@@ -360,7 +320,7 @@ void test_tag() {
             make_interval(false), std::nullopt,
             Spectral::Quadrature::GaussLobatto, 3, false)
             .number_of_patches() == 2);
-  // The DG elements may avoid the processors of the patches
+  // The other elements may avoid the processors of the patches
   CHECK_FALSE(tag::create_from_options<Metavariables<true>>(
                   make_interval(false), std::nullopt,
                   Spectral::Quadrature::GaussLobatto, std::nullopt, false)
@@ -377,13 +337,12 @@ void test_tag() {
 }
 }  // namespace
 
-SPECTRE_TEST_CASE("Unit.Evolution.Subcell.FdPatch.FdPatches",
+SPECTRE_TEST_CASE("Unit.Evolution.Subcell.FdPatch.PatchTable",
                   "[Evolution][Unit]") {
   test_dg_only_surrounding_blocks();
   test_external_boundary();
   test_block_without_fd_elements();
   test_split_blocks();
   test_different_meshes();
-  test_patch_procs();
   test_tag();
 }

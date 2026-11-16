@@ -26,6 +26,7 @@ set(LIBS_TO_LINK
   Options
   Parallel
   ParallelInterpolation
+  Patches
   PhaseControl
   Serialization
   Time

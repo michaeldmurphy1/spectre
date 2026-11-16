@@ -11,8 +11,7 @@
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
-#include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
-#include "Evolution/DgSubcell/FdPatch/Tags.hpp"
+#include "Evolution/Patches/PatchTable.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Parallel/Invoke.hpp"
 #include "Parallel/Reduction.hpp"
@@ -21,7 +20,7 @@
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
 
-namespace evolution::dg::subcell::fd_patch {
+namespace evolution::patches {
 namespace Tags {
 /// The slab size requests that the `CombineSlabSizes` action of the first
 /// patch has received for each slab, and from how many parallel components
@@ -33,7 +32,7 @@ struct PendingSlabSizeRequests : db::SimpleTag {
 namespace Actions {
 /*!
  * \brief Combine the slab size requests that the `DgElementArray` and the
- * `FdPatchArray` reduced over their elements for `Events::ChangeSlabSize`,
+ * `PatchArray` reduced over their elements for `Events::ChangeSlabSize`,
  * and send the result to both, as the reduction over a single component
  * does.
  *
@@ -49,8 +48,8 @@ struct CombineSlabSizes {
                     const ArrayIndex& /*array_index*/, const int64_t slab,
                     const TimeStepRequestProcessor& requests) {
     const bool dg_contributes =
-        Parallel::get<Tags::FdPatches<Metavariables::volume_dim>>(cache)
-            .number_of_dg_elements() > 0;
+        Parallel::get<typename Metavariables::patch_table_tag>(cache)
+            .number_of_elements_outside_patches() > 0;
     const size_t expected = dg_contributes ? 2 : 1;
     std::optional<TimeStepRequestProcessor> combined{};
     db::mutate<Tags::PendingSlabSizeRequests>(
@@ -86,11 +85,11 @@ struct CombineSlabSizes {
 }  // namespace Actions
 
 /*!
- * \brief The `Metavariables::slab_size_reduction` of executables with FD
- * patches (see `Events::ChangeSlabSize`).
+ * \brief The `Metavariables::slab_size_reduction` of executables with patches
+ * (see `Events::ChangeSlabSize`).
  *
  * \details The elements of the `DgElementArray` and the patches of the
- * `FdPatchArray` each reduce their slab size requests to the first patch,
+ * `PatchArray` each reduce their slab size requests to the first patch,
  * which combines them (see `Actions::CombineSlabSizes`). Without patches, the
  * elements reduce as if this weren't set.
  */
@@ -102,7 +101,7 @@ struct SlabSizeReduction {
       Parallel::GlobalCache<Metavariables>& cache,
       const SenderProxy& sender_proxy,
       ::Events::ChangeSlabSize::ReductionData reduction_data) {
-    if (Parallel::get<Tags::FdPatches<Metavariables::volume_dim>>(cache)
+    if (Parallel::get<typename Metavariables::patch_table_tag>(cache)
             .number_of_patches() == 0) {
       Parallel::contribute_to_reduction<
           ::Events::ChangeSlabSize_detail::StoreNewSlabSize>(
@@ -116,4 +115,4 @@ struct SlabSizeReduction {
     }
   }
 };
-}  // namespace evolution::dg::subcell::fd_patch
+}  // namespace evolution::patches

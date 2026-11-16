@@ -22,9 +22,9 @@
 #include "Evolution/DgSubcell/FdPatch/BoundaryMessagesKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/GeometryKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/GhostZonesKokkos.hpp"
-#include "Evolution/DgSubcell/FdPatch/InboxTags.hpp"
 #include "Evolution/DgSubcell/FdPatch/PackagedDataFromDgKokkos.hpp"
 #include "Evolution/DgSubcell/RdmpTciData.hpp"
+#include "Evolution/Patches/InboxTags.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Time/DeviceHistoryKokkos.hpp"
@@ -41,10 +41,10 @@ namespace domain {
 template <typename SourceFrame, typename TargetFrame, size_t Dim>
 class CoordinateMapBase;
 }  // namespace domain
-namespace evolution::dg::subcell::fd_patch {
+namespace evolution::patches {
 template <size_t Dim>
-class FdPatches;
-}  // namespace evolution::dg::subcell::fd_patch
+class PatchTable;
+}  // namespace evolution::patches
 /// \endcond
 
 namespace evolution::dg::subcell::fd_patch {
@@ -76,7 +76,7 @@ class PatchElements {
   ~PatchElements() = default;
 
   /*!
-   * \brief Set up the elements of the patch `patch` of `fd_patches`.
+   * \brief Set up the elements of the patch `patch` of `patch_table`.
    *
    * This builds the elements and their maps (the grid to inertial map of an
    * element is the moving mesh map of its block, or the identity), checks that
@@ -94,9 +94,9 @@ class PatchElements {
    */
   PatchElements(
       const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
-      const FdPatches<3>& fd_patches, size_t patch,
+      const evolution::patches::PatchTable<3>& patch_table, size_t patch,
       const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
-      double time, const domain::FunctionsOfTimeMap& functions_of_time,
+      double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
       size_t ghost_width, size_t number_of_ghost_variables,
       size_t number_of_packaged_variables, bool compute_cell_geometry = false);
 
@@ -116,7 +116,7 @@ class PatchElements {
   const Mesh<3>& subcell_mesh() const { return subcell_mesh_; }
 
   /// The map from the grid to the inertial frame of the element in `slot`
-  const domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
+  const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&
   grid_to_inertial_map(size_t slot) const;
 
   /// Whether the mesh of any element of the patch moves
@@ -151,7 +151,7 @@ class PatchElements {
    * does once per substep).
    */
   void update_geometry(const Kokkos::DefaultExecutionSpace& exec, double time,
-                       const domain::FunctionsOfTimeMap& functions_of_time);
+                       const ::domain::FunctionsOfTimeMap& functions_of_time);
 
   /// @{
   /// The geometry at the last `update_geometry()`
@@ -215,7 +215,8 @@ class PatchElements {
 
   /// Whether `messages` hold all the data the patch receives in a substep
   bool received_all(
-      const Tags::BoundaryDataInbox<3>::messages_type& messages) const;
+      const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
+          messages) const;
 
   /// Fill the ghost zones from the received boundary data, whose ghost data
   /// ends with `number_of_rdmp_values` RDMP values, and keep the data from DG
@@ -224,9 +225,11 @@ class PatchElements {
   /// enqueued; their host buffers are reused in the next `receive()`, so the
   /// boundary data of the next substep must be sent (which waits for the
   /// device) before then.
-  void receive(const Kokkos::DefaultExecutionSpace& exec,
-               const Tags::BoundaryDataInbox<3>::messages_type& messages,
-               size_t number_of_rdmp_values);
+  void receive(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
+          messages,
+      size_t number_of_rdmp_values);
 
   /// The ghost variables of the elements padded with their ghost zones
   const ::fd::device::VolumeView& padded_ghost_variables() const {
@@ -254,7 +257,7 @@ class PatchElements {
   // slot, and the grid coordinates of the corners of the elements of each map,
   // where it must be affine
   std::vector<std::unique_ptr<
-      domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>>>
+      ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>>>
       grid_to_inertial_maps_{};
   std::vector<size_t> map_of_slot_{};
   std::vector<tnsr::I<DataVector, 3, Frame::Grid>> map_corners_{};

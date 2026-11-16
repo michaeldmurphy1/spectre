@@ -22,13 +22,14 @@
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Evolution/DgSubcell/FdPatch/BoundaryMessagesKokkos.hpp"
-#include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/FdPatch/GhostZonesKokkos.hpp"
-#include "Evolution/DgSubcell/FdPatch/InboxTags.hpp"
 #include "Evolution/DgSubcell/FdPatch/PackagedDataFromDgKokkos.hpp"
+#include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/RdmpTciData.hpp"
 #include "Evolution/DiscontinuousGalerkin/BoundaryData.hpp"
+#include "Evolution/Patches/InboxTags.hpp"
+#include "Evolution/Patches/PatchTable.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
@@ -45,14 +46,14 @@
 namespace {
 namespace fd_patch = evolution::dg::subcell::fd_patch;
 using evolution::dg::subcell::RdmpTciData;
-using Inbox = fd_patch::Tags::BoundaryDataInbox<1>;
+using Inbox = evolution::patches::Tags::BoundaryDataInbox<1>;
 template <size_t Dim>
 using Interpolants =
     DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>;
 
 template <size_t Dim>
 std::vector<Element<Dim>> patch_elements(
-    const fd_patch::FdPatches<Dim>& patches, const size_t patch,
+    const evolution::patches::PatchTable<Dim>& patches, const size_t patch,
     const Domain<Dim>& domain,
     const std::vector<std::array<size_t, Dim>>& refinement) {
   std::vector<Element<Dim>> result{};
@@ -96,13 +97,9 @@ void test_exchange_between_patches() {
   const std::vector<std::array<size_t, 1>> refinement(3, {{1}});
   const std::vector<std::array<size_t, 1>> extents(3, {{4}});
   // One patch per block
-  const fd_patch::FdPatches<1> patches{domain.blocks(),
-                                       refinement,
-                                       extents,
-                                       Spectral::Quadrature::GaussLobatto,
-                                       {},
-                                       false,
-                                       2};
+  const auto patches = evolution::dg::subcell::fd_patch::patch_table<1>(
+      domain.blocks(), refinement, extents, Spectral::Quadrature::GaussLobatto,
+      {}, false, 2);
   REQUIRE(patches.number_of_patches() == 3);
   const Mesh<1>& dg_mesh = patches.dg_mesh(0);
   const Slab slab{0.0, 1.0};
@@ -258,12 +255,9 @@ void test_dg_neighbors(const gsl::not_null<std::mt19937*> generator) {
                           {{0.0, 1.0, 2.0, 3.0}, {0.0, 1.0, 2.0, 3.0}}});
   const std::vector<std::array<size_t, 2>> refinement(9, {{2, 2}});
   const std::vector<std::array<size_t, 2>> extents(9, {{5, 5}});
-  const fd_patch::FdPatches<2> patches{domain.blocks(),
-                                       refinement,
-                                       extents,
-                                       Spectral::Quadrature::GaussLobatto,
-                                       {0, 1, 2, 3, 5, 6, 7, 8},
-                                       true};
+  const auto patches = evolution::dg::subcell::fd_patch::patch_table<2>(
+      domain.blocks(), refinement, extents, Spectral::Quadrature::GaussLobatto,
+      {0, 1, 2, 3, 5, 6, 7, 8}, true);
   const auto elements = patch_elements(patches, 0, domain, refinement);
   const auto& element_ids = patches.element_ids(0);
   const Mesh<2>& dg_mesh = patches.dg_mesh(0);
@@ -288,7 +282,7 @@ void test_dg_neighbors(const gsl::not_null<std::mt19937*> generator) {
 
   // The messages of the DG neighbors, with random data
   std::uniform_real_distribution<double> dist(-1.0, 1.0);
-  fd_patch::Tags::BoundaryDataInbox<2>::type inbox{};
+  evolution::patches::Tags::BoundaryDataInbox<2>::type inbox{};
   std::vector<double> expected_ghost_data(ghost_zones.external_data_size());
   std::vector<double> expected_mortar_data(
       packaged_data_from_dg.received_data_size());
@@ -312,7 +306,7 @@ void test_dg_neighbors(const gsl::not_null<std::mt19937*> generator) {
                 &expected_ghost_data[face.data_offset]);
     std::copy_n(data.boundary_correction_data->begin(), mortar_face.data_size,
                 &expected_mortar_data[mortar_face.data_offset]);
-    fd_patch::Tags::BoundaryDataInbox<2>::insert_into_inbox(
+    evolution::patches::Tags::BoundaryDataInbox<2>::insert_into_inbox(
         make_not_null(&inbox), time_step_id,
         std::tuple{element_ids[face.slot],
                    DirectionalId<2>{face.direction, face.neighbor},

@@ -27,8 +27,6 @@
 #include "Domain/TagsTimeDependent.hpp"
 #include "Evolution/BoundaryCorrection.hpp"
 #include "Evolution/BoundaryCorrectionTags.hpp"
-#include "Evolution/DgSubcell/FdPatch/InboxTags.hpp"
-#include "Evolution/DgSubcell/FdPatch/SendToPatch.hpp"
 #include "Evolution/DiscontinuousGalerkin/Actions/BoundaryConditionsImpl.hpp"
 #include "Evolution/DiscontinuousGalerkin/Actions/ComputeTimeDerivativeHelpers.hpp"
 #include "Evolution/DiscontinuousGalerkin/Actions/InternalMortarDataImpl.hpp"
@@ -46,6 +44,8 @@
 #include "Evolution/DiscontinuousGalerkin/NormalVectorTags.hpp"
 #include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
 #include "Evolution/DiscontinuousGalerkin/UsingSubcell.hpp"
+#include "Evolution/Patches/InboxTags.hpp"
+#include "Evolution/Patches/SendToPatch.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/MortarHelpers.hpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Tags.hpp"
@@ -953,10 +953,9 @@ void ComputeTimeDerivative_detail::Impl<Dim, EvolutionSystem, DgStepChoosers,
             std::make_pair(DirectionalId{direction_from_neighbor, element.id()},
                            std::move(data)));
       } else if (IsAuxiliary or
-                 // A neighbor in an FD patch receives through its patch
-                 not evolution::dg::subcell::fd_patch::send_to_patch<
-                     evolution::dg::subcell::fd_patch::Tags::BoundaryDataInbox<
-                         Dim>>(
+                 // A neighbor in a patch receives through its patch
+                 not evolution::patches::send_to_patch<
+                     evolution::patches::Tags::BoundaryDataInbox<Dim>>(
                      *cache, neighbor, time_step_id,
                      DirectionalId<Dim>{direction_from_neighbor, element.id()},
                      std::move(data))) {

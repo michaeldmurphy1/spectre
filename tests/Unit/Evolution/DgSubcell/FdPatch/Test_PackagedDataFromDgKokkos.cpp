@@ -21,10 +21,11 @@
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Evolution/DgSubcell/CorrectPackagedData.hpp"
-#include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/FdPatch/PackagedDataFromDgKokkos.hpp"
+#include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DiscontinuousGalerkin/MortarDataHolder.hpp"
+#include "Evolution/Patches/PatchTable.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
@@ -35,7 +36,6 @@
 #include "Utilities/TMPL.hpp"
 
 namespace {
-using evolution::dg::subcell::fd_patch::FdPatches;
 using evolution::dg::subcell::fd_patch::PackagedDataFromDg;
 using PackagedTags = tmpl::list<::Tags::TempScalar<0>, ::Tags::TempI<1, 2>>;
 using PackagedVars = Variables<PackagedTags>;
@@ -55,12 +55,9 @@ void test_packaged_data_from_dg(const gsl::not_null<std::mt19937*> generator) {
                           {{0.0, 1.0, 2.0, 3.0}, {0.0, 1.0, 2.0, 3.0}}});
   const std::vector<std::array<size_t, 2>> refinement(9, {{2, 2}});
   const std::vector<std::array<size_t, 2>> extents(9, {{5, 5}});
-  const FdPatches<2> patches{domain.blocks(),
-                             refinement,
-                             extents,
-                             Spectral::Quadrature::GaussLobatto,
-                             {0, 1, 2, 3, 5, 6, 7, 8},
-                             true};
+  const auto patches = evolution::dg::subcell::fd_patch::patch_table<2>(
+      domain.blocks(), refinement, extents, Spectral::Quadrature::GaussLobatto,
+      {0, 1, 2, 3, 5, 6, 7, 8}, true);
   REQUIRE(patches.number_of_patches() == 1);
   std::vector<Element<2>> elements{};
   for (const auto& id : patches.element_ids(0)) {

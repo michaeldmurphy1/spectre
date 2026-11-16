@@ -25,13 +25,14 @@
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/SegmentId.hpp"
-#include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/FdPatch/GhostZonesKokkos.hpp"
+#include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/DgSubcell/GhostData.hpp"
 #include "Evolution/DgSubcell/GhostZoneLogicalCoordinates.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/NeighborRdmpAndVolumeData.hpp"
 #include "Evolution/DgSubcell/SliceData.hpp"
+#include "Evolution/Patches/PatchTable.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
@@ -47,7 +48,6 @@
 #include "Utilities/MakeArray.hpp"
 
 namespace {
-using evolution::dg::subcell::fd_patch::FdPatches;
 using evolution::dg::subcell::fd_patch::GhostZones;
 template <size_t Dim>
 using Interpolants =
@@ -55,7 +55,7 @@ using Interpolants =
 
 template <size_t Dim>
 std::vector<Element<Dim>> patch_elements(
-    const FdPatches<Dim>& patches, const size_t patch,
+    const evolution::patches::PatchTable<Dim>& patches, const size_t patch,
     const Domain<Dim>& domain,
     const std::vector<std::array<size_t, Dim>>& refinement) {
   std::vector<Element<Dim>> result{};
@@ -87,7 +87,8 @@ double value(const size_t variable, const std::array<long, Dim>& block_cell,
 // neighbor is in the patch. Returns the faces whose ghost zones were checked.
 template <size_t Dim>
 size_t check_fill_from_patch(const GhostZones<Dim>& ghost_zones,
-                             const FdPatches<Dim>& patches, const size_t patch,
+                             const evolution::patches::PatchTable<Dim>& patches,
+                             const size_t patch,
                              const std::array<long, Dim>& cells_in_block) {
   const Kokkos::DefaultExecutionSpace exec{};
   const auto& element_ids = patches.element_ids(patch);
@@ -322,12 +323,9 @@ void test_periodic_block() {
     const std::vector refinement{make_array<Dim>(refinement_level)};
     // 4 DG points, so 7 subcells
     const std::vector extents{make_array<Dim>(4_st)};
-    const FdPatches<Dim> patches{domain.blocks(),
-                                 refinement,
-                                 extents,
-                                 Spectral::Quadrature::GaussLobatto,
-                                 {},
-                                 false};
+    const auto patches = evolution::dg::subcell::fd_patch::patch_table<Dim>(
+        domain.blocks(), refinement, extents,
+        Spectral::Quadrature::GaussLobatto, {}, false);
     REQUIRE(patches.number_of_patches() == 1);
     const auto elements = patch_elements(patches, 0, domain, refinement);
     for (const size_t ghost_width : {1_st, 2_st}) {
@@ -356,13 +354,9 @@ void test_external_faces(const gsl::not_null<std::mt19937*> generator) {
   const std::vector<std::array<size_t, 1>> refinement(3, {{1}});
   const std::vector<std::array<size_t, 1>> extents(3, {{4}});
   // One patch per block
-  const FdPatches<1> patches{domain.blocks(),
-                             refinement,
-                             extents,
-                             Spectral::Quadrature::GaussLobatto,
-                             {},
-                             false,
-                             2};
+  const auto patches = evolution::dg::subcell::fd_patch::patch_table<1>(
+      domain.blocks(), refinement, extents, Spectral::Quadrature::GaussLobatto,
+      {}, false, 2);
   REQUIRE(patches.number_of_patches() == 3);
   const auto elements = patch_elements(patches, 1, domain, refinement);
   // Interpolate the data sent to the lower neighbor to random points, and
@@ -409,12 +403,9 @@ void test_dg_neighbors(const gsl::not_null<std::mt19937*> generator) {
                           {{0.0, 1.0, 2.0, 3.0}, {0.0, 1.0, 2.0, 3.0}}});
   const std::vector<std::array<size_t, 2>> refinement(9, {{2, 2}});
   const std::vector<std::array<size_t, 2>> extents(9, {{5, 5}});
-  const FdPatches<2> patches{domain.blocks(),
-                             refinement,
-                             extents,
-                             Spectral::Quadrature::GaussLobatto,
-                             {0, 1, 2, 3, 5, 6, 7, 8},
-                             true};
+  const auto patches = evolution::dg::subcell::fd_patch::patch_table<2>(
+      domain.blocks(), refinement, extents, Spectral::Quadrature::GaussLobatto,
+      {0, 1, 2, 3, 5, 6, 7, 8}, true);
   REQUIRE(patches.number_of_patches() == 1);
   const auto elements = patch_elements(patches, 0, domain, refinement);
   for (const size_t ghost_width : {2_st, 3_st}) {
@@ -447,15 +438,12 @@ void test_cells_coincide_across_blocks() {
     // One patch per block, and all blocks in one patch
     for (const std::optional<size_t> max_elements_per_patch :
          {std::optional<size_t>{2}, std::optional<size_t>{}}) {
-      const FdPatches<1> patches{domain.blocks(),
-                                 refinement,
-                                 extents,
-                                 Spectral::Quadrature::GaussLobatto,
-                                 {},
-                                 false,
-                                 max_elements_per_patch};
+      const auto patches = evolution::dg::subcell::fd_patch::patch_table<1>(
+          domain.blocks(), refinement, extents,
+          Spectral::Quadrature::GaussLobatto, {}, false,
+          max_elements_per_patch);
       for (size_t patch = 0; patch < patches.number_of_patches(); ++patch) {
-        check_cells_coincide_across_blocks(
+        evolution::dg::subcell::fd_patch::check_cells_coincide_across_blocks(
             domain, patch_elements(patches, patch, domain, refinement), patches,
             patch, 2);
       }
@@ -557,19 +545,16 @@ void test_patch_across_blocks() {
       {}, {}, std::array{true});
   const std::vector<std::array<size_t, 1>> refinement(3, {{1}});
   const std::vector<std::array<size_t, 1>> extents(3, {{4}});
-  const FdPatches<1> patches{domain.blocks(),
-                             refinement,
-                             extents,
-                             Spectral::Quadrature::GaussLobatto,
-                             {},
-                             false};
+  const auto patches = evolution::dg::subcell::fd_patch::patch_table<1>(
+      domain.blocks(), refinement, extents, Spectral::Quadrature::GaussLobatto,
+      {}, false);
   REQUIRE(patches.number_of_patches() == 1);
   const auto elements = patch_elements(patches, 0, domain, refinement);
   REQUIRE(elements.size() == 6);
   for (const size_t ghost_width : {1_st, 2_st, 3_st}) {
     CAPTURE(ghost_width);
-    check_cells_coincide_across_blocks(domain, elements, patches, 0,
-                                       ghost_width);
+    evolution::dg::subcell::fd_patch::check_cells_coincide_across_blocks(
+        domain, elements, patches, 0, ghost_width);
     const GhostZones<1> ghost_zones{
         exec,    elements, std::vector<Interpolants<1>>(elements.size()),
         patches, 0,        ghost_width,
@@ -594,12 +579,9 @@ void test_rotated_blocks() {
   const auto domain = creator.create_domain();
   const auto refinement = creator.initial_refinement_levels();
   const auto extents = creator.initial_extents();
-  const FdPatches<3> patches{domain.blocks(),
-                             refinement,
-                             extents,
-                             Spectral::Quadrature::GaussLobatto,
-                             {},
-                             false};
+  const auto patches = evolution::dg::subcell::fd_patch::patch_table<3>(
+      domain.blocks(), refinement, extents, Spectral::Quadrature::GaussLobatto,
+      {}, false);
   REQUIRE(patches.number_of_patches() == 1);
   const auto elements = patch_elements(patches, 0, domain, refinement);
   REQUIRE(elements.size() == 8);
@@ -615,8 +597,8 @@ void test_rotated_blocks() {
   CHECK(has_unaligned_neighbors);
   for (const size_t ghost_width : {1_st, 2_st, 3_st}) {
     CAPTURE(ghost_width);
-    check_cells_coincide_across_blocks(domain, elements, patches, 0,
-                                       ghost_width);
+    evolution::dg::subcell::fd_patch::check_cells_coincide_across_blocks(
+        domain, elements, patches, 0, ghost_width);
     const GhostZones<3> ghost_zones{
         exec,    elements, std::vector<Interpolants<3>>(elements.size()),
         patches, 0,        ghost_width,
@@ -643,13 +625,9 @@ void test_reoriented_send() {
   const auto refinement = creator.initial_refinement_levels();
   const auto extents = creator.initial_extents();
   // One patch per element, so all faces are external
-  const FdPatches<3> patches{domain.blocks(),
-                             refinement,
-                             extents,
-                             Spectral::Quadrature::GaussLobatto,
-                             {},
-                             false,
-                             1};
+  const auto patches = evolution::dg::subcell::fd_patch::patch_table<3>(
+      domain.blocks(), refinement, extents, Spectral::Quadrature::GaussLobatto,
+      {}, false, 1);
   REQUIRE(patches.number_of_patches() == 8);
   const Mesh<3> subcell_mesh =
       evolution::dg::subcell::fd::mesh(patches.dg_mesh(0));

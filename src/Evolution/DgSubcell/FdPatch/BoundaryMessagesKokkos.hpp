@@ -8,9 +8,9 @@
 
 #include "Domain/Structure/DirectionalId.hpp"
 #include "Domain/Structure/ElementId.hpp"
-#include "Evolution/DgSubcell/FdPatch/InboxTags.hpp"
 #include "Evolution/DgSubcell/RdmpTciData.hpp"
 #include "Evolution/DiscontinuousGalerkin/BoundaryData.hpp"
+#include "Evolution/Patches/InboxTags.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
@@ -52,7 +52,8 @@ template <size_t Dim>
 bool received_all_boundary_data(
     const GhostZones<Dim>& ghost_zones,
     const std::vector<ElementId<Dim>>& element_ids,
-    const typename Tags::BoundaryDataInbox<Dim>::messages_type& messages);
+    const typename evolution::patches::Tags::BoundaryDataInbox<
+        Dim>::messages_type& messages);
 
 /*!
  * \brief Copy the received `messages` of a time step into the buffers of
@@ -70,7 +71,8 @@ void unpack_boundary_data(
     const GhostZones<Dim>& ghost_zones,
     const PackagedDataFromDg<Dim>& packaged_data_from_dg,
     const std::vector<ElementId<Dim>>& element_ids,
-    const typename Tags::BoundaryDataInbox<Dim>::messages_type& messages,
+    const typename evolution::patches::Tags::BoundaryDataInbox<
+        Dim>::messages_type& messages,
     size_t number_of_rdmp_values);
 
 /*!

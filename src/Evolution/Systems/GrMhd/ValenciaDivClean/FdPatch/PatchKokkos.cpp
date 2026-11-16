@@ -30,12 +30,12 @@
 #include "Domain/ElementMap.hpp"
 #include "Evolution/BoundaryCorrection.hpp"
 #include "Evolution/DgSubcell/FdPatch/BoundaryMessagesKokkos.hpp"
-#include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/FdPatch/GeometryKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/GhostZonesKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/PackagedDataFromDgKokkos.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/Tags/Coordinates.hpp"
+#include "Evolution/Patches/PatchTable.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.tpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Reconstructor.hpp"
@@ -94,7 +94,7 @@ Kokkos::View<const double*> flat(const auto& batch) {
 template <typename OrderedListOfPrimitiveRecoverySchemes>
 Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
     const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
-    const patch_ns::FdPatches<3>& fd_patches, const size_t patch,
+    const evolution::patches::PatchTable<3>& patch_table, const size_t patch,
     const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
     const double time, const domain::FunctionsOfTimeMap& functions_of_time,
     const fd::Reconstructor& reconstructor,
@@ -111,8 +111,8 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
       constraint_damping_parameter_(constraint_damping_parameter) {
   // Errors if the reconstructor isn't supported
   const fd::ReconstructorOnDevice reconstructor_on_device{reconstructor};
-  const Mesh<3>& dg_mesh = fd_patches.dg_mesh(patch);
-  const size_t number_of_elements = fd_patches.element_ids(patch).size();
+  const Mesh<3>& dg_mesh = patch_table.dg_mesh(patch);
+  const size_t number_of_elements = patch_table.element_ids(patch).size();
 
   // Boundary correction and time derivative
   size_t number_of_packaged_variables = 0;
@@ -146,7 +146,7 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
   patch_elements_ = patch_ns::PatchElements{
       exec,
       domain,
-      fd_patches,
+      patch_table,
       patch,
       initial_refinement_levels,
       time,
@@ -506,6 +506,20 @@ auto Patch<OrderedListOfPrimitiveRecoverySchemes>::element_variables(
                             host_primitives, slot);
     set_data_ref_to_element(make_not_null(&result[slot].spacetime),
                             host_spacetime, slot);
+  }
+  return result;
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+auto Patch<OrderedListOfPrimitiveRecoverySchemes>::
+    element_variables_without_values() const -> std::vector<ElementVariables> {
+  const size_t number_of_cells =
+      patch_elements_.subcell_mesh().number_of_grid_points();
+  std::vector<ElementVariables> result(patch_elements_.number_of_elements());
+  for (auto& element_variables : result) {
+    element_variables.evolved.initialize(number_of_cells);
+    element_variables.primitives.initialize(number_of_cells);
+    element_variables.spacetime.initialize(number_of_cells);
   }
   return result;
 }

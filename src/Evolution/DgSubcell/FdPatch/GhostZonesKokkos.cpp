@@ -27,11 +27,11 @@
 #include "Domain/Structure/OrientationMap.hpp"
 #include "Domain/Structure/OrientationMapHelpers.hpp"
 #include "Domain/Structure/Side.hpp"
-#include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/GhostZoneLogicalCoordinates.hpp"
 #include "Evolution/DgSubcell/Matrices.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/SetInterpolators.hpp"
+#include "Evolution/Patches/PatchTable.hpp"
 #include "NumericalAlgorithms/FiniteDifference/TransfersKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
@@ -125,14 +125,14 @@ GhostZones<Dim>::GhostZones(
     const std::vector<
         DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>>&
         fd_to_neighbor_fd_interpolants,
-    const FdPatches<Dim>& fd_patches, const size_t patch,
+    const evolution::patches::PatchTable<Dim>& patch_table, const size_t patch,
     const size_t ghost_width, const size_t number_of_variables)
     : number_of_elements_(elements.size()),
-      subcell_extents_(fd::mesh(fd_patches.dg_mesh(patch)).extents()),
+      subcell_extents_(fd::mesh(patch_table.dg_mesh(patch)).extents()),
       ghost_width_(ghost_width),
       number_of_variables_(number_of_variables) {
-  const auto& element_ids = fd_patches.element_ids(patch);
-  const Mesh<Dim>& dg_mesh = fd_patches.dg_mesh(patch);
+  const auto& element_ids = patch_table.element_ids(patch);
+  const Mesh<Dim>& dg_mesh = patch_table.dg_mesh(patch);
   if (elements.size() != element_ids.size()) {
     ERROR("Got " << elements.size() << " elements for patch " << patch
                  << ", which has " << element_ids.size() << " elements");
@@ -187,7 +187,7 @@ GhostZones<Dim>::GhostZones(
               << " neighbors in direction " << direction);
       }
       const ElementId<Dim>& neighbor_id = *neighbors.ids().begin();
-      const auto location = fd_patches.location(neighbor_id);
+      const auto location = patch_table.location(neighbor_id);
       const size_t dimension = direction.dimension();
       const bool upper = direction.side() == Side::Upper;
       const auto ghost_zone_points = ::fd::device::padded_ghost_zone_points(
@@ -369,23 +369,23 @@ void GhostZones<Dim>::slice_for_external(
 template <size_t Dim>
 void check_cells_coincide_across_blocks(
     const Domain<Dim>& domain, const std::vector<Element<Dim>>& elements,
-    const FdPatches<Dim>& fd_patches, const size_t patch,
+    const evolution::patches::PatchTable<Dim>& patch_table, const size_t patch,
     const size_t ghost_width) {
-  const Mesh<Dim> subcell_mesh = fd::mesh(fd_patches.dg_mesh(patch));
+  const Mesh<Dim> subcell_mesh = fd::mesh(patch_table.dg_mesh(patch));
   const auto logical_coords = logical_coordinates(subcell_mesh);
   for (const Element<Dim>& element : elements) {
     const ElementMap<Dim, Frame::Grid> element_map{
         element.id(), domain.blocks()[element.id().block_id()]};
     for (const auto& [direction, neighbors] : element.neighbors()) {
       for (const ElementId<Dim>& neighbor_id : neighbors.ids()) {
-        const auto location = fd_patches.location(neighbor_id);
+        const auto location = patch_table.location(neighbor_id);
         if (neighbor_id.block_id() == element.id().block_id() or
             not location.has_value()) {
           continue;
         }
         const auto& orientation = neighbors.orientation(neighbor_id);
         const Mesh<Dim> neighbor_subcell_mesh =
-            fd::mesh(fd_patches.dg_mesh(location->patch));
+            fd::mesh(patch_table.dg_mesh(location->patch));
         if (neighbor_subcell_mesh != subcell_mesh) {
           ERROR(
               "FD patches need the same subcell mesh across block "
@@ -436,17 +436,17 @@ void check_cells_coincide_across_blocks(
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
 
-#define INSTANTIATION(r, data)                                   \
-  template std::vector<size_t> cells_for_neighbor_ghost_zone(    \
-      const Index<DIM(data)>& extents, size_t ghost_width,       \
-      const Direction<DIM(data)>& direction,                     \
-      const OrientationMap<DIM(data)>& orientation_of_neighbor); \
-  template class GhostZones<DIM(data)>;                          \
-  template void check_cells_coincide_across_blocks(              \
-      const Domain<DIM(data)>& domain,                           \
-      const std::vector<Element<DIM(data)>>& elements,           \
-      const FdPatches<DIM(data)>& fd_patches, size_t patch,      \
-      size_t ghost_width);
+#define INSTANTIATION(r, data)                                      \
+  template std::vector<size_t> cells_for_neighbor_ghost_zone(       \
+      const Index<DIM(data)>& extents, size_t ghost_width,          \
+      const Direction<DIM(data)>& direction,                        \
+      const OrientationMap<DIM(data)>& orientation_of_neighbor);    \
+  template class GhostZones<DIM(data)>;                             \
+  template void check_cells_coincide_across_blocks(                 \
+      const Domain<DIM(data)>& domain,                              \
+      const std::vector<Element<DIM(data)>>& elements,              \
+      const evolution::patches::PatchTable<DIM(data)>& patch_table, \
+      size_t patch, size_t ghost_width);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))
 

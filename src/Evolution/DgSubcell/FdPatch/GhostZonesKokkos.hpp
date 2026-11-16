@@ -27,10 +27,10 @@ template <size_t Dim>
 class Mesh;
 template <size_t VolumeDim>
 class OrientationMap;
-namespace evolution::dg::subcell::fd_patch {
+namespace evolution::patches {
 template <size_t Dim>
-class FdPatches;
-}  // namespace evolution::dg::subcell::fd_patch
+class PatchTable;
+}  // namespace evolution::patches
 /// \endcond
 
 namespace evolution::dg::subcell::fd_patch {
@@ -124,8 +124,8 @@ class GhostZones {
              const std::vector<
                  DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>>&
                  fd_to_neighbor_fd_interpolants,
-             const FdPatches<Dim>& fd_patches, size_t patch, size_t ghost_width,
-             size_t number_of_variables);
+             const evolution::patches::PatchTable<Dim>& patch_table,
+             size_t patch, size_t ghost_width, size_t number_of_variables);
 
   /// The number of cells of each element in each dimension
   const Index<Dim>& subcell_extents() const { return subcell_extents_; }
@@ -232,6 +232,7 @@ std::vector<size_t> cells_for_neighbor_ghost_zone(
 template <size_t Dim>
 void check_cells_coincide_across_blocks(
     const Domain<Dim>& domain, const std::vector<Element<Dim>>& elements,
-    const FdPatches<Dim>& fd_patches, size_t patch, size_t ghost_width);
+    const evolution::patches::PatchTable<Dim>& patch_table, size_t patch,
+    size_t ghost_width);
 }  // namespace evolution::dg::subcell::fd_patch
 #endif  // SPECTRE_KOKKOS

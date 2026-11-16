@@ -12,28 +12,23 @@ spectre_target_headers(
   ActionsKokkos.hpp
   BoundaryMessagesKokkos.hpp
   ElementBox.hpp
-  FdPatchArray.hpp
-  FdPatches.hpp
   GeometryKokkos.hpp
   GhostZonesKokkos.hpp
   InboxTags.hpp
   PackagedDataFromDgKokkos.hpp
   PatchElementsKokkos.hpp
-  SendToPatch.hpp
-  SlabSize.hpp
-  Tags.hpp
-  TagsKokkos.hpp
+  PatchTable.hpp
   )
 
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
   BoundaryMessagesKokkos.cpp
-  FdPatches.cpp
   GeometryKokkos.cpp
   GhostZonesKokkos.cpp
   PackagedDataFromDgKokkos.cpp
   PatchElementsKokkos.cpp
+  PatchTable.cpp
   )
 
 target_link_libraries(
@@ -50,6 +45,7 @@ target_link_libraries(
   FunctionsOfTime
   Interpolation
   Options
+  Patches
   Serialization
   Spectral
   Time

@@ -25,8 +25,8 @@
 #include "Domain/CreateInitialElement.hpp"
 #include "Domain/Domain.hpp"
 #include "Domain/Structure/DirectionalIdMap.hpp"
-#include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
+#include "Evolution/Patches/PatchTable.hpp"
 #include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
@@ -38,15 +38,15 @@
 namespace evolution::dg::subcell::fd_patch {
 PatchElements::PatchElements(
     const Kokkos::DefaultExecutionSpace& exec, const Domain<3>& domain,
-    const FdPatches<3>& fd_patches, const size_t patch,
+    const evolution::patches::PatchTable<3>& patch_table, const size_t patch,
     const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
     const double time, const domain::FunctionsOfTimeMap& functions_of_time,
     const size_t ghost_width, const size_t number_of_ghost_variables,
     const size_t number_of_packaged_variables, const bool compute_cell_geometry)
     : patch_(patch),
-      dg_mesh_(fd_patches.dg_mesh(patch)),
+      dg_mesh_(patch_table.dg_mesh(patch)),
       subcell_mesh_(evolution::dg::subcell::fd::mesh(dg_mesh_)),
-      element_ids_(fd_patches.element_ids(patch)) {
+      element_ids_(patch_table.element_ids(patch)) {
   const size_t number_of_elements = element_ids_.size();
 
   // Elements and their maps, with one grid to inertial map per block
@@ -75,14 +75,14 @@ PatchElements::PatchElements(
   }
 
   // Ghost zones and data from DG neighbors
-  check_cells_coincide_across_blocks(domain, elements_, fd_patches, patch,
+  check_cells_coincide_across_blocks(domain, elements_, patch_table, patch,
                                      ghost_width);
   ghost_zones_ = GhostZones<3>{
       exec,
       elements_,
       std::vector<DirectionalIdMap<3, std::optional<intrp::Irregular<3>>>>(
           number_of_elements),
-      fd_patches,
+      patch_table,
       patch,
       ghost_width,
       number_of_ghost_variables};
@@ -99,7 +99,7 @@ PatchElements::PatchElements(
       ghost_zones_.send_data_size());
   packaged_data_from_dg_ = PackagedDataFromDg<3>{exec,
                                                  elements_,
-                                                 fd_patches,
+                                                 patch_table,
                                                  patch,
                                                  number_of_packaged_variables,
                                                  number_of_packaged_variables,
@@ -346,13 +346,15 @@ size_t PatchElements::number_of_dg_faces() const {
 }
 
 bool PatchElements::received_all(
-    const Tags::BoundaryDataInbox<3>::messages_type& messages) const {
+    const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
+        messages) const {
   return received_all_boundary_data(ghost_zones_, element_ids_, messages);
 }
 
 void PatchElements::receive(
     const Kokkos::DefaultExecutionSpace& exec,
-    const Tags::BoundaryDataInbox<3>::messages_type& messages,
+    const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
+        messages,
     const size_t number_of_rdmp_values) {
   if (not has_external_faces()) {
     return;

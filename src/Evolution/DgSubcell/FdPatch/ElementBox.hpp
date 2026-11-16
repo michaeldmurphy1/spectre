@@ -78,7 +78,7 @@ struct FromCellGeometry : Tag, db::ReferenceTag {
 // them are an error for patches (see `change_slab_size`).
 template <typename Metavariables>
 using default_initialized_tags = tmpl::push_back<
-    StepChoosers::step_chooser_simple_tags<Metavariables>,
+    ::StepChoosers::step_chooser_simple_tags<Metavariables>,
     ::Tags::StepperErrors<typename Metavariables::system::variables_tag>,
     ::Tags::HistoryEvolvedVariables<
         typename Metavariables::system::variables_tag>,
@@ -155,7 +155,7 @@ using compute_tags = tmpl::remove_duplicates<tmpl::flatten<tmpl::list<
     evolution::dg::Tags::EqualRateRegionsRef<
         Dim, typename Metavariables::equal_rate_regions>,
     // After the grid tags that they depend on
-    StepChoosers::step_chooser_compute_tags<Metavariables>>>>;
+    ::StepChoosers::step_chooser_compute_tags<Metavariables>>>>;
 }  // namespace ElementBox_detail
 
 /// The type of the DataBox of `make_element_box`

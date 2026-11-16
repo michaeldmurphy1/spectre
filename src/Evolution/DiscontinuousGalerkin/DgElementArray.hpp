@@ -54,11 +54,11 @@ struct DgElementArray {
   static constexpr size_t volume_dim = Metavariables::volume_dim;
 
   using chare_type = Parallel::Algorithms::Array;
-  /// Whether the FD elements are in FD patches instead of this array (see
-  /// `evolution::dg::subcell::fd_patch::FdPatchArray`)
-  static constexpr bool uses_fd_patches = []() {
-    if constexpr (requires { Metavariables::use_fd_patches; }) {
-      return Metavariables::use_fd_patches;
+  /// Whether some elements are in patches instead of this array (see
+  /// `evolution::patches::PatchArray`)
+  static constexpr bool uses_patches = []() {
+    if constexpr (requires { Metavariables::use_patches; }) {
+      return Metavariables::use_patches;
     } else {
       return false;
     }
@@ -84,12 +84,12 @@ struct DgElementArray {
           array_allocation_items = {},
       const std::unordered_set<size_t>& procs_to_ignore = {});
 
-  /// Whether the array has no elements, because all elements are in FD
-  /// patches (see `evolution::dg::subcell::fd_patch::FdPatchArray`)
+  /// Whether the array has no elements, because all elements are in patches
+  /// (see `evolution::patches::PatchArray`)
   static bool is_empty(Parallel::GlobalCache<Metavariables>& cache) {
-    if constexpr (uses_fd_patches) {
-      return Parallel::get<typename Metavariables::fd_patches_tag>(cache)
-                 .number_of_dg_elements() == 0;
+    if constexpr (uses_patches) {
+      return Parallel::get<typename Metavariables::patch_table_tag>(cache)
+                 .number_of_elements_outside_patches() == 0;
     } else {
       (void)cache;
       return false;
@@ -133,20 +133,21 @@ void DgElementArray<Metavariables, PhaseDepActionList>::allocate_array(
 
   const size_t number_of_procs = Parallel::number_of_procs<size_t>(local_cache);
   const size_t number_of_nodes = Parallel::number_of_nodes<size_t>(local_cache);
-  // The DG elements may avoid the processors of FD patches
+  // The elements may avoid the processors of patches
   std::unordered_set<size_t> dg_procs_to_ignore = procs_to_ignore;
-  if constexpr (uses_fd_patches) {
-    const auto& fd_patches =
-        Parallel::get<typename Metavariables::fd_patches_tag>(local_cache);
-    if (fd_patches.dedicated_procs() and
-        fd_patches.number_of_dg_elements() > 0) {
-      for (const size_t proc : fd_patches.procs(local_cache, procs_to_ignore)) {
+  if constexpr (uses_patches) {
+    const auto& patch_table =
+        Parallel::get<typename Metavariables::patch_table_tag>(local_cache);
+    if (patch_table.dedicated_procs() and
+        patch_table.number_of_elements_outside_patches() > 0) {
+      for (const size_t proc :
+           patch_table.procs(local_cache, procs_to_ignore)) {
         dg_procs_to_ignore.insert(proc);
       }
       if (dg_procs_to_ignore.size() >= number_of_procs) {
         ERROR(
-            "The FD patches have dedicated processors, so the DG elements "
-            "need more processors than the "
+            "The patches have dedicated processors, so the elements of the "
+            "DgElementArray need more processors than the "
             << dg_procs_to_ignore.size()
             << " that patches and other components use, out of "
             << number_of_procs << ".");
@@ -166,10 +167,11 @@ void DgElementArray<Metavariables, PhaseDepActionList>::allocate_array(
       [&dg_element_array, &global_cache, &initialization_items, &local_cache](
           const ElementId<volume_dim>& element_id, const size_t target_proc,
           const size_t /*target_node*/) {
-        // The FD elements of FD patches belong to the patch component (see
-        // `evolution::dg::subcell::fd_patch::FdPatchArray`)
-        if constexpr (uses_fd_patches) {
-          if (Parallel::get<typename Metavariables::fd_patches_tag>(local_cache)
+        // The elements in patches belong to the patch component (see
+        // `evolution::patches::PatchArray`)
+        if constexpr (uses_patches) {
+          if (Parallel::get<typename Metavariables::patch_table_tag>(
+                  local_cache)
                   .location(element_id)
                   .has_value()) {
             return;

@@ -15,11 +15,11 @@
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Evolution/DgSubcell/FdPatch/GhostZonesKokkos.hpp"
-#include "Evolution/DgSubcell/FdPatch/InboxTags.hpp"
 #include "Evolution/DgSubcell/FdPatch/PackagedDataFromDgKokkos.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/RdmpTciData.hpp"
 #include "Evolution/DiscontinuousGalerkin/BoundaryData.hpp"
+#include "Evolution/Patches/InboxTags.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
@@ -37,7 +37,8 @@ using MessageIndex = std::unordered_map<
 // The messages by receiver and sender
 template <size_t Dim>
 MessageIndex<Dim> index_messages(
-    const typename Tags::BoundaryDataInbox<Dim>::messages_type& messages) {
+    const typename evolution::patches::Tags::BoundaryDataInbox<
+        Dim>::messages_type& messages) {
   MessageIndex<Dim> result{};
   for (const auto& [receiver, sender, data] : messages) {
     if (not result[receiver].emplace(sender, &data).second) {
@@ -67,7 +68,8 @@ template <size_t Dim>
 bool received_all_boundary_data(
     const GhostZones<Dim>& ghost_zones,
     const std::vector<ElementId<Dim>>& element_ids,
-    const typename Tags::BoundaryDataInbox<Dim>::messages_type& messages) {
+    const typename evolution::patches::Tags::BoundaryDataInbox<
+        Dim>::messages_type& messages) {
   if (messages.size() < ghost_zones.external_faces().size()) {
     return false;
   }
@@ -88,7 +90,8 @@ void unpack_boundary_data(
     const GhostZones<Dim>& ghost_zones,
     const PackagedDataFromDg<Dim>& packaged_data_from_dg,
     const std::vector<ElementId<Dim>>& element_ids,
-    const typename Tags::BoundaryDataInbox<Dim>::messages_type& messages,
+    const typename evolution::patches::Tags::BoundaryDataInbox<
+        Dim>::messages_type& messages,
     const size_t number_of_rdmp_values) {
   if (ghost_data.size() != ghost_zones.external_data_size() or
       mortar_data.size() != packaged_data_from_dg.received_data_size()) {
@@ -222,15 +225,15 @@ size_t number_of_dg_faces(const GhostZones<Dim>& ghost_zones) {
   template bool received_all_boundary_data(                                 \
       const GhostZones<DIM(data)>& ghost_zones,                             \
       const std::vector<ElementId<DIM(data)>>& element_ids,                 \
-      const typename Tags::BoundaryDataInbox<DIM(data)>::messages_type&     \
-          messages);                                                        \
+      const typename evolution::patches::Tags::BoundaryDataInbox<DIM(       \
+          data)>::messages_type& messages);                                 \
   template void unpack_boundary_data(                                       \
       gsl::span<double> ghost_data, gsl::span<double> mortar_data,          \
       const GhostZones<DIM(data)>& ghost_zones,                             \
       const PackagedDataFromDg<DIM(data)>& packaged_data_from_dg,           \
       const std::vector<ElementId<DIM(data)>>& element_ids,                 \
-      const typename Tags::BoundaryDataInbox<DIM(data)>::messages_type&     \
-          messages,                                                         \
+      const typename evolution::patches::Tags::BoundaryDataInbox<DIM(       \
+          data)>::messages_type& messages,                                  \
       size_t number_of_rdmp_values);                                        \
   template std::vector<OutgoingBoundaryData<DIM(data)>> pack_boundary_data( \
       const GhostZones<DIM(data)>& ghost_zones,                             \

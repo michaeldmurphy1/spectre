@@ -19,10 +19,10 @@
 #include "Domain/Domain.hpp"
 #include "Domain/FunctionsOfTime/Tags.hpp"
 #include "Evolution/BoundaryCorrectionTags.hpp"
-#include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
-#include "Evolution/DgSubcell/FdPatch/Tags.hpp"
+#include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/DgSubcell/Tags/SubcellOptions.hpp"
 #include "Evolution/Initialization/InitialData.hpp"
+#include "Evolution/Patches/PatchTable.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FdPatch/PatchKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Tag.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservatives.hpp"
@@ -50,7 +50,7 @@
 #ifdef SPECTRE_KOKKOS
 namespace grmhd::ValenciaDivClean::fd_patch {
 namespace Tags {
-/// The ValenciaDivClean patch of an `FdPatchArray` member
+/// The ValenciaDivClean patch of an `evolution::patches::PatchArray` member
 template <typename OrderedListOfPrimitiveRecoverySchemes>
 struct Patch : db::SimpleTag {
   using type = fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes>;
@@ -58,7 +58,8 @@ struct Patch : db::SimpleTag {
 }  // namespace Tags
 
 namespace detail {
-// The patch of the `FdPatchArray` member `array_index`, with the geometry at
+// The patch of the `evolution::patches::PatchArray` member `array_index`, with
+// the geometry at
 // `::Tags::Time`
 template <typename OrderedListOfPrimitiveRecoverySchemes, typename DbTagsList,
           typename Metavariables>
@@ -66,15 +67,16 @@ fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes> make_patch(
     const db::DataBox<DbTagsList>& box,
     const Parallel::GlobalCache<Metavariables>& cache, const int array_index) {
   // Patches assume that the elements that start on the subcell grid stay
-  // there and the others stay on the DG grid (see `FdPatches`)
+  // there and the others stay on the DG grid (see
+  // `evolution::dg::subcell::fd_patch::patch_table()`)
   if (not db::get<evolution::dg::subcell::Tags::SubcellOptions<3>>(box)
               .always_use_subcells()) {
     ERROR("FD patches need AlwaysUseSubcells.");
   }
   const auto patch = static_cast<size_t>(array_index);
   const Domain<3>& domain = db::get<domain::Tags::Domain<3>>(box);
-  const auto& fd_patches =
-      db::get<evolution::dg::subcell::fd_patch::Tags::FdPatches<3>>(box);
+  const auto& patch_table =
+      db::get<evolution::dg::subcell::fd_patch::Tags::PatchTable<3>>(box);
   const double time = db::get<::Tags::Time>(box);
 
   const auto& exec = Parallel::device_execution_space();
@@ -83,7 +85,7 @@ fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes> make_patch(
   return fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes>{
       exec,
       domain,
-      fd_patches,
+      patch_table,
       patch,
       db::get<domain::Tags::InitialRefinementLevels<3>>(box),
       time,
@@ -100,8 +102,9 @@ fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes> make_patch(
 
 namespace Actions {
 /*!
- * \brief Set up the ValenciaDivClean patch of an `FdPatchArray` member and the
- * initial state of its elements (see `fd_patch::Patch`).
+ * \brief Set up the ValenciaDivClean patch of an
+ * `evolution::patches::PatchArray` member and the initial state of its elements
+ * (see `fd_patch::Patch`).
  *
  * The initial data must be analytic data or an analytic solution, evaluated
  * at `::Tags::Time`. The time stepper history of the elements is
@@ -200,8 +203,8 @@ struct InitializePatch {
 };
 
 /*!
- * \brief Rebuild the ValenciaDivClean patch of an `FdPatchArray` member after
- * a restart from a checkpoint.
+ * \brief Rebuild the ValenciaDivClean patch of an
+ * `evolution::patches::PatchArray` member after a restart from a checkpoint.
  *
  * \details Checkpoints hold the state of the elements of the patch, which is
  * in the DataBox (see `fd_patch::Patch`), but not the patch itself, which only

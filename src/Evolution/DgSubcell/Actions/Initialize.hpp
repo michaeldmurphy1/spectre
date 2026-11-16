@@ -17,7 +17,6 @@
 #include "Domain/Tags.hpp"
 #include "Evolution/DgSubcell/ActiveGrid.hpp"
 #include "Evolution/DgSubcell/FdPatch/InboxTags.hpp"
-#include "Evolution/DgSubcell/FdPatch/SendToPatch.hpp"
 #include "Evolution/DgSubcell/GhostData.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/Projection.hpp"
@@ -45,6 +44,7 @@
 #include "Evolution/DgSubcell/Tags/TciStatus.hpp"
 #include "Evolution/DiscontinuousGalerkin/OnlyDgBlockIds.hpp"
 #include "Evolution/Initialization/SetVariables.hpp"
+#include "Evolution/Patches/SendToPatch.hpp"
 #include "NumericalAlgorithms/Interpolation/IrregularInterpolant.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
@@ -315,8 +315,9 @@ struct SetAndCommunicateInitialRdmpData {
         evolution::dg::subcell::InitialTciData data{{}, rdmp_data};
         // We use temporal ID 0 for sending RDMP data
         const int temporal_id = 0;
-        // A neighbor in an FD patch receives through its patch
-        if (fd_patch::send_to_patch<fd_patch::Tags::InitialTciDataInbox<Dim>>(
+        // A neighbor in a patch receives through its patch
+        if (evolution::patches::send_to_patch<
+                fd_patch::Tags::InitialTciDataInbox<Dim>>(
                 cache, neighbor, temporal_id,
                 DirectionalId<Dim>{direction_from_neighbor, element.id()},
                 std::move(data))) {
@@ -457,8 +458,9 @@ struct ComputeAndSendTciOnInitialGrid {
           evolution::dg::subcell::InitialTciData data{tci_decision, {}};
           // We use temporal ID 1 for ending the TCI decision.
           const int temporal_id = 1;
-          // A neighbor in an FD patch receives through its patch
-          if (fd_patch::send_to_patch<fd_patch::Tags::InitialTciDataInbox<Dim>>(
+          // A neighbor in a patch receives through its patch
+          if (evolution::patches::send_to_patch<
+                  fd_patch::Tags::InitialTciDataInbox<Dim>>(
                   cache, neighbor, temporal_id,
                   DirectionalId<Dim>{direction_from_neighbor, element.id()},
                   std::move(data))) {

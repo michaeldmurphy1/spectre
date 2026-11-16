@@ -16,9 +16,9 @@
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/Side.hpp"
-#include "Evolution/DgSubcell/FdPatch/FdPatches.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/DgSubcell/Projection.hpp"
+#include "Evolution/Patches/PatchTable.hpp"
 #include "NumericalAlgorithms/FiniteDifference/TransfersKokkos.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
@@ -63,12 +63,13 @@ Matrix face_projection(const Mesh<FaceDim>& dg_face_mesh,
 template <size_t Dim>
 PackagedDataFromDg<Dim>::PackagedDataFromDg(
     const Kokkos::DefaultExecutionSpace& exec,
-    const std::vector<Element<Dim>>& elements, const FdPatches<Dim>& fd_patches,
-    const size_t patch, const size_t number_of_packaged_components,
+    const std::vector<Element<Dim>>& elements,
+    const evolution::patches::PatchTable<Dim>& patch_table, const size_t patch,
+    const size_t number_of_packaged_components,
     const size_t number_of_dg_components,
     const size_t variables_to_offset_in_dg_grid)
     : number_of_packaged_components_(number_of_packaged_components) {
-  const auto& element_ids = fd_patches.element_ids(patch);
+  const auto& element_ids = patch_table.element_ids(patch);
   if (elements.size() != element_ids.size()) {
     ERROR("Got " << elements.size() << " elements for patch " << patch
                  << ", which has " << element_ids.size() << " elements");
@@ -80,7 +81,7 @@ PackagedDataFromDg<Dim>::PackagedDataFromDg(
           << number_of_packaged_components << " are used after an offset of "
           << variables_to_offset_in_dg_grid);
   }
-  const Mesh<Dim>& dg_mesh = fd_patches.dg_mesh(patch);
+  const Mesh<Dim>& dg_mesh = patch_table.dg_mesh(patch);
   if (dg_mesh.basis(0) == Spectral::Basis::ZernikeB1) {
     ERROR("FD patches don't support projecting DG data with the basis "
           << dg_mesh.basis(0));
@@ -122,7 +123,7 @@ PackagedDataFromDg<Dim>::PackagedDataFromDg(
               << " neighbors in direction " << direction);
       }
       const ElementId<Dim>& neighbor_id = *neighbors.ids().begin();
-      if (fd_patches.location(neighbor_id).has_value()) {
+      if (patch_table.location(neighbor_id).has_value()) {
         continue;
       }
       if (neighbor_id.block_id() != element.id().block_id()) {

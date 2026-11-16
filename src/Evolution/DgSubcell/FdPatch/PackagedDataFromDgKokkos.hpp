@@ -15,10 +15,10 @@
 /// \cond
 template <size_t VolumeDim>
 class Element;
-namespace evolution::dg::subcell::fd_patch {
+namespace evolution::patches {
 template <size_t Dim>
-class FdPatches;
-}  // namespace evolution::dg::subcell::fd_patch
+class PatchTable;
+}  // namespace evolution::patches
 /// \endcond
 
 namespace evolution::dg::subcell::fd_patch {
@@ -70,8 +70,8 @@ class PackagedDataFromDg {
   /// copied to the device on `exec`.
   PackagedDataFromDg(const Kokkos::DefaultExecutionSpace& exec,
                      const std::vector<Element<Dim>>& elements,
-                     const FdPatches<Dim>& fd_patches, size_t patch,
-                     size_t number_of_packaged_components,
+                     const evolution::patches::PatchTable<Dim>& patch_table,
+                     size_t patch, size_t number_of_packaged_components,
                      size_t number_of_dg_components,
                      size_t variables_to_offset_in_dg_grid);
 

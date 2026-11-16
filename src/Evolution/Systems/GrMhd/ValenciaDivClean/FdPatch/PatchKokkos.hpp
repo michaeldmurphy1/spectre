@@ -261,7 +261,8 @@ class Patch {
         ElementMap<3, Frame::Grid>{element.id(),
                                    domain.blocks()[element.id().block_id()]},
         patch_elements_.grid_to_inertial_map(slot).get_clone(), time,
-        time_step_id, time_step, tci_status_sent, std::move(variables.evolved),
+        time_step_id, time_step, tci_status_sent,
+        patch_elements_.host_cell_geometry(slot), std::move(variables.evolved),
         std::move(variables.primitives), std::move(variables.spacetime));
   }
 

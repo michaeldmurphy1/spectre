@@ -10,6 +10,7 @@
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/MetavariablesTag.hpp"
+#include "DataStructures/Variables.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
 #include "Domain/CoordinateMaps/Tags.hpp"
 #include "Domain/ElementMap.hpp"
@@ -45,6 +46,31 @@
 
 namespace evolution::dg::subcell::fd_patch {
 namespace ElementBox_detail {
+template <size_t Dim>
+using cell_geometry_tags =
+    tmpl::list<subcell::Tags::Coordinates<Dim, Frame::Grid>,
+               fd::Tags::InverseJacobianLogicalToGrid<Dim>,
+               fd::Tags::DetInverseJacobianLogicalToGrid>;
+
+// The time-independent geometry at the cell centers, computed once by the patch
+// (see `FdPatchElements::host_cell_geometry`)
+template <size_t Dim>
+struct CellGeometry : db::SimpleTag {
+  using type = Variables<cell_geometry_tags<Dim>>;
+};
+
+// One tensor of the `CellGeometry`
+template <typename Tag, size_t Dim>
+struct FromCellGeometry : Tag, db::ReferenceTag {
+  using base = Tag;
+  using argument_tags = tmpl::list<CellGeometry<Dim>>;
+
+  static const typename Tag::type& get(
+      const Variables<cell_geometry_tags<Dim>>& cell_geometry) {
+    return ::get<Tag>(cell_geometry);
+  }
+};
+
 // Default initialized, as by `Initialization::TimeStepping`. The stepper
 // errors, the history on the host and the local time stepping tags are empty
 // placeholders, since patches keep their history on the device, don't
@@ -59,19 +85,18 @@ using default_initialized_tags = tmpl::push_back<
     ::Tags::FixedLtsRatio>;
 
 template <size_t Dim, typename Metavariables>
-using initialized_tags =
-    tmpl::list<Parallel::Tags::GlobalCache<Metavariables>,
-               Parallel::Tags::MetavariablesImpl<Metavariables>, ::Tags::Time,
-               ::Tags::TimeStepId, ::Tags::TimeStep, ::domain::Tags::Mesh<Dim>,
-               ::domain::Tags::Element<Dim>,
-               ::domain::Tags::ElementMap<Dim, Frame::Grid>,
-               ::domain::CoordinateMaps::Tags::CoordinateMap<Dim, Frame::Grid,
-                                                             Frame::Inertial>,
-               subcell::Tags::ActiveGrid, subcell::Tags::TciDecision,
-               subcell::Tags::ReconstructionOrder<Dim>,
-               typename Metavariables::system::variables_tag,
-               typename Metavariables::system::primitive_variables_tag,
-               typename Metavariables::system::spacetime_variables_tag>;
+using initialized_tags = tmpl::list<
+    Parallel::Tags::GlobalCache<Metavariables>,
+    Parallel::Tags::MetavariablesImpl<Metavariables>, ::Tags::Time,
+    ::Tags::TimeStepId, ::Tags::TimeStep, ::domain::Tags::Mesh<Dim>,
+    ::domain::Tags::Element<Dim>, ::domain::Tags::ElementMap<Dim, Frame::Grid>,
+    ::domain::CoordinateMaps::Tags::CoordinateMap<Dim, Frame::Grid,
+                                                  Frame::Inertial>,
+    CellGeometry<Dim>, subcell::Tags::ActiveGrid, subcell::Tags::TciDecision,
+    subcell::Tags::ReconstructionOrder<Dim>,
+    typename Metavariables::system::variables_tag,
+    typename Metavariables::system::primitive_variables_tag,
+    typename Metavariables::system::spacetime_variables_tag>;
 
 template <size_t Dim, typename Metavariables>
 using simple_tags = tmpl::append<initialized_tags<Dim, Metavariables>,
@@ -110,16 +135,14 @@ using compute_tags = tmpl::remove_duplicates<tmpl::flatten<tmpl::list<
     // The subcell grid
     subcell::Tags::MeshCompute<Dim>,
     subcell::Tags::LogicalCoordinatesCompute<Dim>,
-    ::domain::Tags::MappedCoordinates<
-        ::domain::Tags::ElementMap<Dim, Frame::Grid>,
-        subcell::Tags::Coordinates<Dim, Frame::ElementLogical>,
-        subcell::Tags::Coordinates>,
+    // The grid coordinates and the logical to grid Jacobians at the cell
+    // centers are computed once by the patch
+    FromCellGeometry<subcell::Tags::Coordinates<Dim, Frame::Grid>, Dim>,
+    FromCellGeometry<fd::Tags::InverseJacobianLogicalToGrid<Dim>, Dim>,
+    FromCellGeometry<fd::Tags::DetInverseJacobianLogicalToGrid, Dim>,
     subcell::Tags::InertialCoordinatesCompute<
         ::domain::CoordinateMaps::Tags::CoordinateMap<Dim, Frame::Grid,
                                                       Frame::Inertial>>,
-    fd::Tags::InverseJacobianLogicalToGridCompute<
-        ::domain::Tags::ElementMap<Dim, Frame::Grid>, Dim>,
-    fd::Tags::DetInverseJacobianLogicalToGridCompute<Dim>,
     fd::Tags::InverseJacobianLogicalToInertialCompute<
         ::domain::CoordinateMaps::Tags::CoordinateMap<Dim, Frame::Grid,
                                                       Frame::Inertial>,
@@ -150,8 +173,14 @@ using element_box_type = db::compute_databox_type<
  * size, the `tci_decision` of the element, and host copies of its evolved,
  * primitive and spacetime variables on the subcell grid. Its coordinates,
  * Jacobians and global cache items are the compute and reference items of an
- * element. Events can then run on the elements of patches as they do on the
- * elements of the `DgElementArray`.
+ * element, except for the time-independent grid coordinates and logical to
+ * grid Jacobians at the cell centers, which the patch computes once in the
+ * same way (`cell_geometry`, see `FdPatchElements::host_cell_geometry`). Events
+ * can then run on the elements of patches as they do on the elements of the
+ * `DgElementArray`, with the same results.
+ *
+ * The variables and the `cell_geometry` may refer to memory owned elsewhere
+ * (without copying), which must outlive the DataBox.
  */
 template <typename Metavariables, size_t Dim>
 element_box_type<Dim, Metavariables> make_element_box(
@@ -162,6 +191,7 @@ element_box_type<Dim, Metavariables> make_element_box(
         grid_to_inertial_map,
     const double time, const TimeStepId& time_step_id, TimeDelta time_step,
     const int tci_decision,
+    Variables<ElementBox_detail::cell_geometry_tags<Dim>> cell_geometry,
     typename Metavariables::system::variables_tag::type evolved_variables,
     typename Metavariables::system::primitive_variables_tag::type primitives,
     typename Metavariables::system::spacetime_variables_tag::type spacetime) {
@@ -172,7 +202,8 @@ element_box_type<Dim, Metavariables> make_element_box(
                           ElementBox_detail::compute_tags<Dim, Metavariables>>(
             &cache, Metavariables{}, time, time_step_id, std::move(time_step),
             std::move(dg_mesh), std::move(element), std::move(element_map),
-            std::move(grid_to_inertial_map), ActiveGrid::Subcell, tci_decision,
+            std::move(grid_to_inertial_map), std::move(cell_geometry),
+            ActiveGrid::Subcell, tci_decision,
             std::optional<tnsr::I<DataVector, Dim, Frame::ElementLogical>>{},
             std::move(evolved_variables), std::move(primitives),
             std::move(spacetime), typename DefaultTags::type{}...);

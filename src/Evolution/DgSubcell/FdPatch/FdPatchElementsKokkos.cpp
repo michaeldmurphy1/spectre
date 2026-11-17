@@ -157,9 +157,13 @@ void FdPatchElements::update_geometry(
   if (all_affine) {
     std::vector<evolution::patches::AffineGridToInertial> maps(
         number_of_maps());
+    // `update_device_maps` checked that the maps are affine, either because
+    // their device versions are or at the corners of the elements, so they
+    // aren't sampled again
+    const tnsr::I<DataVector, 3, Frame::Grid> no_sample_points{};
     for (size_t map = 0; map < maps.size(); ++map) {
       maps[map] = evolution::patches::affine_grid_to_inertial(
-          this->map(map), time, functions_of_time, map_corners(map));
+          this->map(map), time, functions_of_time, no_sample_points);
     }
     const size_t number_of_elements = this->number_of_elements();
     for (size_t slot = 0; slot < number_of_elements; ++slot) {

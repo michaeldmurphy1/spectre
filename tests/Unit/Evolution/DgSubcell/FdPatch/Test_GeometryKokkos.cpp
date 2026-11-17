@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -163,6 +164,17 @@ void check_inertial_geometry(
   const auto affine = evolution::patches::affine_grid_to_inertial(
       grid_to_inertial, time, functions_of_time, logical_to_grid.corners);
   CHECK(affine.is_moving == not grid_to_inertial.is_identity());
+  // Without sample points the map isn't checked, and the parameters are the
+  // same
+  const auto unchecked = evolution::patches::affine_grid_to_inertial(
+      grid_to_inertial, time, functions_of_time,
+      tnsr::I<DataVector, 3, Frame::Grid>{});
+  CHECK(unchecked.inverse_jacobian == affine.inverse_jacobian);
+  CHECK(unchecked.det_inverse_jacobian == affine.det_inverse_jacobian);
+  CHECK(unchecked.velocity_matrix == affine.velocity_matrix);
+  CHECK(unchecked.velocity_offset == affine.velocity_offset);
+  CHECK(unchecked.div_mesh_velocity == affine.div_mesh_velocity);
+  CHECK(unchecked.is_moving == affine.is_moving);
 
   BatchedVariables<fd_patch::inertial_face_tags> faces{
       exec, logical_to_grid.faces.number_of_grid_points(),
@@ -600,6 +612,22 @@ void test_non_affine_map() {
           logical_to_grid.corners),
       Catch::Matchers::ContainsSubstring(
           "FD patches only support affine grid to inertial maps"));
+  // A map that isn't finite, e.g. because a function of time is NaN, isn't
+  // taken as affine
+  auto nan_functions_of_time = make_functions_of_time(time, true);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  nan_functions_of_time["Translation"] =
+      std::make_unique<domain::FunctionsOfTime::PiecewisePolynomial<2>>(
+          0.0,
+          std::array<DataVector, 3>{
+              {{nan, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}}},
+          time + 1.0);
+  CHECK_THROWS_WITH(
+      evolution::patches::affine_grid_to_inertial(*make_grid_to_inertial(),
+                                                  time, nan_functions_of_time,
+                                                  logical_to_grid.corners),
+      Catch::Matchers::ContainsSubstring(
+          "The grid to inertial map isn't finite at the grid origin"));
 }
 }  // namespace
 

@@ -49,7 +49,8 @@ struct AffineGridToInertial {
  * \brief The `AffineGridToInertial` of the `grid_to_inertial` map at `time`.
  *
  * Errors if the map isn't affine at the `sample_points`, e.g. the corners of
- * the elements with the map, to a relative tolerance.
+ * the elements with the map, to a relative tolerance. Without sample points,
+ * the map is assumed to be affine.
  */
 AffineGridToInertial affine_grid_to_inertial(
     const ::domain::CoordinateMapBase<Frame::Grid, Frame::Inertial, 3>&

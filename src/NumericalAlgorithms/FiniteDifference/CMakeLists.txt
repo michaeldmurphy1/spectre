@@ -12,6 +12,7 @@ spectre_target_sources(
   DerivativeOrder.cpp
   FallbackReconstructorType.cpp
   Filter.cpp
+  FilterKokkos.cpp
   FluxDivergenceKokkos.cpp
   Minmod.cpp
   MonotonicityPreserving5.cpp
@@ -38,6 +39,8 @@ spectre_target_headers(
   DerivativeStencils.hpp
   FallbackReconstructorType.hpp
   Filter.hpp
+  FilterKokkos.hpp
+  FilterStencils.hpp
   FiniteDifference.hpp
   FluxDivergenceKokkos.hpp
   HighOrderFluxCorrection.hpp

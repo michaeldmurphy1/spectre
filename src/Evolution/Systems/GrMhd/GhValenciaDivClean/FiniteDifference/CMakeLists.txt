@@ -11,6 +11,7 @@ spectre_target_sources(
   PositivityPreservingAdaptiveOrder.cpp
   Reconstructor.cpp
   RegisterDerivedWithCharm.cpp
+  SpacetimeOnFacesKokkos.cpp
   Wcns5z.cpp
   )
 
@@ -31,6 +32,7 @@ spectre_target_headers(
   ReconstructWork.tpp
   Reconstructor.hpp
   RegisterDerivedWithCharm.hpp
+  SpacetimeOnFacesKokkos.hpp
   Tag.hpp
   Wcns5z.hpp
   )

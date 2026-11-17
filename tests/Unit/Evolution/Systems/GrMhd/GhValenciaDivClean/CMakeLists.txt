@@ -34,6 +34,12 @@ set(LIBRARY_SOURCES
   Test_TimeDerivativeTerms.cpp
   )
 
+if (SPECTRE_KOKKOS)
+  list(APPEND LIBRARY_SOURCES
+    FiniteDifference/Test_SpacetimeOnFacesKokkos.cpp
+    )
+endif()
+
 # The following test is disabled for nvcc because nvcc can't handle it
 # (it runs out of memory).
 if(NOT ${KOKKOS_CXX_COMPILER_ID} STREQUAL "NVIDIA")

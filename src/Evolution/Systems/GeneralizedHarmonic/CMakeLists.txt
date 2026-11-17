@@ -10,6 +10,7 @@ spectre_target_sources(
   PRIVATE
   ApplyTensorYlmFilter.cpp
   Characteristics.cpp
+  ConstraintGammasKokkos.cpp
   Constraints.cpp
   Equations.cpp
   FilledSpherePowerMonitor.cpp
@@ -26,6 +27,7 @@ spectre_target_headers(
   HEADERS
   ApplyTensorYlmFilter.hpp
   Characteristics.hpp
+  ConstraintGammasKokkos.hpp
   Constraints.hpp
   DuDtTempTags.hpp
   Equations.hpp

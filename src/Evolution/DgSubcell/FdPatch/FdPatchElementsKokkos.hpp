@@ -113,6 +113,27 @@ class FdPatchElements : public evolution::patches::PatchElements {
       size_t slot) const;
 
   /*!
+   * \brief Prepare the inertial geometry at the cell centers at `time` on the
+   * host for `host_inertial_cell_geometry()`, e.g. for observations.
+   *
+   * \details If the mesh moves, the geometry is evaluated on the device with
+   * the maps at `time` (see `device_maps_at()`) and copied to the host on
+   * `exec`, which is fenced. Otherwise the inertial frame is the grid frame,
+   * so there is nothing to do.
+   */
+  void prepare_host_inertial_cell_geometry(
+      const Kokkos::DefaultExecutionSpace& exec, double time,
+      const ::domain::FunctionsOfTimeMap& functions_of_time) const;
+
+  /// The inertial coordinates, the logical to inertial inverse Jacobian and
+  /// its determinant at the cell centers of the element in `slot` on the host,
+  /// at the time of the last `prepare_host_inertial_cell_geometry()`,
+  /// referring to the memory of the patch without copying it. It must not be
+  /// modified.
+  Variables<host_inertial_cell_tags> host_inertial_cell_geometry(
+      size_t slot) const;
+
+  /*!
    * \brief Update the geometry to the `time`. Only needed if the mesh moves.
    *
    * \details The host evaluates the grid to inertial maps (one per block)
@@ -248,6 +269,10 @@ class FdPatchElements : public evolution::patches::PatchElements {
   TimeDependentGeometry time_dependent_geometry_{};
   BatchedVariables<cell_geometry_tags> cell_inertial_geometry_{};
   BatchedVariables<cell_mesh_velocity_tags> cell_mesh_velocity_{};
+  // The inertial geometry at the cell centers for the host, if the mesh moves
+  BatchedVariables<cell_geometry_tags> observation_cells_{};
+  BatchedVariables<host_inertial_cell_tags, Kokkos::SharedHostPinnedSpace>
+      host_observation_cells_{};
 
   // Communication
   GhostZones<3> ghost_zones_{};

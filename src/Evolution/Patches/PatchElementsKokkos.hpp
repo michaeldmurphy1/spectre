@@ -120,8 +120,19 @@ class PatchElements {
   /// The map of each element at the time of the last `update_device_maps()`
   Kokkos::View<const ::domain::CoordinateMaps::DeviceMap<3>*> device_maps()
       const {
-    return device_maps_;
+    return device_maps_.of_elements;
   }
+
+  /*!
+   * \brief The map of each element at `time` for device kernels, in buffers
+   * separate from `device_maps()`, e.g. for observations between substeps.
+   *
+   * \details As `update_device_maps()`, so the copy of the previous call must
+   * be done before the next call.
+   */
+  Kokkos::View<const ::domain::CoordinateMaps::DeviceMap<3>*> device_maps_at(
+      const Kokkos::DefaultExecutionSpace& exec, double time,
+      const ::domain::FunctionsOfTimeMap& functions_of_time) const;
 
   /// A description of the element in `slot` for error messages
   std::string element_description(size_t slot) const;
@@ -145,14 +156,30 @@ class PatchElements {
   std::vector<size_t> map_of_slot_{};
   std::vector<tnsr::I<DataVector, 3, Frame::Grid>> map_corners_{};
   bool mesh_is_moving_ = false;
-  // The maps for device kernels: one per block (with its host buffer), the
-  // map of each slot, and the map of each element, gathered on the device
-  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*> device_map_table_{};
-  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*,
-               Kokkos::SharedHostPinnedSpace>
-      host_device_map_table_{};
+  // The maps for device kernels at a time: one per block (with its host
+  // buffer), and the map of each element, gathered on the device
+  struct DeviceMaps {
+    DeviceMaps() = default;
+    DeviceMaps(const Kokkos::DefaultExecutionSpace& exec, size_t number_of_maps,
+               size_t number_of_elements);
+
+    Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*> table{};
+    Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*,
+                 Kokkos::SharedHostPinnedSpace>
+        host_table{};
+    Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*> of_elements{};
+  };
+  // Evaluate the maps at `time` into `device_maps` (whose views can be written
+  // through const handles, so it can be called on const members), and return
+  // whether all of them are affine
+  bool fill_device_maps(
+      const Kokkos::DefaultExecutionSpace& exec, const DeviceMaps& device_maps,
+      double time, const ::domain::FunctionsOfTimeMap& functions_of_time) const;
+
   Kokkos::View<size_t*> device_map_of_slot_{};
-  Kokkos::View<::domain::CoordinateMaps::DeviceMap<3>*> device_maps_{};
+  // For the kernels of the substeps, and for observations between them
+  DeviceMaps device_maps_{};
+  DeviceMaps observation_device_maps_{};
 };
 }  // namespace evolution::patches
 #endif  // SPECTRE_KOKKOS

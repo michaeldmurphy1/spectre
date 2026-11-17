@@ -24,6 +24,7 @@
 #include "Domain/CoordinateMaps/Identity.hpp"
 #include "Domain/CreateInitialElement.hpp"
 #include "Domain/Domain.hpp"
+#include "Domain/InertialGeometryKokkos.hpp"
 #include "Domain/Structure/DirectionalIdMap.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
 #include "Evolution/Patches/PatchTable.hpp"
@@ -99,8 +100,11 @@ FdPatchElements::FdPatchElements(
       pinned_buffer("FD patch send data on the host", send_data_.size());
 
   // Geometry
+  // The cell centers are needed to evaluate the maps there for the cell
+  // geometry and for observations with a moving mesh
   logical_to_grid_ =
-      logical_to_grid(exec, element_maps(), dg_mesh(), compute_cell_geometry);
+      logical_to_grid(exec, element_maps(), dg_mesh(),
+                      compute_cell_geometry_ or mesh_is_moving());
   grid_to_inertial_ = Kokkos::View<evolution::patches::AffineGridToInertial*>(
       Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
                          "FD patch grid to inertial maps"),
@@ -132,6 +136,13 @@ FdPatchElements::FdPatchElements(
     cell_mesh_velocity_ = BatchedVariables<cell_mesh_velocity_tags>{
         exec, subcell_mesh_.number_of_grid_points(), number_of_elements};
   }
+  if (mesh_is_moving()) {
+    observation_cells_ = BatchedVariables<cell_geometry_tags>{
+        exec, subcell_mesh_.number_of_grid_points(), number_of_elements};
+    host_observation_cells_ = BatchedVariables<host_inertial_cell_tags,
+                                               Kokkos::SharedHostPinnedSpace>{
+        exec, subcell_mesh_.number_of_grid_points(), number_of_elements};
+  }
   update_geometry(exec, time, functions_of_time);
 }
 
@@ -141,6 +152,41 @@ Variables<host_logical_to_grid_cell_tags> FdPatchElements::host_cell_geometry(
   auto host_cells = logical_to_grid_.host_cells;
   Variables<host_logical_to_grid_cell_tags> result{};
   set_data_ref_to_element(make_not_null(&result), host_cells, slot);
+  return result;
+}
+
+void FdPatchElements::prepare_host_inertial_cell_geometry(
+    const Kokkos::DefaultExecutionSpace& exec, const double time,
+    const ::domain::FunctionsOfTimeMap& functions_of_time) const {
+  if (not mesh_is_moving()) {
+    return;
+  }
+  const Kokkos::Profiling::ScopedRegion region{
+      "fd_patch::FdPatchElements::prepare_host_inertial_cell_geometry"};
+  // Copies of the handles, which refer to the same data, so the buffers can
+  // be filled in this const function
+  auto cells = observation_cells_;
+  ::domain::inertial_geometry_on_device<false>(
+      exec, make_not_null(&cells), logical_to_grid_.cell_points,
+      device_maps_at(exec, time, functions_of_time));
+  // The tags differ, but the layouts are the same
+  Kokkos::deep_copy(exec, host_observation_cells_.view(), cells.view());
+  exec.fence("fd_patch::FdPatchElements::prepare_host_inertial_cell_geometry");
+}
+
+Variables<host_inertial_cell_tags> FdPatchElements::host_inertial_cell_geometry(
+    const size_t slot) const {
+  Variables<host_inertial_cell_tags> result{};
+  if (mesh_is_moving()) {
+    auto host_cells = host_observation_cells_;
+    set_data_ref_to_element(make_not_null(&result), host_cells, slot);
+  } else {
+    // The grid coordinates and the logical to grid Jacobians, since the grid
+    // to inertial map is the identity
+    BatchedVariables<host_inertial_cell_tags, Kokkos::HostSpace> host_cells{
+        logical_to_grid_.host_cells.view()};
+    set_data_ref_to_element(make_not_null(&result), host_cells, slot);
+  }
   return result;
 }
 

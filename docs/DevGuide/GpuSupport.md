@@ -319,7 +319,8 @@ members: `state_tags`, `patch_elements()` (with `element_ids()`),
 `check_last_step()`, the self-start `save_initial_values()`,
 `restore_initial_values()` and `discard_initial_values()`, and for events
 `ElementVariables`, `element_variables()`,
-`element_variables_without_values()` and `make_element_box()`.
+`element_variables_without_values()`, `prepare_element_boxes()` and
+`make_element_box()`.
 
 ## Batching
 
@@ -390,6 +391,15 @@ occasionally rather than every step. The copy goes to pinned host memory that
 the patch allocates at the first observation that reads the variables (see
 `evolution::patches::HostCopy`), so patches whose events don't read them don't
 hold that memory.
+
+The geometry is the expensive part of these DataBoxes, so the patch computes it
+for all its elements, and the DataBoxes refer to it: the time-independent
+geometry once, and with a moving mesh the inertial geometry at each
+observation, on the device (`prepare_element_boxes()`). The DataBoxes also hold
+the geometry for observations (`Events::Tags::ObserverInverseJacobian` etc.),
+which replaces the events' compute tags for it. Computing it per element
+dominated the cost of an `ObserveNorms` (~0.21 ms per element on a GH200
+node).
 
 Since events and step choosers are compiled against this DataBox, it must
 provide every tag that any event or step chooser of the executable may read.

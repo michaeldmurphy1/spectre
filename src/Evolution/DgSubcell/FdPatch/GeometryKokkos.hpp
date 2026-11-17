@@ -131,6 +131,19 @@ using cell_geometry_tags = ::domain::inertial_geometry_tags<3, false>;
 /// `grmhd::GhValenciaDivClean::subcell::TimeDerivative` does
 using cell_mesh_velocity_tags =
     tmpl::list<Tags::CellMeshVelocity, Tags::CellDivMeshVelocity>;
+/// The inertial geometry at the cell centers of the elements of a patch on
+/// the host, as the subcell compute tags of an element compute it (see
+/// `make_element_box`). It has the layout of the `cell_geometry_tags` on the
+/// device and, for maps that don't depend on time, of the
+/// `host_logical_to_grid_cell_tags`.
+using host_inertial_cell_tags = tmpl::list<
+    evolution::dg::subcell::Tags::Coordinates<3, Frame::Inertial>,
+    evolution::dg::subcell::fd::Tags::InverseJacobianLogicalToInertial<3>,
+    evolution::dg::subcell::fd::Tags::DetInverseJacobianLogicalToInertial>;
+static_assert(tmpl::size<host_inertial_cell_tags>::value ==
+                  tmpl::size<cell_geometry_tags>::value and
+              tmpl::size<host_inertial_cell_tags>::value ==
+                  tmpl::size<host_logical_to_grid_cell_tags>::value);
 
 /*!
  * \brief The time-independent part of the geometry of the elements of a patch,

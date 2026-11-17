@@ -4,6 +4,7 @@
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  CouplingKokkos.cpp
   FixConservativesAndComputePrims.cpp
   NeighborPackagedData.cpp
   PrimitiveGhostData.cpp
@@ -15,6 +16,7 @@ spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
+  CouplingKokkos.hpp
   FixConservativesAndComputePrims.hpp
   NeighborPackagedData.hpp
   PrimitiveGhostData.hpp

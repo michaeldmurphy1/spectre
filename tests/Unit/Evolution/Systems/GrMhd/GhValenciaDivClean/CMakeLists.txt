@@ -37,6 +37,7 @@ set(LIBRARY_SOURCES
 if (SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
     FiniteDifference/Test_SpacetimeOnFacesKokkos.cpp
+    Subcell/Test_CouplingKokkos.cpp
     )
 endif()
 

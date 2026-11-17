@@ -3,9 +3,12 @@
 
 #include "Framework/TestingFramework.hpp"
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <random>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
@@ -119,6 +122,7 @@ void apply_on_device(const gsl::not_null<Device*> time_derivative,
 // The device time derivative agrees with `gh::TimeDerivative` with the
 // harmonic gauge, for several elements with different data
 void test_same_as_time_derivative(const gsl::not_null<std::mt19937*> generator,
+                                  const Device::DtPiLayout dt_pi_layout,
                                   const bool moving_mesh) {
   const Kokkos::DefaultExecutionSpace exec{};
   const size_t number_of_points = 20;
@@ -137,7 +141,7 @@ void test_same_as_time_derivative(const gsl::not_null<std::mt19937*> generator,
   deep_copy(exec, make_not_null(&arguments), host_arguments);
   const BatchedVariables<return_tags> results{exec, number_of_points,
                                               number_of_elements};
-  Device time_derivative{};
+  Device time_derivative{dt_pi_layout};
   // Twice, to check that the cache is reused
   for (size_t i = 0; i < 2; ++i) {
     apply_on_device(make_not_null(&time_derivative), exec, results, arguments,
@@ -170,8 +174,14 @@ struct BenchmarkData {
   static constexpr size_t number_of_points = size_t{17} * 17 * 17;
   BatchedVariables<argument_tags> arguments{};
   BatchedVariables<return_tags> results{};
-  Device time_derivative{};
 };
+
+// The layouts of the dt_pi kernels and their names
+const std::array<std::pair<Device::DtPiLayout, std::string>, 4> dt_pi_layouts{
+    {{Device::DtPiLayout::Point, "Point"},
+     {Device::DtPiLayout::Row, "Row"},
+     {Device::DtPiLayout::Component, "Component"},
+     {Device::DtPiLayout::WarpComponent, "WarpComponent"}}};
 
 BenchmarkData make_benchmark_data() {
   const Kokkos::DefaultExecutionSpace exec{};
@@ -220,24 +230,28 @@ void benchmark_on_device() {
     }
     return *benchmark_data_storage;
   };
-  for (const bool moving_mesh : {false, true}) {
-    BENCHMARK_ADVANCED(moving_mesh
-                           ? "GH time derivative, moving mesh, 504 elements of "
-                             "17^3 cells"
-                           : "GH time derivative, 504 elements of 17^3 cells")
-    (Catch::Benchmark::Chronometer meter) {
-      const Kokkos::DefaultExecutionSpace exec{};
-      auto& data = benchmark_data();
-      // Allocate the cache before measuring
-      apply_on_device(make_not_null(&data.time_derivative), exec, data.results,
-                      data.arguments, moving_mesh);
-      exec.fence();
-      meter.measure([&]() {
-        apply_on_device(make_not_null(&data.time_derivative), exec,
-                        data.results, data.arguments, moving_mesh);
+  // For each layout, the first evaluation on the full batch is the first in
+  // its static mesh benchmark, which allocates the cache
+  for (const auto& [dt_pi_layout, layout_name] : dt_pi_layouts) {
+    for (const bool moving_mesh : {false, true}) {
+      BENCHMARK_ADVANCED("GH time derivative, " + layout_name +
+                         (moving_mesh ? ", moving mesh" : "") +
+                         ", 504 elements of 17^3 cells")
+      (Catch::Benchmark::Chronometer meter) {
+        const Kokkos::DefaultExecutionSpace exec{};
+        auto& data = benchmark_data();
+        Device time_derivative{dt_pi_layout};
+        // Allocate the cache before measuring
+        apply_on_device(make_not_null(&time_derivative), exec, data.results,
+                        data.arguments, moving_mesh);
         exec.fence();
-      });
-    };
+        meter.measure([&]() {
+          apply_on_device(make_not_null(&time_derivative), exec, data.results,
+                          data.arguments, moving_mesh);
+          exec.fence();
+        });
+      };
+    }
   }
   BENCHMARK_ADVANCED("copy, 504 elements of 17^3 cells")
   (Catch::Benchmark::Chronometer meter) {
@@ -270,7 +284,11 @@ void benchmark_on_device() {
 SPECTRE_TEST_CASE("Unit.Evolution.Systems.Gh.TimeDerivative.Kokkos",
                   "[Unit][Evolution]") {
   MAKE_GENERATOR(generator);
-  test_same_as_time_derivative(make_not_null(&generator), false);
-  test_same_as_time_derivative(make_not_null(&generator), true);
+  for (const auto& [dt_pi_layout, layout_name] : dt_pi_layouts) {
+    CAPTURE(layout_name);
+    test_same_as_time_derivative(make_not_null(&generator), dt_pi_layout,
+                                 false);
+    test_same_as_time_derivative(make_not_null(&generator), dt_pi_layout, true);
+  }
   benchmark_on_device();
 }

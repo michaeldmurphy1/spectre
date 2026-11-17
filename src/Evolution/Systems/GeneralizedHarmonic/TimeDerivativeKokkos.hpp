@@ -41,10 +41,9 @@ namespace gh {
  * 3. \f$\partial_t g_{ab}\f$;
  * 4. \f$\partial_t \Pi_{ab}\f$, recomputing the cheap contractions of
  *    \f$\Pi\f$ and \f$\Phi\f$ with the inverse metrics where they are used
- *    instead of storing them. Each thread computes one component at a grid
- *    point, since computing all ten in one thread spills registers. The
- *    threads of the ten components of the same grid points run together, so
- *    that the values they all read are cached;
+ *    instead of storing them. How the threads split the work is a choice
+ *    (`DtPiLayout`), since computing all ten components in one thread spills
+ *    registers;
  * 5. \f$\partial_t \Phi_{iab}\f$.
  *
  * All tensor indices are compile-time constants, so the compiler keeps the
@@ -68,6 +67,31 @@ class TimeDerivativeOnDevice {
   struct MeshVelocity : db::SimpleTag {
     using type = tnsr::I<DataVector, dim, Frame::Inertial>;
   };
+
+  /*!
+   * \brief How the threads compute \f$\partial_t \Pi_{ab}\f$.
+   *
+   * \details Different layouts are only kept until benchmarks decide between
+   * them. All give the same results.
+   */
+  enum class DtPiLayout {
+    /// One kernel, in which each thread computes all components at a grid
+    /// point
+    Point,
+    /// One kernel per row \f$a\f$, in which each thread computes the
+    /// components \f$b \geq a\f$ at a grid point
+    Row,
+    /// One kernel per component, with one thread per grid point
+    Component,
+    /// One kernel, in which each thread computes one component at a grid
+    /// point. The threads of the ten components at the same 32 grid points
+    /// run together.
+    WarpComponent
+  };
+
+  TimeDerivativeOnDevice() = default;
+  explicit TimeDerivativeOnDevice(DtPiLayout dt_pi_layout)
+      : dt_pi_layout_(dt_pi_layout) {}
 
   /// The intermediate results in device memory
   using cache_tags =
@@ -100,6 +124,7 @@ class TimeDerivativeOnDevice {
   const BatchedVariables<cache_tags>& cache() const { return cache_; }
 
  private:
+  DtPiLayout dt_pi_layout_{DtPiLayout::Row};
   BatchedVariables<cache_tags> cache_{};
 };
 }  // namespace gh

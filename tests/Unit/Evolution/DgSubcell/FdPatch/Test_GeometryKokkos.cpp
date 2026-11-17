@@ -163,6 +163,17 @@ void check_inertial_geometry(
   const auto affine = evolution::patches::affine_grid_to_inertial(
       grid_to_inertial, time, functions_of_time, logical_to_grid.corners);
   CHECK(affine.is_moving == not grid_to_inertial.is_identity());
+  // Without sample points the map isn't checked, and the parameters are the
+  // same
+  const auto unchecked = evolution::patches::affine_grid_to_inertial(
+      grid_to_inertial, time, functions_of_time,
+      tnsr::I<DataVector, 3, Frame::Grid>{});
+  CHECK(unchecked.inverse_jacobian == affine.inverse_jacobian);
+  CHECK(unchecked.det_inverse_jacobian == affine.det_inverse_jacobian);
+  CHECK(unchecked.velocity_matrix == affine.velocity_matrix);
+  CHECK(unchecked.velocity_offset == affine.velocity_offset);
+  CHECK(unchecked.div_mesh_velocity == affine.div_mesh_velocity);
+  CHECK(unchecked.is_moving == affine.is_moving);
 
   BatchedVariables<fd_patch::inertial_face_tags> faces{
       exec, logical_to_grid.faces.number_of_grid_points(),

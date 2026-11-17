@@ -30,6 +30,7 @@ if(SPECTRE_KOKKOS)
     Test_PartialDerivativesKokkos.cpp
     Test_PositivityPreservingAdaptiveOrderKokkos.cpp
     Test_TransfersKokkos.cpp
+    Test_UnlimitedKokkos.cpp
     Test_VolumeViewKokkos.cpp
     )
 endif()

@@ -26,6 +26,7 @@ spectre_target_sources(
   SecondPartialDerivatives.cpp
   TransfersKokkos.cpp
   Unlimited.cpp
+  UnlimitedKokkos.cpp
   VolumeViewKokkos.cpp
   Wcns5z.cpp
   )
@@ -62,6 +63,7 @@ spectre_target_headers(
   SecondPartialDerivatives.tpp
   TransfersKokkos.hpp
   Unlimited.hpp
+  UnlimitedKokkos.hpp
   VolumeViewKokkos.hpp
   Wcns5z.hpp
   )

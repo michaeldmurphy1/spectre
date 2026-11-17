@@ -10,7 +10,10 @@
 #include <unordered_map>
 
 #include "DataStructures/Tensor/TypeAliases.hpp"
+#include "PointwiseFunctions/ConstraintDamping/GaussianSum.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/PrettyType.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
 
 /// \cond
@@ -78,6 +81,24 @@ class DampingFunction : public PUP::able {
           std::unique_ptr<::domain::FunctionsOfTime::FunctionOfTime>>&
           functions_of_time) const = 0;
   /// @}
+
+  /*!
+   * \brief The function at the `time` as a `GaussianSum`, e.g. to evaluate it
+   * on the device.
+   *
+   * \details The `GaussianSum` gives the same values as the call operator at
+   * the `time`. It is an error if the function isn't of this form.
+   */
+  virtual GaussianSum<VolumeDim> as_gaussian_sum(
+      double /*time*/,
+      const std::unordered_map<
+          std::string,
+          std::unique_ptr<::domain::FunctionsOfTime::FunctionOfTime>>&
+      /*functions_of_time*/) const {
+    ERROR("The damping function " << pretty_type::get_runtime_type_name(*this)
+                                  << " can't be written as a GaussianSum, so "
+                                     "it can't be evaluated on the device.");
+  }
 
   virtual auto get_clone() const
       -> std::unique_ptr<DampingFunction<VolumeDim, Fr>> = 0;

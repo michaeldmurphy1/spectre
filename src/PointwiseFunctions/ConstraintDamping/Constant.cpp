@@ -60,6 +60,19 @@ void Constant<VolumeDim, Fr>::operator()(
 }
 
 template <size_t VolumeDim, typename Fr>
+GaussianSum<VolumeDim> Constant<VolumeDim, Fr>::as_gaussian_sum(
+    const double /*time*/,
+    const std::unordered_map<
+        std::string,
+        std::unique_ptr<::domain::FunctionsOfTime::FunctionOfTime>>&
+    /*functions_of_time*/) const {
+  GaussianSum<VolumeDim> result{};
+  result.constant = value_;
+  result.number_of_gaussians = 0;
+  return result;
+}
+
+template <size_t VolumeDim, typename Fr>
 void Constant<VolumeDim, Fr>::pup(PUP::er& p) {
   DampingFunction<VolumeDim, Fr>::pup(p);
   p | value_;
@@ -74,16 +87,23 @@ auto Constant<VolumeDim, Fr>::get_clone() const
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
 #define FRAME(data) BOOST_PP_TUPLE_ELEM(1, data)
-#define INSTANTIATE(_, data)                                              \
-  template ConstraintDamping::Constant<DIM(data), FRAME(data)>::Constant( \
-      CkMigrateMessage* msg);                                             \
-  template ConstraintDamping::Constant<DIM(data), FRAME(data)>::Constant( \
-      const double value);                                                \
-  template void ConstraintDamping::Constant<DIM(data), FRAME(data)>::pup( \
-      PUP::er& p);                                                        \
-  template auto                                                           \
-  ConstraintDamping::Constant<DIM(data), FRAME(data)>::get_clone()        \
-      const->std::unique_ptr<DampingFunction<DIM(data), FRAME(data)>>;
+#define INSTANTIATE(_, data)                                                  \
+  template ConstraintDamping::Constant<DIM(data), FRAME(data)>::Constant(     \
+      CkMigrateMessage* msg);                                                 \
+  template ConstraintDamping::Constant<DIM(data), FRAME(data)>::Constant(     \
+      const double value);                                                    \
+  template void ConstraintDamping::Constant<DIM(data), FRAME(data)>::pup(     \
+      PUP::er& p);                                                            \
+  template ConstraintDamping::GaussianSum<DIM(data)>                          \
+  ConstraintDamping::Constant<DIM(data), FRAME(data)>::as_gaussian_sum(       \
+      const double /*time*/,                                                  \
+      const std::unordered_map<                                               \
+          std::string,                                                        \
+          std::unique_ptr<::domain::FunctionsOfTime::                         \
+                              FunctionOfTime>>& /*functions_of_time*/) const; \
+  template auto                                                               \
+  ConstraintDamping::Constant<DIM(data), FRAME(data)>::get_clone() const      \
+      -> std::unique_ptr<DampingFunction<DIM(data), FRAME(data)>>;
 
 GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3), (Frame::Grid, Frame::Inertial))
 #undef DIM

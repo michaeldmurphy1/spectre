@@ -99,6 +99,13 @@ class GaussianPlusConstant : public DampingFunction<VolumeDim, Fr> {
           std::unique_ptr<::domain::FunctionsOfTime::FunctionOfTime>>&
           functions_of_time) const override;
 
+  GaussianSum<VolumeDim> as_gaussian_sum(
+      double /*time*/,
+      const std::unordered_map<
+          std::string,
+          std::unique_ptr<::domain::FunctionsOfTime::FunctionOfTime>>&
+      /*functions_of_time*/) const override;
+
   auto get_clone() const
       -> std::unique_ptr<DampingFunction<VolumeDim, Fr>> override;
 

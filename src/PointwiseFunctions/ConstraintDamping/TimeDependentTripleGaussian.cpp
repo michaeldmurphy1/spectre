@@ -170,6 +170,57 @@ void TimeDependentTripleGaussian::operator()(
   apply_call_operator(value_at_x, x, time, functions_of_time);
 }
 
+GaussianSum<3> TimeDependentTripleGaussian::as_gaussian_sum(
+    const double time,
+    const std::unordered_map<
+        std::string,
+        std::unique_ptr<::domain::FunctionsOfTime::FunctionOfTime>>&
+        functions_of_time) const {
+  GaussianSum<3> result{};
+  result.constant = constant_;
+  result.number_of_gaussians = 3;
+  // As in `apply_call_operator`
+  std::array<double, 3> center_1{};
+  std::array<double, 3> center_2{};
+  double inverse_width_factor = 1.0;
+  if (movement_method_ == MovementMethods::ExpansionFactor) {
+    const DataVector expansion_factor =
+        functions_of_time.at(function_of_time_for_scaling_)->func(time)[0];
+    ASSERT(expansion_factor.size() == 1,
+           "FunctionOfTimeForScaling in TimeDependentTripleGaussian must be a "
+           "scalar FunctionOfTime, not "
+               << expansion_factor.size());
+    inverse_width_factor = expansion_factor[0];
+    center_1 = center_1_.value();
+    center_2 = center_2_.value();
+  } else {
+    const DataVector centers =
+        functions_of_time.at(function_of_time_for_centers_)->func(time)[0];
+    ASSERT(centers.size() == 6,
+           "FunctionOfTimeForCenters in TimeDependentTripleGaussian must have "
+           "6 components, not "
+               << centers.size());
+    center_1 = {centers[0], centers[1], centers[2]};
+    center_2 = {centers[3], centers[4], centers[5]};
+  }
+  const auto exponent_factor =
+      [this, inverse_width_factor](const double inverse_width) {
+        return movement_method_ == MovementMethods::ExpansionFactor
+                   ? square(inverse_width * inverse_width_factor)
+                   : square(inverse_width);
+      };
+  result.gaussians[0] = {.amplitude = amplitude_1_,
+                         .exponent_factor = exponent_factor(inverse_width_1_),
+                         .center = center_1};
+  result.gaussians[1] = {.amplitude = amplitude_2_,
+                         .exponent_factor = exponent_factor(inverse_width_2_),
+                         .center = center_2};
+  result.gaussians[2] = {.amplitude = amplitude_3_,
+                         .exponent_factor = exponent_factor(inverse_width_3_),
+                         .center = center_3_};
+  return result;
+}
+
 void TimeDependentTripleGaussian::pup(PUP::er& p) {
   DampingFunction<3, Frame::Grid>::pup(p);
   p | constant_;

@@ -33,7 +33,10 @@ set(LIBRARY_SOURCES
   )
 
 if (SPECTRE_KOKKOS)
-  list(APPEND LIBRARY_SOURCES Test_TimeDerivativeKokkos.cpp)
+  list(APPEND LIBRARY_SOURCES
+    Test_ConstraintGammasKokkos.cpp
+    Test_TimeDerivativeKokkos.cpp
+    )
 endif()
 
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")

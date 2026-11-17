@@ -74,6 +74,22 @@ void GaussianPlusConstant<VolumeDim, Fr>::operator()(
 }
 
 template <size_t VolumeDim, typename Fr>
+GaussianSum<VolumeDim> GaussianPlusConstant<VolumeDim, Fr>::as_gaussian_sum(
+    const double /*time*/,
+    const std::unordered_map<
+        std::string,
+        std::unique_ptr<::domain::FunctionsOfTime::FunctionOfTime>>&
+    /*functions_of_time*/) const {
+  GaussianSum<VolumeDim> result{};
+  result.constant = constant_;
+  result.number_of_gaussians = 1;
+  result.gaussians[0] = {.amplitude = amplitude_,
+                         .exponent_factor = square(inverse_width_),
+                         .center = center_};
+  return result;
+}
+
+template <size_t VolumeDim, typename Fr>
 void GaussianPlusConstant<VolumeDim, Fr>::pup(PUP::er& p) {
   DampingFunction<VolumeDim, Fr>::pup(p);
   p | constant_;
@@ -101,9 +117,17 @@ auto GaussianPlusConstant<VolumeDim, Fr>::get_clone() const
   template void                                                                \
   ConstraintDamping::GaussianPlusConstant<DIM(data), FRAME(data)>::pup(        \
       PUP::er& p);                                                             \
+  template ConstraintDamping::GaussianSum<DIM(data)> ConstraintDamping::       \
+      GaussianPlusConstant<DIM(data), FRAME(data)>::as_gaussian_sum(           \
+          const double /*time*/,                                               \
+          const std::unordered_map<                                            \
+              std::string,                                                     \
+              std::unique_ptr<::domain::FunctionsOfTime::                      \
+                                  FunctionOfTime>>& /*functions_of_time*/)     \
+          const;                                                               \
   template auto                                                                \
   ConstraintDamping::GaussianPlusConstant<DIM(data), FRAME(data)>::get_clone() \
-      const->std::unique_ptr<DampingFunction<DIM(data), FRAME(data)>>;
+      const -> std::unique_ptr<DampingFunction<DIM(data), FRAME(data)>>;
 
 GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3), (Frame::Grid, Frame::Inertial))
 #undef DIM

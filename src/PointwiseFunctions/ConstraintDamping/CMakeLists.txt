@@ -21,6 +21,7 @@ spectre_target_headers(
   Constant.hpp
   DampingFunction.hpp
   GaussianPlusConstant.hpp
+  GaussianSum.hpp
   RegisterDerivedWithCharm.hpp
   TimeDependentTripleGaussian.hpp
   )

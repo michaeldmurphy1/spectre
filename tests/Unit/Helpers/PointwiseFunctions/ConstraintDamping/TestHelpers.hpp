@@ -12,6 +12,7 @@
 #include <pup.h>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
 #include "PointwiseFunctions/ConstraintDamping/DampingFunction.hpp"
+#include "Utilities/ContainerHelpers.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/MakeWithValue.hpp"
@@ -106,6 +108,23 @@ void check_impl(
           Scalar<T> value_at_coordinates{};
           gh_damping_function->operator()(make_not_null(&value_at_coordinates),
                                           coordinates, time, functions_of_time);
+          // The `GaussianSum` at the time gives the same values. They are
+          // identical for doubles, but vectorized math functions may differ
+          // in the last bits.
+          const auto gaussian_sum =
+              gh_damping_function->as_gaussian_sum(time, functions_of_time);
+          for (size_t s = 0; s < get_size(get(value_at_coordinates)); ++s) {
+            std::array<double, VolumeDim> x{};
+            for (size_t d = 0; d < VolumeDim; ++d) {
+              gsl::at(x, d) = get_element(coordinates.get(d), s);
+            }
+            if constexpr (std::is_same_v<T, double>) {
+              CHECK(gaussian_sum(x) == get(value_at_coordinates));
+            } else {
+              CHECK(gaussian_sum(x) ==
+                    approx(get_element(get(value_at_coordinates), s)));
+            }
+          }
           return value_at_coordinates;
         };
 

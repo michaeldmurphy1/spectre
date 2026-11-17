@@ -14,6 +14,7 @@
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
 namespace gh {
@@ -161,6 +162,282 @@ KOKKOS_FORCEINLINE_FUNCTION tnsr::A<double, dim> normal_vector(
     get<i + 1>(result) = -get<i>(shift) * get<0>(result);
   });
   return result;
+}
+// The time derivative of Pi, as `gh::TimeDerivative` with the harmonic gauge.
+// The kernels of the layouts (see `TimeDerivativeOnDevice::DtPiLayout`) compute
+// some of its components at a grid point.
+struct DtPiArguments {
+  using Class = TimeDerivativeOnDevice;
+  Batch<::Tags::dt<Class::pi_tag>> dt_pi;
+  Batch<Class::deriv<Class::spacetime_metric_tag>> d_spacetime_metric;
+  Batch<Class::deriv<Class::pi_tag>> d_pi;
+  Batch<Class::deriv<Class::phi_tag>> d_phi;
+  Batch<Class::spacetime_metric_tag> spacetime_metric;
+  Batch<Class::pi_tag> pi;
+  Batch<Class::phi_tag> phi;
+  Batch<Tags::ConstraintGamma0> gamma0;
+  Batch<Tags::ConstraintGamma1> gamma1;
+  Batch<Tags::ConstraintGamma2> gamma2;
+  bool has_mesh_velocity;
+  Batch<Class::MeshVelocity> mesh_velocity;
+  Batch<gr::Tags::Lapse<DataVector>> lapse;
+  Batch<gr::Tags::Shift<DataVector, dim>> shift;
+  Batch<gr::Tags::InverseSpatialMetric<DataVector, dim>> inverse_spatial_metric;
+  Batch<::Tags::TempTensor<0, tnsr::abC<DataVector, dim>>> christoffel_3_up;
+  Batch<Tags::GaugeConstraint<DataVector, dim, Frame::Inertial>>
+      gauge_constraint;
+};
+
+// The values at a grid point that all components use
+struct DtPiPointValues {
+  ThreePlusOne three_plus_one;
+  tnsr::AA<double, dim> inverse_metric;
+  tnsr::a<double, dim> gauge_constraint;
+  double gamma0;
+  double gamma1gamma2;
+  tnsr::a<double, dim> pi_one_normal;
+  double half_pi_two_normals;
+  double normal_dot_gauge_constraint;
+};
+
+KOKKOS_FORCEINLINE_FUNCTION DtPiPointValues
+dt_pi_point_values(const DtPiArguments& args, const PointIndex& index) {
+  DtPiPointValues values{};
+  values.three_plus_one = read_three_plus_one(
+      args.lapse, args.shift, args.inverse_spatial_metric, index);
+  const double lapse = values.three_plus_one.lapse;
+  const auto& shift = values.three_plus_one.shift;
+  values.inverse_metric = inverse_spacetime_metric(
+      lapse, shift, values.three_plus_one.inverse_spatial_metric);
+  const auto normal = normal_vector(lapse, shift);
+  static_for<dim + 1>([&](auto a_c) {
+    constexpr size_t a = decltype(a_c)::value;
+    get<a>(values.gauge_constraint) = at<a>(args.gauge_constraint, index);
+  });
+  values.gamma0 = scalar_at(args.gamma0, index);
+  values.gamma1gamma2 =
+      scalar_at(args.gamma1, index) * scalar_at(args.gamma2, index);
+
+  // n^a Pi_{ab}
+  static_for<dim + 1>([&](auto mu_c) {
+    constexpr size_t mu = decltype(mu_c)::value;
+    get<mu>(values.pi_one_normal) = get<0>(normal) * at<0, mu>(args.pi, index);
+    static_for<dim>([&](auto nu_c) {
+      constexpr size_t nu = decltype(nu_c)::value + 1;
+      get<mu>(values.pi_one_normal) +=
+          get<nu>(normal) * at<nu, mu>(args.pi, index);
+    });
+  });
+  values.half_pi_two_normals = get<0>(normal) * get<0>(values.pi_one_normal);
+  static_for<dim>([&](auto mu_c) {
+    constexpr size_t mu = decltype(mu_c)::value + 1;
+    values.half_pi_two_normals +=
+        get<mu>(normal) * get<mu>(values.pi_one_normal);
+  });
+  values.half_pi_two_normals *= 0.5;
+  values.normal_dot_gauge_constraint =
+      get<0>(normal) * get<0>(values.gauge_constraint);
+  static_for<dim>([&](auto mu_c) {
+    constexpr size_t mu = decltype(mu_c)::value + 1;
+    values.normal_dot_gauge_constraint +=
+        get<mu>(normal) * get<mu>(values.gauge_constraint);
+  });
+  // Rescaled by gamma0, as on the host
+  values.normal_dot_gauge_constraint *= values.gamma0;
+  return values;
+}
+
+// The component `(Mu, Nu)`, with the operations in the same order as on the
+// host
+template <size_t Mu, size_t Nu>
+KOKKOS_FORCEINLINE_FUNCTION void dt_pi_component(const DtPiArguments& args,
+                                                 const DtPiPointValues& values,
+                                                 const PointIndex& index) {
+  constexpr size_t mu = Mu;
+  constexpr size_t nu = Nu;
+  const double lapse = values.three_plus_one.lapse;
+  const auto& shift = values.three_plus_one.shift;
+  const auto& inverse_spatial_metric =
+      values.three_plus_one.inverse_spatial_metric;
+  const auto& inverse_metric = values.inverse_metric;
+  const auto& pi = args.pi;
+  const auto& phi = args.phi;
+
+  // The contractions, recomputed where they are used
+  // Pi_{nu beta} g^{delta beta}
+  const auto pi_2_up = [&](auto delta_c) -> double {
+    constexpr size_t delta = decltype(delta_c)::value;
+    double result = get<delta, 0>(inverse_metric) * at<nu, 0>(pi, index);
+    static_for<dim>([&](auto beta_c) {
+      constexpr size_t beta = decltype(beta_c)::value + 1;
+      result += get<delta, beta>(inverse_metric) * at<nu, beta>(pi, index);
+    });
+    return result;
+  };
+  // g^{m n} Phi_{n a b}
+  const auto phi_1_up = [&](auto m_c, auto a_c, auto b_c) -> double {
+    constexpr size_t m = decltype(m_c)::value;
+    constexpr size_t a = decltype(a_c)::value;
+    constexpr size_t b = decltype(b_c)::value;
+    double result = get<m, 0>(inverse_spatial_metric) * at<0, a, b>(phi, index);
+    static_for<dim - 1>([&](auto n_c) {
+      constexpr size_t n = decltype(n_c)::value + 1;
+      result += get<m, n>(inverse_spatial_metric) * at<n, a, b>(phi, index);
+    });
+    return result;
+  };
+  // g^{alpha beta} Phi_{m nu beta}
+  const auto phi_3_up = [&](auto m_c, auto alpha_c) -> double {
+    constexpr size_t m = decltype(m_c)::value;
+    constexpr size_t alpha = decltype(alpha_c)::value;
+    double result = get<alpha, 0>(inverse_metric) * at<m, nu, 0>(phi, index);
+    static_for<dim>([&](auto beta_c) {
+      constexpr size_t beta = decltype(beta_c)::value + 1;
+      result += get<alpha, beta>(inverse_metric) * at<m, nu, beta>(phi, index);
+    });
+    return result;
+  };
+  const auto mu_c = std::integral_constant<size_t, mu>{};
+  const auto nu_c = std::integral_constant<size_t, nu>{};
+
+  // The terms proportional to n_a
+  const double metric = at<mu, nu>(args.spacetime_metric, index);
+  double result = 0.0;
+  if constexpr (mu == 0) {
+    const double minus_gamma0_lapse = -values.gamma0 * lapse;
+    if constexpr (nu == 0) {
+      result = 2.0 * minus_gamma0_lapse * get<0>(values.gauge_constraint) -
+               values.normal_dot_gauge_constraint * metric;
+    } else {
+      result = minus_gamma0_lapse * get<nu>(values.gauge_constraint) -
+               values.normal_dot_gauge_constraint * metric;
+    }
+  } else {
+    result = -values.normal_dot_gauge_constraint * metric;
+  }
+
+  result -= values.half_pi_two_normals * at<mu, nu>(pi, index);
+  static_for<dim + 1>([&](auto delta_c) {
+    constexpr size_t delta = decltype(delta_c)::value;
+    result -= 2 * at<mu, delta>(pi, index) * pi_2_up(delta_c);
+    static_for<dim>([&](auto n_c) {
+      result += 2 * phi_1_up(n_c, mu_c, delta_c) * phi_3_up(n_c, delta_c);
+    });
+    static_for<dim + 1>([&](auto alpha_c) {
+      constexpr size_t alpha = decltype(alpha_c)::value;
+      result -= 2. * at<mu, alpha, delta>(args.christoffel_3_up, index) *
+                at<nu, delta, alpha>(args.christoffel_3_up, index);
+    });
+  });
+  static_for<dim>([&](auto m_c) {
+    constexpr size_t m = decltype(m_c)::value;
+    result -= get<m + 1>(values.pi_one_normal) * phi_1_up(m_c, mu_c, nu_c);
+    static_for<dim>([&](auto n_c) {
+      constexpr size_t n = decltype(n_c)::value;
+      result -= get<m, n>(inverse_spatial_metric) *
+                at<m, n, mu, nu>(args.d_phi, index);
+    });
+  });
+  result *= lapse;
+
+  const auto constraint = [&](auto m_c) -> double {
+    constexpr size_t m = decltype(m_c)::value;
+    return at<m, mu, nu>(args.d_spacetime_metric, index) -
+           at<m, mu, nu>(phi, index);
+  };
+  double shift_dot_constraint =
+      get<0>(shift) * constraint(std::integral_constant<size_t, 0>{});
+  static_for<dim - 1>([&](auto m_c) {
+    constexpr size_t m = decltype(m_c)::value + 1;
+    shift_dot_constraint +=
+        get<m>(shift) * constraint(std::integral_constant<size_t, m>{});
+  });
+  result += values.gamma1gamma2 * shift_dot_constraint;
+  if (args.has_mesh_velocity) {
+    double mesh_velocity_dot_constraint =
+        at<0>(args.mesh_velocity, index) *
+        constraint(std::integral_constant<size_t, 0>{});
+    static_for<dim - 1>([&](auto m_c) {
+      constexpr size_t m = decltype(m_c)::value + 1;
+      mesh_velocity_dot_constraint +=
+          at<m>(args.mesh_velocity, index) *
+          constraint(std::integral_constant<size_t, m>{});
+    });
+    result += values.gamma1gamma2 * mesh_velocity_dot_constraint;
+  }
+  static_for<dim>([&](auto m_c) {
+    constexpr size_t m = decltype(m_c)::value;
+    result += get<m>(shift) * at<m, mu, nu>(args.d_pi, index);
+  });
+  at<mu, nu>(args.dt_pi, index) = result;
+}
+
+// The independent components `Components...` (see `symmetric_indices()`) at a
+// grid point
+template <size_t... Components>
+KOKKOS_FORCEINLINE_FUNCTION void dt_pi_components(
+    const DtPiArguments& args, const PointIndex& index,
+    std::index_sequence<Components...> /*meta*/) {
+  const DtPiPointValues values = dt_pi_point_values(args, index);
+  (dt_pi_component<symmetric_indices<Components>()[0],
+                   symmetric_indices<Components>()[1]>(args, values, index),
+   ...);
+}
+
+// The kernels of the layouts, with one thread per grid point that computes
+// the components `Components...`. Each layout has its own name, so that
+// profilers tell them apart.
+template <size_t... Components>
+struct DtPiComponents {
+  DtPiArguments args;
+  size_t number_of_points;
+  KOKKOS_FUNCTION void operator()(const size_t k) const {
+    dt_pi_components(args, point_index(k, number_of_points),
+                     std::index_sequence<Components...>{});
+  }
+};
+template <size_t... Components>
+struct DtPiPointKernel : DtPiComponents<Components...> {};
+template <size_t... Components>
+struct DtPiRowKernel : DtPiComponents<Components...> {};
+template <size_t... Components>
+struct DtPiComponentKernel : DtPiComponents<Components...> {};
+
+// The kernel of `DtPiLayout::WarpComponent`
+struct DtPiWarpComponentKernel {
+  static constexpr size_t number_of_components = (dim + 1) * (dim + 2) / 2;
+  DtPiArguments args;
+  size_t number_of_points;
+  size_t total;
+  KOKKOS_FUNCTION void operator()(const size_t k) const {
+    const ComponentAtPoint thread = component_at_point(k, number_of_components);
+    if (thread.point >= total) {
+      return;
+    }
+    const PointIndex index = point_index(thread.point, number_of_points);
+    static_for<number_of_components>([&](auto component_c) {
+      constexpr size_t component = decltype(component_c)::value;
+      if (component == thread.component) {
+        dt_pi_components(args, index, std::index_sequence<component>{});
+      }
+    });
+  }
+};
+
+template <template <size_t...> typename Kernel, size_t... Components>
+void launch_dt_pi(const Kokkos::DefaultExecutionSpace& exec,
+                  const DtPiArguments& args, const size_t number_of_points,
+                  const size_t total,
+                  std::index_sequence<Components...> /*meta*/) {
+  Kokkos::parallel_for("gh::TimeDerivativeOnDevice::dt_pi",
+                       Kokkos::RangePolicy<>(exec, 0, total),
+                       Kernel<Components...>{{args, number_of_points}});
+}
+
+template <size_t Offset, size_t... Is>
+constexpr std::index_sequence<Offset + Is...> offset_sequence(
+    std::index_sequence<Is...> /*meta*/) {
+  return {};
 }
 }  // namespace
 
@@ -384,197 +661,60 @@ void TimeDerivativeOnDevice::apply(
         });
       });
 
-  // 4. The time derivative of Pi, as `gh::TimeDerivative` with the harmonic
-  // gauge
-  Kokkos::parallel_for(
-      "gh::TimeDerivativeOnDevice::dt_pi",
-      Kokkos::RangePolicy<>(
-          exec, 0,
-          number_of_component_threads(total, number_of_symmetric_components)),
-      KOKKOS_LAMBDA(const size_t k) {
-        const ComponentAtPoint thread =
-            component_at_point(k, number_of_symmetric_components);
-        if (thread.point >= total) {
-          return;
-        }
-        const PointIndex index = point_index(thread.point, number_of_points);
-        const ThreePlusOne three_plus_one = read_three_plus_one(
-            lapse_batch, shift_batch, inverse_spatial_metric_batch, index);
-        const double lapse = three_plus_one.lapse;
-        const auto& shift = three_plus_one.shift;
-        const auto& inverse_spatial_metric =
-            three_plus_one.inverse_spatial_metric;
-        const auto inverse_metric =
-            inverse_spacetime_metric(lapse, shift, inverse_spatial_metric);
-        const auto normal = normal_vector(lapse, shift);
-        tnsr::a<double, dim> gauge_constraint{};
-        static_for<dim + 1>([&](auto a_c) {
-          constexpr size_t a = decltype(a_c)::value;
-          get<a>(gauge_constraint) = at<a>(gauge_constraint_batch, index);
-        });
-        const double gamma0_value = scalar_at(gamma0, index);
-        const double gamma1gamma2 =
-            scalar_at(gamma1, index) * scalar_at(gamma2, index);
-
-        // n^a Pi_{ab}
-        tnsr::a<double, dim> pi_one_normal{};
-        static_for<dim + 1>([&](auto mu_c) {
-          constexpr size_t mu = decltype(mu_c)::value;
-          get<mu>(pi_one_normal) = get<0>(normal) * at<0, mu>(pi, index);
-          static_for<dim>([&](auto nu_c) {
-            constexpr size_t nu = decltype(nu_c)::value + 1;
-            get<mu>(pi_one_normal) += get<nu>(normal) * at<nu, mu>(pi, index);
-          });
-        });
-        double half_pi_two_normals = get<0>(normal) * get<0>(pi_one_normal);
-        static_for<dim>([&](auto mu_c) {
-          constexpr size_t mu = decltype(mu_c)::value + 1;
-          half_pi_two_normals += get<mu>(normal) * get<mu>(pi_one_normal);
-        });
-        half_pi_two_normals *= 0.5;
-        double normal_dot_gauge_constraint =
-            get<0>(normal) * get<0>(gauge_constraint);
-        static_for<dim>([&](auto mu_c) {
-          constexpr size_t mu = decltype(mu_c)::value + 1;
-          normal_dot_gauge_constraint +=
-              get<mu>(normal) * get<mu>(gauge_constraint);
-        });
-        // Rescaled by gamma0, as on the host
-        normal_dot_gauge_constraint *= gamma0_value;
-
-        // The contractions, recomputed where they are used
-        // Pi_{nu beta} g^{delta beta}
-        const auto pi_2_up = [&](auto nu_c, auto delta_c) -> double {
-          constexpr size_t nu = decltype(nu_c)::value;
-          constexpr size_t delta = decltype(delta_c)::value;
-          double result = get<delta, 0>(inverse_metric) * at<nu, 0>(pi, index);
-          static_for<dim>([&](auto beta_c) {
-            constexpr size_t beta = decltype(beta_c)::value + 1;
-            result +=
-                get<delta, beta>(inverse_metric) * at<nu, beta>(pi, index);
-          });
-          return result;
-        };
-        // g^{m n} Phi_{n mu nu}
-        const auto phi_1_up = [&](auto m_c, auto mu_c, auto nu_c) -> double {
-          constexpr size_t m = decltype(m_c)::value;
-          constexpr size_t mu = decltype(mu_c)::value;
-          constexpr size_t nu = decltype(nu_c)::value;
-          double result =
-              get<m, 0>(inverse_spatial_metric) * at<0, mu, nu>(phi, index);
-          static_for<dim - 1>([&](auto n_c) {
-            constexpr size_t n = decltype(n_c)::value + 1;
-            result +=
-                get<m, n>(inverse_spatial_metric) * at<n, mu, nu>(phi, index);
-          });
-          return result;
-        };
-        // g^{alpha beta} Phi_{m nu beta}
-        const auto phi_3_up = [&](auto m_c, auto nu_c, auto alpha_c) -> double {
-          constexpr size_t m = decltype(m_c)::value;
-          constexpr size_t nu = decltype(nu_c)::value;
-          constexpr size_t alpha = decltype(alpha_c)::value;
-          double result =
-              get<alpha, 0>(inverse_metric) * at<m, nu, 0>(phi, index);
-          static_for<dim>([&](auto beta_c) {
-            constexpr size_t beta = decltype(beta_c)::value + 1;
-            result +=
-                get<alpha, beta>(inverse_metric) * at<m, nu, beta>(phi, index);
-          });
-          return result;
-        };
-
-        static_for<number_of_symmetric_components>([&](auto component_c) {
-          if (decltype(component_c)::value != thread.component) {
-            return;
-          }
-          constexpr auto indices =
-              symmetric_indices<decltype(component_c)::value>();
-          constexpr size_t mu = indices[0];
-          constexpr size_t nu = indices[1];
-          const auto mu_c = std::integral_constant<size_t, mu>{};
-          const auto nu_constant = std::integral_constant<size_t, nu>{};
-          {
-            // The terms proportional to n_a, as on the host. (nvcc requires
-            // that the kernel captures the arguments outside of `if
-            // constexpr`.)
-            const double metric = at<mu, nu>(spacetime_metric, index);
-            double result = 0.0;
-            if constexpr (mu == 0) {
-              const double minus_gamma0_lapse = -gamma0_value * lapse;
-              if constexpr (nu == 0) {
-                result = 2.0 * minus_gamma0_lapse * get<0>(gauge_constraint) -
-                         normal_dot_gauge_constraint * metric;
-              } else {
-                result = minus_gamma0_lapse * get<nu>(gauge_constraint) -
-                         normal_dot_gauge_constraint * metric;
-              }
-            } else {
-              result = -normal_dot_gauge_constraint * metric;
-            }
-
-            result -= half_pi_two_normals * at<mu, nu>(pi, index);
-            static_for<dim + 1>([&](auto delta_c) {
-              constexpr size_t delta = decltype(delta_c)::value;
-              result -=
-                  2 * at<mu, delta>(pi, index) * pi_2_up(nu_constant, delta_c);
-              static_for<dim>([&](auto n_c) {
-                result += 2 * phi_1_up(n_c, mu_c, delta_c) *
-                          phi_3_up(n_c, nu_constant, delta_c);
-              });
-              static_for<dim + 1>([&](auto alpha_c) {
-                constexpr size_t alpha = decltype(alpha_c)::value;
-                result -= 2. *
-                          at<mu, alpha, delta>(christoffel_3_up_batch, index) *
-                          at<nu, delta, alpha>(christoffel_3_up_batch, index);
-              });
-            });
-            static_for<dim>([&](auto m_c) {
-              constexpr size_t m = decltype(m_c)::value;
-              result -=
-                  get<m + 1>(pi_one_normal) * phi_1_up(m_c, mu_c, nu_constant);
-              static_for<dim>([&](auto n_c) {
-                constexpr size_t n = decltype(n_c)::value;
-                result -= get<m, n>(inverse_spatial_metric) *
-                          at<m, n, mu, nu>(d_phi, index);
-              });
-            });
-            result *= lapse;
-
-            const auto constraint = [&](auto m_c) -> double {
-              constexpr size_t m = decltype(m_c)::value;
-              return at<m, mu, nu>(d_spacetime_metric, index) -
-                     at<m, mu, nu>(phi, index);
-            };
-            double shift_dot_constraint =
-                get<0>(shift) * constraint(std::integral_constant<size_t, 0>{});
-            static_for<dim - 1>([&](auto m_c) {
-              constexpr size_t m = decltype(m_c)::value + 1;
-              shift_dot_constraint +=
-                  get<m>(shift) *
-                  constraint(std::integral_constant<size_t, m>{});
-            });
-            result += gamma1gamma2 * shift_dot_constraint;
-            if (has_mesh_velocity) {
-              double mesh_velocity_dot_constraint =
-                  at<0>(mesh_velocity_batch, index) *
-                  constraint(std::integral_constant<size_t, 0>{});
-              static_for<dim - 1>([&](auto m_c) {
-                constexpr size_t m = decltype(m_c)::value + 1;
-                mesh_velocity_dot_constraint +=
-                    at<m>(mesh_velocity_batch, index) *
-                    constraint(std::integral_constant<size_t, m>{});
-              });
-              result += gamma1gamma2 * mesh_velocity_dot_constraint;
-            }
-            static_for<dim>([&](auto m_c) {
-              constexpr size_t m = decltype(m_c)::value;
-              result += get<m>(shift) * at<m, mu, nu>(d_pi, index);
-            });
-            at<mu, nu>(dt_pi, index) = result;
-          }
-        });
-      });
+  // 4. The time derivative of Pi
+  const DtPiArguments dt_pi_arguments{dt_pi,
+                                      d_spacetime_metric,
+                                      d_pi,
+                                      d_phi,
+                                      spacetime_metric,
+                                      pi,
+                                      phi,
+                                      gamma0,
+                                      gamma1,
+                                      gamma2,
+                                      has_mesh_velocity,
+                                      mesh_velocity_batch,
+                                      lapse_batch,
+                                      shift_batch,
+                                      inverse_spatial_metric_batch,
+                                      christoffel_3_up_batch,
+                                      gauge_constraint_batch};
+  switch (dt_pi_layout_) {
+    case DtPiLayout::Point:
+      launch_dt_pi<DtPiPointKernel>(
+          exec, dt_pi_arguments, number_of_points, total,
+          std::make_index_sequence<number_of_symmetric_components>{});
+      break;
+    case DtPiLayout::Row:
+      [&]<size_t... Rows>(std::index_sequence<Rows...> /*meta*/) {
+        // The first component of row `a` is `a (2 dim + 3 - a) / 2`
+        (launch_dt_pi<DtPiRowKernel>(
+             exec, dt_pi_arguments, number_of_points, total,
+             offset_sequence<Rows * (2 * dim + 3 - Rows) / 2>(
+                 std::make_index_sequence<dim + 1 - Rows>{})),
+         ...);
+      }(std::make_index_sequence<dim + 1>{});
+      break;
+    case DtPiLayout::Component:
+      [&]<size_t... Components>(std::index_sequence<Components...> /*meta*/) {
+        (launch_dt_pi<DtPiComponentKernel>(exec, dt_pi_arguments,
+                                           number_of_points, total,
+                                           std::index_sequence<Components>{}),
+         ...);
+      }(std::make_index_sequence<number_of_symmetric_components>{});
+      break;
+    case DtPiLayout::WarpComponent:
+      Kokkos::parallel_for(
+          "gh::TimeDerivativeOnDevice::dt_pi",
+          Kokkos::RangePolicy<>(exec, 0,
+                                number_of_component_threads(
+                                    total, number_of_symmetric_components)),
+          DtPiWarpComponentKernel{dt_pi_arguments, number_of_points, total});
+      break;
+    default:
+      ERROR("Unknown layout of the dt_pi kernels: "
+            << static_cast<int>(dt_pi_layout_));
+  }
 
   // 5. The time derivative of Phi
   Kokkos::parallel_for(

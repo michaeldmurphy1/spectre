@@ -262,8 +262,20 @@ class Patch {
                                    domain.blocks()[element.id().block_id()]},
         patch_elements_.grid_to_inertial_map(slot).get_clone(), time,
         time_step_id, time_step, tci_status_sent,
-        patch_elements_.host_cell_geometry(slot), std::move(variables.evolved),
-        std::move(variables.primitives), std::move(variables.spacetime));
+        patch_elements_.host_cell_geometry(slot),
+        patch_elements_.host_inertial_cell_geometry(slot),
+        std::move(variables.evolved), std::move(variables.primitives),
+        std::move(variables.spacetime));
+  }
+
+  /// Prepare what the DataBoxes of `make_element_box()` at `time` share, on
+  /// `exec`, which is fenced (see
+  /// `FdPatchElements::prepare_host_inertial_cell_geometry()`)
+  void prepare_element_boxes(
+      const Kokkos::DefaultExecutionSpace& exec, const double time,
+      const domain::FunctionsOfTimeMap& functions_of_time) const {
+    patch_elements_.prepare_host_inertial_cell_geometry(exec, time,
+                                                        functions_of_time);
   }
 
   /// Whether `messages` hold all the boundary data that the patch receives in

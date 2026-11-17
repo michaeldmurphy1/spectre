@@ -17,6 +17,7 @@
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/ObservationBox.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
+#include "DataStructures/DataBox/Subitems.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Creators/Tags/Domain.hpp"
@@ -316,6 +317,26 @@ using observation_compute_tags = tmpl::remove_duplicates<tmpl::filter<
                                   get_observation_compute_tags<tmpl::_1>>>,
     db::is_compute_tag<tmpl::_1>>>;
 
+// Whether the DataBox of the elements (see `Patch::make_element_box`) has the
+// item of the `ComputeTag` or one of its subitems, e.g. the geometry for
+// observations, which the events then don't compute again
+template <typename ComputeTag, typename ElementBox>
+struct in_element_box
+    : std::bool_constant<
+          db::tag_is_retrievable_v<typename ComputeTag::base, ElementBox> or
+          tmpl::as_pack<typename db::Subitems<ComputeTag>::type>(
+              []<typename... Subitems>(tmpl::type_<Subitems>... /*meta*/) {
+                return (false or ... or
+                        db::tag_is_retrievable_v<Subitems, ElementBox>);
+              })> {};
+
+// The `observation_compute_tags` of the items the DataBox of the elements
+// doesn't have
+template <typename Metavariables, typename ElementBox>
+using element_observation_compute_tags =
+    tmpl::remove_if<observation_compute_tags<Metavariables>,
+                    in_element_box<tmpl::_1, tmpl::pin<ElementBox>>>;
+
 // Whether the elements of a patch run the `event` (see `RunsOnElements`)
 template <typename Metavariables>
 bool runs_on_elements(const Event& event) {
@@ -356,6 +377,9 @@ void for_each_element_box(const db::DataBox<DbTagsList>& box,
   const auto& patch = db::get<PatchTag>(box);
   // Report failures of the last substep before anything sees its state
   patch.check_last_step(Parallel::device_execution_space());
+  patch.prepare_element_boxes(
+      Parallel::device_execution_space(), db::get<::Tags::Time>(box),
+      Parallel::get<::domain::Tags::FunctionsOfTime>(cache));
   const auto& domain = db::get<::domain::Tags::Domain<dim>>(box);
   using ElementVariables =
       typename std::decay_t<decltype(patch)>::ElementVariables;
@@ -405,7 +429,8 @@ void run_events_on_elements(const std::vector<const Event*>& events,
         std::optional<Kokkos::Profiling::ScopedRegion> observation_box_region{
             "patches::element_boxes::observation_box"};
         auto observation_box =
-            make_observation_box<observation_compute_tags<Metavariables>>(
+            make_observation_box<element_observation_compute_tags<
+                Metavariables, std::decay_t<decltype(element_box)>>>(
                 make_not_null(&element_box));
         observation_box_region.reset();
         for (const Event* const event : events) {

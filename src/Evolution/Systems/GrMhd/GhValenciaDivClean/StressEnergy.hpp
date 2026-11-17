@@ -3,9 +3,9 @@
 
 #pragma once
 
-#include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 namespace grmhd::GhValenciaDivClean {
 
@@ -32,10 +32,11 @@ namespace grmhd::GhValenciaDivClean {
  * \see `gh::TimeDerivative` for details about the spacetime
  * part of the time derivative calculation.
  */
-void add_stress_energy_term_to_dt_pi(
-    gsl::not_null<tnsr::aa<DataVector, 3>*> dt_pi,
-    const tnsr::aa<DataVector, 3>& trace_reversed_stress_energy,
-    const Scalar<DataVector>& lapse);
+template <typename DataType>
+KOKKOS_FUNCTION void add_stress_energy_term_to_dt_pi(
+    gsl::not_null<tnsr::aa<DataType, 3>*> dt_pi,
+    const tnsr::aa<DataType, 3>& trace_reversed_stress_energy,
+    const Scalar<DataType>& lapse);
 
 /*!
  * \brief Calculate the trace-reversed stress-energy tensor \f$(T_{\mu \nu} -
@@ -97,21 +98,22 @@ void add_stress_energy_term_to_dt_pi(
  *  - b_\mu b_\nu
  * \f]
  */
-void trace_reversed_stress_energy(
-    gsl::not_null<tnsr::aa<DataVector, 3>*> stress_energy,
-    gsl::not_null<tnsr::a<DataVector, 3>*> four_velocity_one_form_buffer,
-    gsl::not_null<tnsr::a<DataVector, 3>*>
+template <typename DataType>
+KOKKOS_FUNCTION void trace_reversed_stress_energy(
+    gsl::not_null<tnsr::aa<DataType, 3>*> stress_energy,
+    gsl::not_null<tnsr::a<DataType, 3>*> four_velocity_one_form_buffer,
+    gsl::not_null<tnsr::a<DataType, 3>*>
         comoving_magnetic_field_one_form_buffer,
-    const Scalar<DataVector>& rest_mass_density,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& spatial_velocity_one_form,
-    const tnsr::i<DataVector, 3, Frame::Inertial>& magnetic_field_one_form,
-    const Scalar<DataVector>& magnetic_field_squared,
-    const Scalar<DataVector>& magnetic_field_dot_spatial_velocity,
-    const Scalar<DataVector>& lorentz_factor,
-    const Scalar<DataVector>& one_over_w_squared,
-    const Scalar<DataVector>& pressure,
-    const Scalar<DataVector>& specific_internal_energy,
-    const tnsr::aa<DataVector, 3, Frame::Inertial>& spacetime_metric,
-    const tnsr::I<DataVector, 3, Frame::Inertial>& shift,
-    const Scalar<DataVector>& lapse);
+    const Scalar<DataType>& rest_mass_density,
+    const tnsr::i<DataType, 3, Frame::Inertial>& spatial_velocity_one_form,
+    const tnsr::i<DataType, 3, Frame::Inertial>& magnetic_field_one_form,
+    const Scalar<DataType>& magnetic_field_squared,
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& lorentz_factor,
+    const Scalar<DataType>& one_over_w_squared,
+    const Scalar<DataType>& pressure,
+    const Scalar<DataType>& specific_internal_energy,
+    const tnsr::aa<DataType, 3, Frame::Inertial>& spacetime_metric,
+    const tnsr::I<DataType, 3, Frame::Inertial>& shift,
+    const Scalar<DataType>& lapse);
 }  // namespace grmhd::GhValenciaDivClean

@@ -60,17 +60,21 @@ using fix_conservatives_snapshot_tags =
  * `DeferredPointwiseStatus`) and only enqueues the kernels. Report a failure
  * with `error_fixing_conservatives_on_device`.
  *
- * The `conservatives` are fixed in place. Nothing is copied between the host
- * and the device.
+ * The `conservatives` are fixed in place. The batch holds the
+ * `FixConservativesOnDeviceTags` and possibly other variables (`BatchTags`),
+ * e.g. the GH variables of GhValenciaDivClean, which aren't changed. The
+ * functions are instantiated for `FixConservativesOnDeviceTags`; include
+ * `FixConservativesOnDeviceKokkos.tpp` to instantiate them for other
+ * batches. Nothing is copied between the host and the device.
  *
  * `per_element_scratch`, if given, holds the per-element decision between
  * calls (see `scratch_view`), so that it isn't allocated every time.
  */
 /// @{
+template <typename BatchTags>
 PointwiseStatusSummary fix_conservatives_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    gsl::not_null<BatchedVariables<FixConservativesOnDeviceTags>*>
-        conservatives,
+    gsl::not_null<BatchedVariables<BatchTags>*> conservatives,
     const typename ::Tags::BatchView<
         gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
     const typename ::Tags::BatchView<
@@ -82,10 +86,10 @@ PointwiseStatusSummary fix_conservatives_on_device(
     const FixConservatives& fix_conservatives,
     Kokkos::View<bool*>* per_element_scratch = nullptr);
 
+template <typename BatchTags>
 void fix_conservatives_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    gsl::not_null<BatchedVariables<FixConservativesOnDeviceTags>*>
-        conservatives,
+    gsl::not_null<BatchedVariables<BatchTags>*> conservatives,
     gsl::not_null<DeferredPointwiseStatus<fix_conservatives_snapshot_tags>*>
         status,
     const typename ::Tags::BatchView<

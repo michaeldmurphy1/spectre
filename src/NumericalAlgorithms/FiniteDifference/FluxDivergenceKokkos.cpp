@@ -17,7 +17,7 @@
 namespace fd::device {
 template <size_t Dim>
 void add_cartesian_flux_divergence(
-    const Kokkos::DefaultExecutionSpace& exec, const VolumeView& dt_vars,
+    const Kokkos::DefaultExecutionSpace& exec, const StridedVolumeView& dt_vars,
     const std::array<ConstVolumeView, Dim>& boundary_corrections,
     const ConstVolumeView& det_inverse_jacobian,
     const std::array<double, Dim>& one_over_delta,
@@ -74,12 +74,13 @@ void add_cartesian_flux_divergence(
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
 
-#define INSTANTIATION(r, data)                                              \
-  template void add_cartesian_flux_divergence(                              \
-      const Kokkos::DefaultExecutionSpace& exec, const VolumeView& dt_vars, \
-      const std::array<ConstVolumeView, DIM(data)>& boundary_corrections,   \
-      const ConstVolumeView& det_inverse_jacobian,                          \
-      const std::array<double, DIM(data)>& one_over_delta,                  \
+#define INSTANTIATION(r, data)                                            \
+  template void add_cartesian_flux_divergence(                            \
+      const Kokkos::DefaultExecutionSpace& exec,                          \
+      const StridedVolumeView& dt_vars,                                   \
+      const std::array<ConstVolumeView, DIM(data)>& boundary_corrections, \
+      const ConstVolumeView& det_inverse_jacobian,                        \
+      const std::array<double, DIM(data)>& one_over_delta,                \
       const Index<DIM(data)>& volume_extents);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))

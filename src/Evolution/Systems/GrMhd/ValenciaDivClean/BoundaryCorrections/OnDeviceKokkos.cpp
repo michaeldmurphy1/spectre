@@ -39,6 +39,7 @@
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ScratchViewKokkos.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace grmhd::ValenciaDivClean::BoundaryCorrections {
@@ -232,6 +233,10 @@ struct MeshVelocity : db::SimpleTag {
 struct Sign : db::SimpleTag {
   using type = double;
 };
+// The inverse spatial metric that normalizes the normal covector
+struct NormalizationInverseSpatialMetric : db::SimpleTag {
+  using type = tnsr::II<DataVector, 3, Frame::Inertial>;
+};
 template <bool HasMeshVelocity>
 using fused_mesh_velocity_tags =
     tmpl::conditional_t<HasMeshVelocity, tmpl::list<MeshVelocity>,
@@ -268,6 +273,8 @@ KOKKOS_FUNCTION FaceFluxesAndNormal face_fluxes_and_normal(
     const Scalar<double>& lorentz_factor,
     const tnsr::I<double, 3, Frame::Inertial>& magnetic_field,
     const tnsr::i<double, 3, Frame::Inertial>& conormal, const double sign,
+    const tnsr::II<double, 3, Frame::Inertial>&
+        normalization_inv_spatial_metric,
     const MeshVelocityType&... mesh_velocity) {
   static_assert(sizeof...(MeshVelocityType) <= 1);
   FaceFluxesAndNormal result{};
@@ -303,8 +310,8 @@ KOKKOS_FUNCTION FaceFluxesAndNormal face_fluxes_and_normal(
   double magnitude_squared = 0.0;
   for (size_t i = 0; i < 3; ++i) {
     for (size_t j = 0; j < 3; ++j) {
-      magnitude_squared +=
-          conormal.get(i) * conormal.get(j) * inv_spatial_metric.get(i, j);
+      magnitude_squared += conormal.get(i) * conormal.get(j) *
+                           normalization_inv_spatial_metric.get(i, j);
     }
   }
   const double magnitude = sqrt(magnitude_squared);
@@ -327,9 +334,10 @@ KOKKOS_FUNCTION FaceFluxesAndNormal face_fluxes_and_normal(
 template <bool HasMeshVelocity>
 struct FusedRusanovPackageData {
   using return_tags = Rusanov::dg_package_field_tags;
-  using argument_tags =
-      tmpl::append<ComputeFluxes::argument_tags, tmpl::list<Conormal, Sign>,
-                   fused_mesh_velocity_tags<HasMeshVelocity>>;
+  using argument_tags = tmpl::append<
+      ComputeFluxes::argument_tags,
+      tmpl::list<Conormal, Sign, NormalizationInverseSpatialMetric>,
+      fused_mesh_velocity_tags<HasMeshVelocity>>;
 
   template <typename... MeshVelocityType>
   KOKKOS_FUNCTION static void apply(
@@ -364,12 +372,14 @@ struct FusedRusanovPackageData {
       const Scalar<double>& lorentz_factor,
       const tnsr::I<double, 3, Frame::Inertial>& magnetic_field,
       const tnsr::i<double, 3, Frame::Inertial>& conormal, const double sign,
+      const tnsr::II<double, 3, Frame::Inertial>&
+          normalization_inv_spatial_metric,
       const MeshVelocityType&... mesh_velocity) {
     const FaceFluxesAndNormal face = face_fluxes_and_normal(
         tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi, lapse, shift,
         sqrt_det_spatial_metric, spatial_metric, inv_spatial_metric, pressure,
         spatial_velocity, lorentz_factor, magnetic_field, conormal, sign,
-        mesh_velocity...);
+        normalization_inv_spatial_metric, mesh_velocity...);
     Rusanov::dg_package_data_impl(
         packaged_tilde_d, packaged_tilde_ye, packaged_tilde_tau,
         packaged_tilde_s, packaged_tilde_b, packaged_tilde_phi,
@@ -395,6 +405,7 @@ struct FusedHllPackageData {
           hydro::Tags::RestMassDensity<DataVector>,
           hydro::Tags::ElectronFraction<DataVector>,
           hydro::Tags::Temperature<DataVector>, Conormal, Sign,
+          NormalizationInverseSpatialMetric,
           EquationsOfState::Tags::DeviceView<DeviceView>,
           ::Tags::PerElement<UseHydroSpeeds>, LightSpeedDensityCutoff>,
       fused_mesh_velocity_tags<HasMeshVelocity>>;
@@ -437,6 +448,8 @@ struct FusedHllPackageData {
       const Scalar<double>& electron_fraction,
       const Scalar<double>& temperature,
       const tnsr::i<double, 3, Frame::Inertial>& conormal, const double sign,
+      const tnsr::II<double, 3, Frame::Inertial>&
+          normalization_inv_spatial_metric,
       const DeviceView& equation_of_state, const bool use_hydro_speeds,
       const double light_speed_density_cutoff,
       const MeshVelocityType&... mesh_velocity) {
@@ -444,7 +457,7 @@ struct FusedHllPackageData {
         tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi, lapse, shift,
         sqrt_det_spatial_metric, spatial_metric, inv_spatial_metric, pressure,
         spatial_velocity, lorentz_factor, magnetic_field, conormal, sign,
-        mesh_velocity...);
+        normalization_inv_spatial_metric, mesh_velocity...);
     Hll::dg_package_data_impl(
         packaged_tilde_d, packaged_tilde_ye, packaged_tilde_tau,
         packaged_tilde_s, packaged_tilde_b, packaged_tilde_phi,
@@ -481,6 +494,7 @@ struct RusanovPackageDataFromReconstruction {
                  gr::Tags::SpatialMetric<DataVector, 3>,
                  gr::Tags::SqrtDetSpatialMetric<DataVector>,
                  gr::Tags::InverseSpatialMetric<DataVector, 3>, Conormal, Sign,
+                 NormalizationInverseSpatialMetric,
                  EquationsOfState::Tags::DeviceView<DeviceView>>,
       tmpl::conditional_t<FixAtmosphere, tmpl::list<fd::FixToAtmosphereView>,
                           tmpl::list<>>,
@@ -518,6 +532,8 @@ struct RusanovPackageDataFromReconstruction {
       const Scalar<double>& sqrt_det_spatial_metric,
       const tnsr::II<double, 3, Frame::Inertial>& inv_spatial_metric,
       const tnsr::i<double, 3, Frame::Inertial>& conormal, const double sign,
+      const tnsr::II<double, 3, Frame::Inertial>&
+          normalization_inv_spatial_metric,
       const DeviceView& equation_of_state, const Extra&... extra) {
     static_assert(sizeof...(Extra) == static_cast<size_t>(FixAtmosphere) +
                                           static_cast<size_t>(HasMeshVelocity));
@@ -569,7 +585,7 @@ struct RusanovPackageDataFromReconstruction {
           tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi, lapse,
           shift, sqrt_det_spatial_metric, spatial_metric, inv_spatial_metric,
           pressure, spatial_velocity, lorentz_factor, magnetic_field, conormal,
-          sign, mesh_velocity...);
+          sign, normalization_inv_spatial_metric, mesh_velocity...);
     };
     FaceFluxesAndNormal face{};
     if constexpr (HasMeshVelocity) {
@@ -628,7 +644,8 @@ struct BoundaryTerms {
 template <typename FaceTags>
 Kokkos::View<const bool*> use_hydro_speeds_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    const BatchedVariables<FaceTags>& faces, const Hll& hll) {
+    const BatchedVariables<FaceTags>& faces, const Hll& hll,
+    Kokkos::View<bool*>* const scratch = nullptr) {
   const auto& rest_mass_density = get(
       get<::Tags::BatchView<hydro::Tags::RestMassDensity<DataVector>>>(faces));
   const auto& tilde_b = get<::Tags::BatchView<Tags::TildeB<>>>(faces);
@@ -639,9 +656,8 @@ Kokkos::View<const bool*> use_hydro_speeds_on_device(
   const size_t number_of_elements = faces.number_of_elements();
   const double magnetic_field_cutoff = hll.magnetic_field_magnitude_for_hydro();
   const double density_cutoff = hll.light_speed_density_cutoff();
-  const Kokkos::View<bool*> result{
-      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "UseHydroSpeeds"),
-      number_of_elements};
+  const Kokkos::View<bool*> result =
+      scratch_view(exec, scratch, "UseHydroSpeeds", number_of_elements);
   using TeamPolicy = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>;
   Kokkos::parallel_for(
       "UseHydroSpeeds",
@@ -737,7 +753,7 @@ void package_data_on_device(
     }
   } else {
     static_assert(std::is_same_v<Correction, Hll>);
-    const Kokkos::View<const bool*> use_hydro_speeds =
+    Kokkos::View<const bool*> use_hydro_speeds =
         use_hydro_speeds_on_device(exec, faces, correction);
     const double light_speed_density_cutoff =
         correction.light_speed_density_cutoff();
@@ -780,13 +796,21 @@ void fluxes_and_package_data_on_device(
     const BatchedVariables<FaceTags>& faces, const FaceCovectorBatch& conormal,
     const double sign, const FaceVectorBatch* const mesh_velocity,
     const Correction& correction,
-    const EquationsOfState::EquationOfState<true, 3>& equation_of_state) {
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric,
+    Kokkos::View<bool*>* const use_hydro_speeds_scratch) {
   // The arguments that are the same for both corrections
   const auto common_argument = [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
     if constexpr (std::is_same_v<Tag, Conormal>) {
       return conormal;
     } else if constexpr (std::is_same_v<Tag, Sign>) {
       return sign;
+    } else if constexpr (std::is_same_v<Tag,
+                                        NormalizationInverseSpatialMetric>) {
+      return normalization_inverse_spatial_metric != nullptr
+                 ? *normalization_inverse_spatial_metric
+                 : get<::Tags::BatchView<
+                       gr::Tags::InverseSpatialMetric<DataVector, 3>>>(faces);
     } else {
       static_assert(std::is_same_v<Tag, MeshVelocity>);
       return *mesh_velocity;
@@ -804,8 +828,8 @@ void fluxes_and_package_data_on_device(
     }
   } else {
     static_assert(std::is_same_v<Correction, Hll>);
-    const Kokkos::View<const bool*> use_hydro_speeds =
-        use_hydro_speeds_on_device(exec, faces, correction);
+    Kokkos::View<const bool*> use_hydro_speeds = use_hydro_speeds_on_device(
+        exec, faces, correction, use_hydro_speeds_scratch);
     const double light_speed_density_cutoff =
         correction.light_speed_density_cutoff();
     EquationsOfState::visit_device_view(
@@ -851,7 +875,8 @@ PointwiseStatusSummary package_data_from_reconstruction_impl(
     const FaceVectorBatch* const mesh_velocity,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* const
-        fix_to_atmosphere) {
+        fix_to_atmosphere,
+    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric) {
   PointwiseStatusSummary status{};
   EquationsOfState::visit_device_view(
       equation_of_state, [&](const auto& device_view) {
@@ -865,6 +890,13 @@ PointwiseStatusSummary package_data_from_reconstruction_impl(
               return conormal;
             } else if constexpr (std::is_same_v<Tag, Sign>) {
               return sign;
+            } else if constexpr (std::is_same_v<
+                                     Tag, NormalizationInverseSpatialMetric>) {
+              return normalization_inverse_spatial_metric != nullptr
+                         ? *normalization_inverse_spatial_metric
+                         : get<::Tags::BatchView<
+                               gr::Tags::InverseSpatialMetric<DataVector, 3>>>(
+                               faces);
             } else if constexpr (std::is_same_v<Tag, MeshVelocity>) {
               return *mesh_velocity;
             } else if constexpr (std::is_same_v<Tag, fd::FixToAtmosphereView>) {
@@ -912,10 +944,12 @@ PointwiseStatusSummary package_data_from_reconstruction_on_device(
     const FaceVectorBatch* const mesh_velocity,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* const
-        fix_to_atmosphere) {
+        fix_to_atmosphere,
+    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric) {
   return package_data_from_reconstruction_impl(
       exec, packaged_data, nullptr, faces, conormal, sign, mesh_velocity,
-      equation_of_state, fix_to_atmosphere);
+      equation_of_state, fix_to_atmosphere,
+      normalization_inverse_spatial_metric);
 }
 
 void package_data_from_reconstruction_on_device(
@@ -930,10 +964,12 @@ void package_data_from_reconstruction_on_device(
     const FaceVectorBatch* const mesh_velocity,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* const
-        fix_to_atmosphere) {
+        fix_to_atmosphere,
+    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric) {
   package_data_from_reconstruction_impl(exec, packaged_data, status.get(),
                                         faces, conormal, sign, mesh_velocity,
-                                        equation_of_state, fix_to_atmosphere);
+                                        equation_of_state, fix_to_atmosphere,
+                                        normalization_inverse_spatial_metric);
 }
 
 template <typename Correction>
@@ -987,18 +1023,20 @@ GENERATE_INSTANTIATIONS(INSTANTIATION, (Rusanov, Hll))
 #undef INSTANTIATION
 
 #define FACE_TAGS(data) BOOST_PP_TUPLE_ELEM(1, data)
-#define INSTANTIATION(r, data)                                          \
-  template void                                                         \
-  fluxes_and_package_data_on_device<CORRECTION(data), FACE_TAGS(data)>( \
-      const Kokkos::DefaultExecutionSpace& exec,                        \
-      gsl::not_null<                                                    \
-          BatchedVariables<CORRECTION(data)::dg_package_field_tags>*>   \
-          packaged_data,                                                \
-      const BatchedVariables<FACE_TAGS(data)>& faces,                   \
-      const FaceCovectorBatch& conormal, double sign,                   \
-      const FaceVectorBatch* mesh_velocity,                             \
-      const CORRECTION(data) & correction,                              \
-      const EquationsOfState::EquationOfState<true, 3>& equation_of_state);
+#define INSTANTIATION(r, data)                                             \
+  template void                                                            \
+  fluxes_and_package_data_on_device<CORRECTION(data), FACE_TAGS(data)>(    \
+      const Kokkos::DefaultExecutionSpace& exec,                           \
+      gsl::not_null<                                                       \
+          BatchedVariables<CORRECTION(data)::dg_package_field_tags>*>      \
+          packaged_data,                                                   \
+      const BatchedVariables<FACE_TAGS(data)>& faces,                      \
+      const FaceCovectorBatch& conormal, double sign,                      \
+      const FaceVectorBatch* mesh_velocity,                                \
+      const CORRECTION(data) & correction,                                 \
+      const EquationsOfState::EquationOfState<true, 3>& equation_of_state, \
+      const FaceInverseMetricBatch* normalization_inverse_spatial_metric,  \
+      Kokkos::View<bool*>* use_hydro_speeds_scratch);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (Rusanov, Hll),
                         (fd::face_tags, fd::device_face_tags))

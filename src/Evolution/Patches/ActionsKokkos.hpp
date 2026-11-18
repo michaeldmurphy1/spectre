@@ -374,11 +374,12 @@ bool runs_on_elements(const Event& event) {
 // only counts the grid points) and saves most of the cost of the DataBoxes.
 template <typename PatchTag, typename DbTagsList, typename Metavariables,
           typename Function>
-void for_each_element_box(const db::DataBox<DbTagsList>& box,
+void for_each_element_box(const gsl::not_null<db::DataBox<DbTagsList>*> box_ptr,
                           Parallel::GlobalCache<Metavariables>& cache,
                           const bool copy_variables, const Function& function) {
   constexpr size_t dim = Metavariables::volume_dim;
   const Kokkos::Profiling::ScopedRegion region{"patches::element_boxes"};
+  const auto& box = *box_ptr;
   const auto& patch = db::get<PatchTag>(box);
   // Report failures of the last substep before anything sees its state
   patch.check_last_step(Parallel::device_execution_space());
@@ -392,9 +393,14 @@ void for_each_element_box(const db::DataBox<DbTagsList>& box,
   if (copy_variables) {
     const Kokkos::Profiling::ScopedRegion copy_region{
         "patches::element_boxes::copy_variables"};
-    variables = with_state<PatchTag>(box, [&patch](const auto&... state) {
-      return patch.element_variables(Parallel::device_execution_space(),
-                                     state...);
+    // The patch copies the variables into its host memory
+    variables = with_state<PatchTag>(box, [&box_ptr](const auto&... state) {
+      return db::mutate<PatchTag>(
+          [&](const auto mutable_patch) {
+            return mutable_patch->element_variables(
+                Parallel::device_execution_space(), state...);
+          },
+          box_ptr);
     });
   } else {
     variables = patch.element_variables_without_values();
@@ -417,7 +423,7 @@ void for_each_element_box(const db::DataBox<DbTagsList>& box,
 template <typename PatchTag, typename ParallelComponent, typename DbTagsList,
           typename Metavariables>
 void run_events_on_elements(const std::vector<const Event*>& events,
-                            const db::DataBox<DbTagsList>& box,
+                            const gsl::not_null<db::DataBox<DbTagsList>*> box,
                             Parallel::GlobalCache<Metavariables>& cache,
                             const Event::ObservationValue& observation_value) {
   if (events.empty()) {
@@ -503,7 +509,7 @@ void change_slab_size(const ::Events::ChangeSlabSize& event,
   }
   // The step choosers (e.g. `Cfl`) may use the variables
   for_each_element_box<PatchTag>(
-      *box, cache, true,
+      box, cache, true,
       [&](const auto& /*element_id*/, const auto& element_box) {
         for (const auto& step_chooser : event.step_choosers()) {
           step_requests.process(step_chooser->desired_step(
@@ -557,7 +563,7 @@ struct RegisterWithObservers {
             cache));
     // Registration doesn't use the variables
     detail::for_each_element_box<PatchTag>(
-        box, cache, false,
+        make_not_null(&box), cache, false,
         [&](const ElementId<dim>& element_id, const auto& element_box) {
           const auto register_event = [&](const Event& event) {
             if (not detail::runs_on_elements<Metavariables>(event)) {
@@ -666,7 +672,7 @@ struct RunEventsAndTriggers {
           }
         });
     detail::run_events_on_elements<PatchTag, ParallelComponent>(
-        events_on_elements, box, cache,
+        events_on_elements, make_not_null(&box), cache,
         Event::ObservationValue{db::tag_name<::Tags::Time>(),
                                 db::get<::Tags::Time>(box)});
     for (const auto* const change_slab_size : slab_size_changes) {

@@ -36,7 +36,8 @@ namespace fd::device {
  * \param lower_side_of_face_vars same as `upper_side_of_face_vars`, but for
  * the lower side of the faces.
  * \param padded_volume_vars the volume data padded with ghost zones of width
- * at least 2, see `fd::device::pack_with_ghost_zones`.
+ * at least 2, see `fd::device::pack_with_ghost_zones`. Can be a subview of
+ * some of the variables.
  * \param volume_extents the number of cells in each element.
  */
 template <size_t Dim>
@@ -44,7 +45,7 @@ void monotonised_central(
     const Kokkos::DefaultExecutionSpace& exec,
     const std::array<StridedVolumeView, Dim>& upper_side_of_face_vars,
     const std::array<StridedVolumeView, Dim>& lower_side_of_face_vars,
-    const ConstVolumeView& padded_volume_vars,
+    const ConstStridedVolumeView& padded_volume_vars,
     const Index<Dim>& volume_extents);
 }  // namespace fd::device
 #endif  // SPECTRE_KOKKOS

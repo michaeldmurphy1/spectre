@@ -84,6 +84,20 @@ add_ghmhd_executable(
    "true"
   )
 
+# The FD elements on the device in FD patches
+if (SPECTRE_KOKKOS)
+  add_ghmhd_executable(
+    "FdPatches"
+    "false"
+    "false"
+    )
+  target_compile_definitions(
+    EvolveGhValenciaDivCleanFdPatches
+    PRIVATE
+    USE_FD_PATCHES=true
+    )
+endif()
+
 function(add_ghmhd_with_horizon_executable SUFFIX)
   set(EXECUTABLE "EvolveGhValenciaDivClean${SUFFIX}")
   add_spectre_executable(

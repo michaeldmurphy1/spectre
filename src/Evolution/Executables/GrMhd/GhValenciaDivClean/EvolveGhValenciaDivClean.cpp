@@ -15,9 +15,14 @@
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 
 // Parameters chosen in CMakeLists.txt
+#if defined(USE_FD_PATCHES) and USE_FD_PATCHES
+using metavariables = EvolutionMetavarsWithFdPatches<
+    USE_CONTROL_SYSTEMS, USE_PARAMETRIZED_DELEPTONIZATION, BondiSachs>;
+#else
 using metavariables =
     EvolutionMetavars<USE_CONTROL_SYSTEMS, USE_PARAMETRIZED_DELEPTONIZATION,
                       BondiSachs>;
+#endif
 
 extern "C" void CkRegisterMainModule() {
   Parallel::charmxx::register_main_module<metavariables>();

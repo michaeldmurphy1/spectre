@@ -241,6 +241,12 @@ class TimeDerivativeOnDevice {
           packaged_data_from_dg,
       const Kokkos::View<const double*>& received_mortar_data);
 
+  /// The number of points of each face set (see
+  /// `ValenciaDivClean::subcell::TimeDerivativeOnDevice`)
+  size_t number_of_face_points() const {
+    return grmhd_.number_of_face_points();
+  }
+
   /// The spacetime variables at the cell centers that the GRMHD sources used
   /// in the last `apply()`, e.g. for tests
   const BatchedVariables<ValenciaDivClean::subcell::cell_spacetime_tags>&

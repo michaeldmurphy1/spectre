@@ -59,6 +59,29 @@ void grmhd_spacetime_on_device(
     const Batch<gr::Tags::InverseSpatialMetric<DataVector, 3>>&
         inverse_spatial_metric);
 
+/// The spatial metric, its inverse and the square root of its determinant,
+/// which the fixing of the GRMHD variables and the primitive recovery use
+using fixing_metric_tags =
+    tmpl::list<gr::Tags::SpatialMetric<DataVector, 3>,
+               gr::Tags::InverseSpatialMetric<DataVector, 3>,
+               gr::Tags::SqrtDetSpatialMetric<DataVector>>;
+
+/*!
+ * \brief The `fixing_metric_tags` from the spacetime metric, in a Kokkos
+ * kernel on `exec`.
+ *
+ * \details This computes the same values as the compute tags of an element on
+ * the host (`gr::Tags::SpatialMetricCompute`,
+ * `gr::Tags::DetAndInverseSpatialMetricCompute` and
+ * `gr::Tags::SqrtDetSpatialMetricCompute`) and
+ * `FixConservativesAndComputePrims`, with the same operations in the same
+ * order.
+ */
+void fixing_metric_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    gsl::not_null<BatchedVariables<fixing_metric_tags>*> metric,
+    const Batch<gr::Tags::SpacetimeMetric<DataVector, 3>>& spacetime_metric);
+
 /*!
  * \brief Add the trace-reversed stress energy of the fluid to
  * \f$\partial_t\Pi_{ab}\f$, in a Kokkos kernel on `exec`.

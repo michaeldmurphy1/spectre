@@ -25,12 +25,13 @@
 #include "Evolution/DgSubcell/FdPatch/BoundaryMessagesKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/ElementBox.hpp"
 #include "Evolution/DgSubcell/FdPatch/FdPatchElementsKokkos.hpp"
-#include "Evolution/Patches/HostCopyKokkos.hpp"
+#include "Evolution/DgSubcell/FdPatch/PatchBaseKokkos.hpp"
 #include "Evolution/Patches/InboxTags.hpp"
 #include "Evolution/Patches/SavedBatchesKokkos.hpp"
 #include "Evolution/Patches/TagsKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hll.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Rusanov.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FdPatch/FixingAndRecoveryKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservatives.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservativesOnDeviceKokkos.hpp"
@@ -67,8 +68,6 @@ class CoordinateMapBase;
 namespace evolution {
 class BoundaryCorrection;
 }  // namespace evolution
-namespace evolution::dg::subcell::fd_patch {
-}  // namespace evolution::dg::subcell::fd_patch
 namespace grmhd::ValenciaDivClean::fd {
 class Reconstructor;
 }  // namespace grmhd::ValenciaDivClean::fd
@@ -122,17 +121,17 @@ using InitialDataFunction = std::function<Variables<initial_data_tags>(
  * `evolution::patches::AffineGridToInertial`). Anything else is
  * an error.
  *
- * The elements of the patch never switch to DG, so no TCI runs. They send the
- * TCI status `tci_status_sent` to their neighbors, which is what FD elements
- * send on the host with `AlwaysUseSubcells` (the only option FD patches
- * support), since their TCI decision is reset to 0 at initialization and
- * never recomputed.
+ * The fixing of the variables and the recovery of the primitive variables
+ * are shared with other GRMHD systems (see `FixingAndRecovery`), and the
+ * members that don't depend on the system with all FD patches (see
+ * `evolution::dg::subcell::fd_patch::PatchBase`).
  */
 template <typename OrderedListOfPrimitiveRecoverySchemes>
-class Patch {
+class Patch : public evolution::dg::subcell::fd_patch::PatchBase<System> {
  public:
-  /// The TCI status that the elements of the patch send to their neighbors
-  static constexpr int tci_status_sent = 0;
+  using ElementVariables = typename evolution::dg::subcell::fd_patch::PatchBase<
+      System>::ElementVariables;
+
   /// The number of RDMP values that every element sends and receives
   static constexpr size_t number_of_rdmp_values = 8;
 
@@ -202,27 +201,6 @@ class Patch {
       const Kokkos::DefaultExecutionSpace& exec,
       const FaceSpacetimeVariables& face_spacetime_variables);
 
-  /// @{
-  /// The elements of the patch, their geometry and the exchange of boundary
-  /// data
-  const evolution::dg::subcell::fd_patch::FdPatchElements& patch_elements()
-      const {
-    return patch_elements_;
-  }
-  evolution::dg::subcell::fd_patch::FdPatchElements& patch_elements() {
-    return patch_elements_;
-  }
-  /// @}
-
-  /// Host copies of the variables of an element, as the DataBox of an FD
-  /// element holds them (see
-  /// `evolution::dg::subcell::fd_patch::make_element_box`)
-  struct ElementVariables {
-    typename System::variables_tag::type evolved{};
-    typename System::primitive_variables_tag::type primitives{};
-    typename System::spacetime_variables_tag::type spacetime{};
-  };
-
   /*!
    * \brief The variables of each element on the subcell grid, copied from the
    * device on `exec`, which is fenced.
@@ -239,73 +217,6 @@ class Patch {
       const PrimitiveVariables& primitives,
       const CellSpacetimeVariables& cell_spacetime_variables,
       const FaceSpacetimeVariables& face_spacetime_variables);
-
-  /// Host variables of each element with the right size but no meaningful
-  /// values, for events that don't read them (see `element_variables()`)
-  std::vector<ElementVariables> element_variables_without_values() const;
-
-  /*!
-   * \brief The DataBox of the element in `slot` for events, as that of an FD
-   * element of the `DgElementArray` (see
-   * `evolution::dg::subcell::fd_patch::make_element_box`), at the time
-   * `time` of the substep `time_step_id` with the step `time_step`, holding
-   * the element's `variables`.
-   */
-  template <typename Metavariables>
-  auto make_element_box(Parallel::GlobalCache<Metavariables>& cache,
-                        const Domain<3>& domain, const size_t slot,
-                        const double time, const TimeStepId& time_step_id,
-                        const TimeDelta& time_step,
-                        ElementVariables variables) const {
-    const Element<3>& element = patch_elements_.elements()[slot];
-    return evolution::dg::subcell::fd_patch::make_element_box<Metavariables>(
-        cache, element, patch_elements_.dg_mesh(),
-        ElementMap<3, Frame::Grid>{element.id(),
-                                   domain.blocks()[element.id().block_id()]},
-        patch_elements_.grid_to_inertial_map(slot).get_clone(), time,
-        time_step_id, time_step, tci_status_sent,
-        patch_elements_.host_cell_geometry(slot),
-        patch_elements_.host_inertial_cell_geometry(slot),
-        std::move(variables.evolved), std::move(variables.primitives),
-        std::move(variables.spacetime));
-  }
-
-  /// Prepare what the DataBoxes of `make_element_box()` at `time` share, on
-  /// `exec`, which is fenced (see
-  /// `FdPatchElements::prepare_host_inertial_cell_geometry()`)
-  void prepare_element_boxes(
-      const Kokkos::DefaultExecutionSpace& exec, const double time,
-      const domain::FunctionsOfTimeMap& functions_of_time) const {
-    patch_elements_.prepare_host_inertial_cell_geometry(exec, time,
-                                                        functions_of_time);
-  }
-
-  /// Whether `messages` hold all the boundary data that the patch receives in
-  /// a substep (see `FdPatchElements::received_all()`)
-  bool received_all(
-      const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
-          messages) const {
-    return patch_elements_.received_all(messages);
-  }
-
-  /// Receive the boundary data of a substep (see `FdPatchElements::receive()`)
-  void receive(
-      const Kokkos::DefaultExecutionSpace& exec,
-      const evolution::patches::Tags::BoundaryDataInbox<3>::messages_type&
-          messages) {
-    patch_elements_.receive(exec, messages, number_of_rdmp_values);
-  }
-
-  /// The number of evolved values of each element, i.e., the number of
-  /// cells times the number of independent components of the evolved
-  /// variables
-  size_t number_of_evolved_values_per_element() const;
-
-  /// The time stepper history of the elements, empty and at the starting
-  /// order of the `time_stepper`, as `Initialization::TimeStepperHistory`
-  /// sets it up for an element
-  TimeSteppers::DeviceHistory<> initial_history(
-      const TimeStepper& time_stepper) const;
 
   /// Compute the ghost variables and fill the ghost zones between the
   /// elements of the patch, and return the boundary data for the neighbors
@@ -387,24 +298,9 @@ class Patch {
   void check_last_step(const Kokkos::DefaultExecutionSpace& exec) const;
 
  private:
-  size_t number_of_cells_of_all_elements() const;
-  void reset_statuses(const Kokkos::DefaultExecutionSpace& exec) const;
-  void copy_statuses_to_host(const Kokkos::DefaultExecutionSpace& exec) const;
-
-  void compute_conservatives(
-      const Kokkos::DefaultExecutionSpace& exec,
-      gsl::not_null<EvolvedVariables*> evolved_variables,
-      const PrimitiveVariables& primitives,
-      const CellSpacetimeVariables& cell_spacetime_variables) const;
-
-  evolution::dg::subcell::fd_patch::FdPatchElements patch_elements_{};
+  FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes> fixing_{};
 
   // Configuration
-  std::unique_ptr<EquationsOfState::EquationOfState<true, 3>>
-      equation_of_state_{};
-  VariableFixing::FixToAtmosphere<3>::DeviceView fix_to_atmosphere_{};
-  FixConservatives fix_conservatives_{};
-  PrimitiveFromConservativeOptions primitive_from_conservative_options_{};
   double constraint_damping_parameter_ = 0.0;
   std::variant<BoundaryCorrections::Rusanov, BoundaryCorrections::Hll>
       boundary_correction_{};
@@ -416,33 +312,13 @@ class Patch {
   BatchedVariables<subcell::PrimitiveGhostVariables::ghost_variables_tag_list>
       ghost_variables_{};
   BatchedVariables<subcell::dt_tags_on_device> dt_variables_{};
-  // The variables of the elements copied to the host for the element boxes
-  // (see `element_variables()`)
-  evolution::patches::HostCopy<typename EvolvedVariables::tags_list>
-      host_evolved_variables_{};
-  evolution::patches::HostCopy<typename PrimitiveVariables::tags_list>
-      host_primitives_{};
-  evolution::patches::HostCopy<
-      typename System::spacetime_variables_tag::tags_list>
-      host_spacetime_{};
   // The values saved during the self start
   evolution::patches::SavedBatches<EvolvedVariables, PrimitiveVariables>
       initial_values_{};
   std::vector<std::array<std::optional<StepperErrorEstimate>, 2>>
       stepper_errors_{};
-  // Buffers of the per-element decisions and the RDMP data, kept so they
-  // aren't allocated every substep
-  Kokkos::View<bool*> fix_conservatives_scratch_{};
-  Kokkos::View<bool*> primitive_recovery_scratch_{};
+  // Buffers of the RDMP data, kept so they aren't allocated every substep
   subcell::RdmpTciDataBuffers rdmp_tci_data_buffers_{};
-  // The failures of the last `take_step()` (see `check_last_step()`). Their
-  // device data changes in const member functions, like that of other views.
-  DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags> face_status_{};
-  DeferredPointwiseStatus<fix_conservatives_snapshot_tags>
-      fix_conservatives_status_{};
-  DeferredPointwiseStatus<primitive_recovery_snapshot_tags> recovery_status_{};
-  DeferredPointwiseStatus<VariableFixing::fix_to_atmosphere_snapshot_tags>
-      atmosphere_status_{};
 };
 }  // namespace grmhd::ValenciaDivClean::fd_patch
 #endif  // SPECTRE_KOKKOS

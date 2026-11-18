@@ -76,6 +76,7 @@ spectre_target_headers(
   SpatialMetric.hpp
   Tags.hpp
   TagsDeclarations.hpp
+  ThreePlusOneKokkos.hpp
   TimeDerivativeOfSpacetimeMetric.hpp
   TimeDerivativeOfSpatialMetric.hpp
   TortoiseCoordinates.hpp

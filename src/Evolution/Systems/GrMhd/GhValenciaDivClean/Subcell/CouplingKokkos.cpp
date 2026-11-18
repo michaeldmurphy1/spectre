@@ -15,6 +15,7 @@
 #include "Evolution/Systems/GeneralizedHarmonic/Tags.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/StressEnergy.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
+#include "PointwiseFunctions/GeneralRelativity/ThreePlusOneKokkos.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
@@ -99,27 +100,10 @@ void grmhd_spacetime_on_device(
         const auto beta = make_at_index(shift, i, e);
         const auto inverse = make_at_index(inverse_spatial_metric, i, e);
 
-        // As `gr::spacetime_normal_vector`
-        tnsr::A<double, 3> normal{};
-        get<0>(normal) = 1. / get(alpha);
-        for (size_t k = 0; k < 3; ++k) {
-          normal.get(k + 1) = -beta.get(k) * get<0>(normal);
-        }
-        // As `gr::inverse_spacetime_metric`
-        tnsr::AA<double, 3> inverse_metric{};
-        get<0, 0>(inverse_metric) = -1.0 / (get(alpha) * get(alpha));
-        const double minus_one_over_lapse_sqrd = get<0, 0>(inverse_metric);
-        for (size_t k = 0; k < 3; ++k) {
-          inverse_metric.get(0, k + 1) =
-              -beta.get(k) * minus_one_over_lapse_sqrd;
-        }
-        for (size_t k = 0; k < 3; ++k) {
-          for (size_t l = k; l < 3; ++l) {
-            inverse_metric.get(k + 1, l + 1) =
-                inverse.get(k, l) +
-                beta.get(k) * beta.get(l) * minus_one_over_lapse_sqrd;
-          }
-        }
+        const tnsr::A<double, 3> normal =
+            gr::device::spacetime_normal_vector(get(alpha), beta);
+        const tnsr::AA<double, 3> inverse_metric =
+            gr::device::inverse_spacetime_metric(get(alpha), beta, inverse);
         // As `gh::TimeDerivative`
         tnsr::ia<double, 3> phi_one_normal{};
         for (size_t n = 0; n < 3; ++n) {
@@ -177,16 +161,8 @@ void grmhd_spacetime_on_device(
             spatial_metric.get(m, n) = g.get(m + 1, n + 1);
           }
         }
-        // As `determinant_and_inverse`
-        const double t00 = get<0, 0>(spatial_metric);
-        const double t01 = get<0, 1>(spatial_metric);
-        const double t02 = get<0, 2>(spatial_metric);
-        const double t11 = get<1, 1>(spatial_metric);
-        const double t12 = get<1, 2>(spatial_metric);
-        const double t22 = get<2, 2>(spatial_metric);
-        const double det = t00 * (t11 * t22 - t12 * t12) +
-                           t01 * (t12 * t02 - t01 * t22) +
-                           t02 * (t01 * t12 - t11 * t02);
+        const double det =
+            gr::device::determinant_and_inverse(spatial_metric).determinant;
 
         write_at(lapse_out, alpha, i, e);
         write_at(shift_out, beta, i, e);

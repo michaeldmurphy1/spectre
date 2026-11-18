@@ -10,6 +10,7 @@
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
+#include "PointwiseFunctions/GeneralRelativity/ThreePlusOneKokkos.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
@@ -79,47 +80,13 @@ void spacetime_on_faces_on_device(
         for (size_t component = 0; component < 10; ++component) {
           g[component] = spacetime_metric_views[component](point, element);
         }
-        // As `gr::spatial_metric`
-        tnsr::ii<double, 3> local_spatial_metric{};
-        for (size_t i = 0; i < 3; ++i) {
-          for (size_t j = i; j < 3; ++j) {
-            local_spatial_metric.get(i, j) = g.get(i + 1, j + 1);
-          }
-        }
-        // As `determinant_and_inverse`
-        const double t00 = get<0, 0>(local_spatial_metric);
-        const double t01 = get<0, 1>(local_spatial_metric);
-        const double t02 = get<0, 2>(local_spatial_metric);
-        const double t11 = get<1, 1>(local_spatial_metric);
-        const double t12 = get<1, 2>(local_spatial_metric);
-        const double t22 = get<2, 2>(local_spatial_metric);
-        const double a = t11 * t22 - t12 * t12;
-        const double b = t12 * t02 - t01 * t22;
-        const double c = t01 * t12 - t11 * t02;
-        const double det = t00 * a + t01 * b + t02 * c;
-        const double one_over_det = 1.0 / det;
-        tnsr::II<double, 3> inverse{};
-        get<0, 0>(inverse) = (t11 * t22 - t12 * t12) * one_over_det;
-        get<0, 1>(inverse) = (t12 * t02 - t22 * t01) * one_over_det;
-        get<0, 2>(inverse) = (t01 * t12 - t02 * t11) * one_over_det;
-        get<1, 1>(inverse) = (t22 * t00 - t02 * t02) * one_over_det;
-        get<1, 2>(inverse) = (t02 * t01 - t00 * t12) * one_over_det;
-        get<2, 2>(inverse) = (t00 * t11 - t01 * t01) * one_over_det;
-        // As `gr::shift`
-        tnsr::I<double, 3> local_shift{};
-        for (size_t i = 0; i < 3; ++i) {
-          local_shift.get(i) = inverse.get(i, 0) * get<1, 0>(g);
-          for (size_t j = 1; j < 3; ++j) {
-            local_shift.get(i) += inverse.get(i, j) * g.get(j + 1, 0);
-          }
-        }
-        // As `gr::lapse`
-        double local_lapse = -get<0, 0>(g);
-        for (size_t i = 0; i < 3; ++i) {
-          local_lapse += local_shift.get(i) * g.get(i + 1, 0);
-        }
+        const tnsr::ii<double, 3> local_spatial_metric =
+            gr::device::spatial_metric(g);
+        const auto [det, inverse] =
+            gr::device::determinant_and_inverse(local_spatial_metric);
+        const tnsr::I<double, 3> local_shift = gr::device::shift(g, inverse);
 
-        lapse_view(point, element) = sqrt(local_lapse);
+        lapse_view(point, element) = gr::device::lapse(g, local_shift);
         sqrt_det_view(point, element) = sqrt(det);
         for (size_t i = 0; i < 3; ++i) {
           shift_views[i](point, element) = local_shift[i];

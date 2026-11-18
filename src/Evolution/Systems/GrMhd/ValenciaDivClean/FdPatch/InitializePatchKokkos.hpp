@@ -21,6 +21,7 @@
 #include "Domain/Domain.hpp"
 #include "Domain/FunctionsOfTime/Tags.hpp"
 #include "Evolution/BoundaryCorrectionTags.hpp"
+#include "Evolution/DgSubcell/FdPatch/CheckOptions.hpp"
 #include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/DgSubcell/Tags/SubcellOptions.hpp"
 #include "Evolution/Initialization/InitialData.hpp"
@@ -33,7 +34,6 @@
 #include "Evolution/TypeTraits.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
 #include "Evolution/VariableFixing/Tags.hpp"
-#include "NumericalAlgorithms/FiniteDifference/DerivativeOrder.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "ParallelAlgorithms/EventsAndDenseTriggers/EventsAndDenseTriggers.hpp"
@@ -45,7 +45,6 @@
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/InitialData.hpp"
 #include "PointwiseFunctions/InitialDataUtilities/Tags/InitialData.hpp"
-#include "Time/LtsMode.hpp"
 #include "Time/Tags/DeviceHistoryEvolvedVariablesKokkos.hpp"
 #include "Time/Tags/LtsMode.hpp"
 #include "Time/Tags/StepperErrorEstimatesEnabled.hpp"
@@ -56,8 +55,6 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
-#include "Utilities/PrettyType.hpp"
-#include "Utilities/StdHelpers.hpp"
 #include "Utilities/TMPL.hpp"
 
 #ifdef SPECTRE_KOKKOS
@@ -79,49 +76,7 @@ template <typename OrderedListOfPrimitiveRecoverySchemes, typename DbTagsList,
 fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes> make_patch(
     const db::DataBox<DbTagsList>& box,
     const Parallel::GlobalCache<Metavariables>& cache, const int array_index) {
-  // Patches assume that the elements that start on the subcell grid stay
-  // there and the others stay on the DG grid (see
-  // `evolution::dg::subcell::fd_patch::patch_table()`)
-  const auto& subcell_options =
-      db::get<evolution::dg::subcell::Tags::SubcellOptions<3>>(box);
-  if (not subcell_options.always_use_subcells()) {
-    ERROR("FD patches need AlwaysUseSubcells.");
-  }
-  // The device time derivative only computes second-order FD derivatives of
-  // the fluxes (no high-order flux corrections)
-  if (subcell_options.finite_difference_derivative_order() !=
-      ::fd::DerivativeOrder::Two) {
-    ERROR("FD patches only support FiniteDifferenceDerivativeOrder: 2, but got "
-          << subcell_options.finite_difference_derivative_order());
-  }
-  // Patches take global time steps: with local time stepping the DG neighbors
-  // would send data at times the patches never reach
-  if (db::get<::Tags::LtsMode>(box) != LtsMode::Off) {
-    ERROR("FD patches don't support local time stepping, but LtsMode is "
-          << db::get<::Tags::LtsMode>(box));
-  }
-  // Patches only run events and triggers at steps and slabs (see
-  // `evolution::patches::Actions::RunEventsAndTriggers`), so the DG elements
-  // would wait forever for the patches in the others
-  std::vector<std::string> unsupported_events{};
-  const auto add_event = [&unsupported_events](const Event& event) {
-    unsupported_events.push_back(pretty_type::get_runtime_type_name(event));
-  };
-  db::get<::Tags::EventsAndDenseTriggers>(box).for_each_event(add_event);
-  Parallel::get<
-      ::Tags::EventsAndTriggers<Triggers::WhenToCheck::AtCheckpoints>>(cache)
-      .for_each_event(add_event);
-  for (const auto& event : Parallel::get<::Tags::EventsRunAtCleanup>(cache)) {
-    add_event(*event);
-  }
-  if (not unsupported_events.empty()) {
-    ERROR(
-        "FD patches only run events in EventsAndTriggersAtSteps and "
-        "EventsAndTriggersAtSlabs, but there are events in "
-        "EventsAndDenseTriggers, EventsAndTriggersAtCheckpoints or "
-        "EventsRunAtCleanup: "
-        << unsupported_events);
-  }
+  evolution::dg::subcell::fd_patch::check_options(box, cache);
   const auto patch = static_cast<size_t>(array_index);
   const Domain<3>& domain = db::get<domain::Tags::Domain<3>>(box);
   const auto& patch_table =

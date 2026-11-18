@@ -11,6 +11,7 @@ spectre_target_headers(
   HEADERS
   ActionsKokkos.hpp
   BoundaryMessagesKokkos.hpp
+  CheckOptions.hpp
   ElementBox.hpp
   FdPatchElementsKokkos.hpp
   GeometryKokkos.hpp

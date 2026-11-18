@@ -38,6 +38,7 @@ if (SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
     FiniteDifference/Test_SpacetimeOnFacesKokkos.cpp
     Subcell/Test_CouplingKokkos.cpp
+    Subcell/Test_TimeDerivativeKokkos.cpp
     )
 endif()
 

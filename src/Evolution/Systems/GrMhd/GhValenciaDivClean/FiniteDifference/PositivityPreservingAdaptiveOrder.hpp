@@ -215,6 +215,27 @@ class PositivityPreservingAdaptiveOrderPrim : public Reconstructor<System> {
 
   bool reconstruct_rho_times_temperature() const override;
 
+  /// Where the reconstructed states are fixed to the atmosphere
+  ::VariableFixing::FixReconstructedStateToAtmosphere
+  fix_reconstructed_state_to_atmosphere() const {
+    return fix_reconstructed_state_to_atmosphere_;
+  }
+
+  /// \f$4^{\alpha_5}\f$
+  double four_to_the_alpha_5() const { return four_to_the_alpha_5_; }
+  /// \f$6^{\alpha_7}\f$, if the 7th order is used
+  const std::optional<double>& six_to_the_alpha_7() const {
+    return six_to_the_alpha_7_;
+  }
+  /// \f$8^{\alpha_9}\f$, if the 9th order is used
+  const std::optional<double>& eight_to_the_alpha_9() const {
+    return eight_to_the_alpha_9_;
+  }
+  /// The reconstruction used if the 5th order isn't
+  FallbackReconstructorType low_order_reconstructor() const {
+    return low_order_reconstructor_;
+  }
+
  private:
   template <typename LocalSystem>
   // NOLINTNEXTLINE(readability-redundant-declaration)

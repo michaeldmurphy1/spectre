@@ -308,10 +308,17 @@ share what they can:
   (`evolution::dg::subcell::fd_patch::patch_table`), ghost zones, the FD
   geometry, the packaged data
   from DG neighbors, the FD message format, the initial TCI exchange with DG
-  neighbors, and the element DataBox for events
-  (`evolution::dg::subcell::fd_patch::make_element_box`).
-- **System and method** (e.g. `grmhd::ValenciaDivClean::fd_patch::Patch`): the
-  batched physics, using the method layer.
+  neighbors, the element DataBox for events
+  (`evolution::dg::subcell::fd_patch::make_element_box`), the check of the
+  options (`evolution::dg::subcell::fd_patch::check_options`), and
+  `evolution::dg::subcell::fd_patch::PatchBase`, from which the patches of
+  the systems derive and which provides the members of a patch that don't
+  depend on the system.
+- **System and method** (e.g. `grmhd::ValenciaDivClean::fd_patch::Patch` and
+  `grmhd::GhValenciaDivClean::fd_patch::Patch`): the batched physics, using
+  the method layer. Systems that share physics share its batched code too,
+  e.g. the fixing and primitive recovery of the GRMHD variables
+  (`grmhd::ValenciaDivClean::fd_patch::FixingAndRecovery`).
 
 The generic actions call the system patch (`PatchTag` holds it) through these
 members: `state_tags`, `patch_elements()` (with `element_ids()`),
@@ -448,8 +455,12 @@ different design.
 Patches support global time stepping (Runge-Kutta and multistep time steppers
 with self start), analytic initial data, monotonised central and
 positivity-preserving adaptive-order reconstruction,
-the Rusanov and HLL boundary corrections, affine or time-independent grid to
-inertial maps, and blocks whose cells line up across block boundaries (patches
-copy ghost data between blocks instead of interpolating). They don't support
-external boundary conditions, local time stepping, or step size control by
-error estimates yet. Anything unsupported is an error.
+the Rusanov and HLL boundary corrections (of the GRMHD variables, for
+GhValenciaDivClean), affine grid to inertial maps (and maps with a device
+version where the system computes the cell geometry, e.g.
+GhValenciaDivClean), and blocks whose cells line up across block boundaries
+(patches copy ghost data between blocks instead of interpolating).
+GhValenciaDivClean patches support the harmonic gauge and damping functions
+that are sums of Gaussians. Patches don't support external boundary
+conditions, local time stepping, step size control by error estimates,
+control systems or interpolation yet. Anything unsupported is an error.

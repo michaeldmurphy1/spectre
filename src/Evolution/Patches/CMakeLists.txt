@@ -11,6 +11,7 @@ spectre_target_headers(
   HEADERS
   ActionsKokkos.hpp
   GridToInertial.hpp
+  HostCopyKokkos.hpp
   InboxTags.hpp
   PatchArray.hpp
   PatchElementsKokkos.hpp

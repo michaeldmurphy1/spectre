@@ -386,7 +386,10 @@ global cache. The events (e.g. `dg::Events::ObserveFields`,
 run on it as on any element, including derived quantities computed by compute
 tags. This costs a copy of the variables from the device and the construction of
 a DataBox per element at each observation, so it suits operations that run
-occasionally rather than every step.
+occasionally rather than every step. The copy goes to pinned host memory that
+the patch allocates at the first observation that reads the variables (see
+`evolution::patches::HostCopy`), so patches whose events don't read them don't
+hold that memory.
 
 Since events and step choosers are compiled against this DataBox, it must
 provide every tag that any event or step chooser of the executable may read.

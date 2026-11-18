@@ -11,6 +11,8 @@ spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
+  FixingAndRecoveryKokkos.hpp
+  FixingAndRecoveryKokkos.tpp
   InitializePatchKokkos.hpp
   PatchKokkos.hpp
   )

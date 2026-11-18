@@ -20,7 +20,7 @@ void monotonised_central(
     const Kokkos::DefaultExecutionSpace& exec,
     const std::array<StridedVolumeView, Dim>& upper_side_of_face_vars,
     const std::array<StridedVolumeView, Dim>& lower_side_of_face_vars,
-    const ConstVolumeView& padded_volume_vars,
+    const ConstStridedVolumeView& padded_volume_vars,
     const Index<Dim>& volume_extents) {
   detail::reconstruct<
       ::fd::reconstruction::detail::MonotonisedCentralReconstructor>(
@@ -35,7 +35,7 @@ void monotonised_central(
       const Kokkos::DefaultExecutionSpace& exec,                               \
       const std::array<StridedVolumeView, DIM(data)>& upper_side_of_face_vars, \
       const std::array<StridedVolumeView, DIM(data)>& lower_side_of_face_vars, \
-      const ConstVolumeView& padded_volume_vars,                               \
+      const ConstStridedVolumeView& padded_volume_vars,                        \
       const Index<DIM(data)>& volume_extents);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))

@@ -43,7 +43,9 @@ FdPatchElements::FdPatchElements(
     const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
     const double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
     const size_t ghost_width, const size_t number_of_ghost_variables,
-    const size_t number_of_packaged_variables, const bool compute_cell_geometry)
+    const size_t number_of_packaged_variables,
+    const size_t number_of_dg_packaged_variables,
+    const size_t dg_packaged_variables_offset, const bool compute_cell_geometry)
     : evolution::patches::PatchElements(exec, domain, patch_table, patch,
                                         initial_refinement_levels),
       subcell_mesh_(evolution::dg::subcell::fd::mesh(dg_mesh())),
@@ -73,13 +75,14 @@ FdPatchElements::FdPatchElements(
       Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
                          "FD patch send data"),
       ghost_zones_.send_data_size());
-  packaged_data_from_dg_ = PackagedDataFromDg<3>{exec,
-                                                 elements(),
-                                                 patch_table,
-                                                 patch,
-                                                 number_of_packaged_variables,
-                                                 number_of_packaged_variables,
-                                                 0};
+  packaged_data_from_dg_ =
+      PackagedDataFromDg<3>{exec,
+                            elements(),
+                            patch_table,
+                            patch,
+                            number_of_packaged_variables,
+                            number_of_dg_packaged_variables,
+                            dg_packaged_variables_offset};
   received_mortar_data_ = Kokkos::View<double*>(
       Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
                          "FD patch received mortar data"),

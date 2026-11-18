@@ -19,6 +19,7 @@
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Domain/Structure/Element.hpp"
 #include "Domain/Structure/ElementId.hpp"
+#include "Domain/Tags.hpp"
 #include "Evolution/DgSubcell/FdPatch/BoundaryMessagesKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/GeometryKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/GhostZonesKokkos.hpp"
@@ -85,9 +86,11 @@ class FdPatchElements : public evolution::patches::PatchElements {
    * `evolution::patches::PatchElements`), checks that their cells line up with
    * those of their neighbors in other blocks, builds the tables for the ghost
    * zones (of width `ghost_width`, for `number_of_ghost_variables` variables)
-   * and for the packaged data from DG neighbors (with
-   * `number_of_packaged_variables` independent components), and computes the
-   * geometry at the `time`.
+   * and for the packaged data from DG neighbors, and computes the geometry at
+   * the `time`. The packaged data on the faces has
+   * `number_of_packaged_variables` independent components. DG neighbors send
+   * `number_of_dg_packaged_variables` components, of which the first
+   * `dg_packaged_variables_offset` aren't used (see `PackagedDataFromDg`).
    *
    * With `compute_cell_geometry` the patch also computes the
    * `cell_geometry()` and `cell_mesh_velocity()` (see
@@ -101,7 +104,9 @@ class FdPatchElements : public evolution::patches::PatchElements {
       const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
       double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
       size_t ghost_width, size_t number_of_ghost_variables,
-      size_t number_of_packaged_variables, bool compute_cell_geometry = false);
+      size_t number_of_packaged_variables,
+      size_t number_of_dg_packaged_variables,
+      size_t dg_packaged_variables_offset, bool compute_cell_geometry = false);
 
   /// The subcell mesh of the elements
   const Mesh<3>& subcell_mesh() const { return subcell_mesh_; }
@@ -177,6 +182,17 @@ class FdPatchElements : public evolution::patches::PatchElements {
     return cell_mesh_velocity_;
   }
   /// @}
+
+  /// The grid coordinates at the cell centers, which don't depend on time.
+  /// Only with `compute_cell_geometry`.
+  typename ::Tags::BatchView<::domain::Tags::Coordinates<3, Frame::Grid>>::type
+  cell_grid_coordinates() const {
+    ASSERT(compute_cell_geometry_,
+           "The grid coordinates at the cell centers of FD patch "
+               << patch() << " are only kept with compute_cell_geometry.");
+    return get<::Tags::BatchView<::domain::Tags::Coordinates<3, Frame::Grid>>>(
+        logical_to_grid_.cell_points);
+  }
 
   /// Fill the interior and the ghost zones between the elements of the patch
   /// of `padded_ghost_variables()` from the unpadded `ghost_variables` of the

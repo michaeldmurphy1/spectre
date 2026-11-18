@@ -176,6 +176,41 @@ void grmhd_spacetime_on_device(
       });
 }
 
+void fixing_metric_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const gsl::not_null<BatchedVariables<fixing_metric_tags>*> metric,
+    const Batch<gr::Tags::SpacetimeMetric<DataVector, 3>>& spacetime_metric) {
+  const size_t number_of_points = metric->number_of_grid_points();
+  const size_t number_of_elements = metric->number_of_elements();
+  ASSERT((get<0, 0>(spacetime_metric).extent(0) == number_of_points and
+          get<0, 0>(spacetime_metric).extent(1) == number_of_elements),
+         "The spacetime metric must have "
+             << number_of_points << " grid points and " << number_of_elements
+             << " elements, but has " << (get<0, 0>(spacetime_metric).extent(0))
+             << " and " << (get<0, 0>(spacetime_metric).extent(1)));
+  const auto spatial_metric_out =
+      get<::Tags::BatchView<gr::Tags::SpatialMetric<DataVector, 3>>>(*metric);
+  const auto inverse_spatial_metric_out =
+      get<::Tags::BatchView<gr::Tags::InverseSpatialMetric<DataVector, 3>>>(
+          *metric);
+  const auto sqrt_det_spatial_metric_out =
+      get<::Tags::BatchView<gr::Tags::SqrtDetSpatialMetric<DataVector>>>(
+          *metric);
+  Kokkos::parallel_for(
+      "grmhd::GhValenciaDivClean::subcell::fixing_metric_on_device",
+      policy(exec, number_of_points, number_of_elements),
+      KOKKOS_LAMBDA(const size_t i, const size_t e) {
+        const auto g = make_at_index(spacetime_metric, i, e);
+        const tnsr::ii<double, 3> spatial_metric =
+            gr::device::spatial_metric(g);
+        const auto [det, inverse] =
+            gr::device::determinant_and_inverse(spatial_metric);
+        write_at(spatial_metric_out, spatial_metric, i, e);
+        write_at(inverse_spatial_metric_out, inverse, i, e);
+        get(sqrt_det_spatial_metric_out)(i, e) = sqrt(det);
+      });
+}
+
 void add_stress_energy_to_dt_pi_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
     const Batch<::Tags::dt<gh::Tags::Pi<DataVector, 3>>>& dt_pi,

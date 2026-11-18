@@ -85,6 +85,13 @@ using initial_data_tags = tmpl::append<hydro::grmhd_tags<DataVector>,
 using InitialDataFunction = std::function<Variables<initial_data_tags>(
     const tnsr::I<DataVector, 3, Frame::Inertial>& inertial_coords)>;
 
+/// The variables of the DataBox of an element on the host that the DataBoxes
+/// of the elements of patches for events hold (see
+/// `evolution::dg::subcell::fd_patch::make_element_box`)
+using element_variables_tags =
+    tmpl::list<System::variables_tag, System::primitive_variables_tag,
+               System::spacetime_variables_tag>;
+
 /*!
  * \brief The ValenciaDivClean evolution of the FD elements of one patch, with
  * all their data on the device.
@@ -127,10 +134,11 @@ using InitialDataFunction = std::function<Variables<initial_data_tags>(
  * `evolution::dg::subcell::fd_patch::PatchBase`).
  */
 template <typename OrderedListOfPrimitiveRecoverySchemes>
-class Patch : public evolution::dg::subcell::fd_patch::PatchBase<System> {
+class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
+                  System, element_variables_tags> {
  public:
   using ElementVariables = typename evolution::dg::subcell::fd_patch::PatchBase<
-      System>::ElementVariables;
+      System, element_variables_tags>::ElementVariables;
 
   /// The number of RDMP values that every element sends and receives
   static constexpr size_t number_of_rdmp_values = 8;

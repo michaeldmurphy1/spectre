@@ -10,6 +10,7 @@ spectre_target_sources(
   PrimitiveGhostData.cpp
   PrimsAfterRollback.cpp
   ResizeAndComputePrimitives.cpp
+  TimeDerivativeKokkos.cpp
   )
 
 spectre_target_headers(
@@ -26,5 +27,6 @@ spectre_target_headers(
   TciOnDgGrid.hpp
   TciOnFdGrid.hpp
   TimeDerivative.hpp
+  TimeDerivativeKokkos.hpp
   ZeroTimeDerivatives.hpp
   )

@@ -157,6 +157,12 @@ class MonotonisedCentralPrim : public Reconstructor<System> {
 
   bool reconstruct_rho_times_temperature() const override;
 
+  /// Where the reconstructed states are fixed to the atmosphere
+  ::VariableFixing::FixReconstructedStateToAtmosphere
+  fix_reconstructed_state_to_atmosphere() const {
+    return fix_reconstructed_state_to_atmosphere_;
+  }
+
  private:
   template <typename LocalSystem>
   friend bool operator==(const MonotonisedCentralPrim<LocalSystem>& lhs,

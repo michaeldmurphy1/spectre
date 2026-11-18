@@ -288,6 +288,36 @@ void test_stress_energy(const std::vector<Variables<input_tags>>& inputs) {
     tmpl::for_each<input_tags>(unchanged);
   }
 }
+// The spatial metric, its inverse and the square root of its determinant, as
+// the compute tags of an element on the host give them
+void test_fixing_metric(const std::vector<Variables<input_tags>>& inputs) {
+  using metric_tags = grmhd::GhValenciaDivClean::subcell::fixing_metric_tags;
+  const auto device_inputs = to_device(inputs);
+  const Kokkos::DefaultExecutionSpace exec{};
+  BatchedVariables<metric_tags> metric{exec, number_of_points,
+                                       number_of_elements};
+  grmhd::GhValenciaDivClean::subcell::fixing_metric_on_device(
+      exec, make_not_null(&metric),
+      batch_view<spacetime_metric_tag>(device_inputs));
+  const auto results = to_host(metric);
+  for (size_t e = 0; e < number_of_elements; ++e) {
+    CAPTURE(e);
+    const auto spatial_metric =
+        gr::spatial_metric(get<spacetime_metric_tag>(inputs[e]));
+    const auto [det, inverse] = determinant_and_inverse(spatial_metric);
+    // The same operations in the same order as on the host, so they agree
+    // to roundoff: the device and host compilers may contract them into fused
+    // multiply-adds differently (bitwise on the Serial backend with clang)
+    CHECK(get<gr::Tags::SpatialMetric<DataVector, 3>>(results[e]) ==
+          spatial_metric);
+    const auto& device_inverse =
+        get<gr::Tags::InverseSpatialMetric<DataVector, 3>>(results[e]);
+    CHECK_ITERABLE_APPROX(device_inverse, inverse);
+    const auto& device_sqrt_det =
+        get(get<gr::Tags::SqrtDetSpatialMetric<DataVector>>(results[e]));
+    CHECK_ITERABLE_APPROX(device_sqrt_det, sqrt(get(det)));
+  }
+}
 }  // namespace
 
 SPECTRE_TEST_CASE(
@@ -301,4 +331,5 @@ SPECTRE_TEST_CASE(
   }
   test_grmhd_spacetime(inputs);
   test_stress_energy(inputs);
+  test_fixing_metric(inputs);
 }

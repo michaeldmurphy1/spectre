@@ -40,4 +40,5 @@ spectre_target_headers(
   TciOptions.hpp
   TimeDerivative.hpp
   TimeDerivativeKokkos.hpp
+  TimeDerivativeKokkos.tpp
   )

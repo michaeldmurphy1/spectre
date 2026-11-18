@@ -87,6 +87,10 @@ using FaceVectorBatch =
     tnsr::I<Kokkos::View<double**, Kokkos::LayoutStride,
                          Kokkos::DefaultExecutionSpace::memory_space>,
             3>;
+using FaceInverseMetricBatch =
+    tnsr::II<Kokkos::View<double**, Kokkos::LayoutStride,
+                          Kokkos::DefaultExecutionSpace::memory_space>,
+             3>;
 /// @}
 
 /*!
@@ -103,7 +107,10 @@ using FaceVectorBatch =
  * 3. the normal covector, i.e. `sign` times the `conormal` normalized with the
  *    inverse spatial metric (`sign` is \f$+1\f$ on the lower side of the faces
  *    and \f$-1\f$ on the upper side, so that the normal points out of the
- *    side),
+ *    side). The inverse spatial metric is that of the `faces`, or
+ *    `normalization_inverse_spatial_metric` if it isn't `nullptr`, e.g. to
+ *    normalize the normals on both sides with that of one side, as the FD
+ *    time derivative of GhValenciaDivClean does,
  * 4. if the mesh is moving, the normal dot the mesh velocity, and
  * 5. the packaged data, as `package_data_on_device` does from these.
  *
@@ -128,7 +135,9 @@ void fluxes_and_package_data_on_device(
     const BatchedVariables<FaceTags>& faces, const FaceCovectorBatch& conormal,
     double sign, const FaceVectorBatch* mesh_velocity,
     const Correction& correction,
-    const EquationsOfState::EquationOfState<true, 3>& equation_of_state);
+    const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
+    const FaceInverseMetricBatch* normalization_inverse_spatial_metric =
+        nullptr);
 
 /*!
  * \brief Computes the packaged data of `Rusanov` on one side of the faces of a
@@ -139,7 +148,8 @@ void fluxes_and_package_data_on_device(
  * results on the stack, the variables on the face as
  * `fd::compute_conservatives_on_device` does (with the fix to the atmosphere
  * if `fix_to_atmosphere` isn't `nullptr`), and then the fluxes, the normals
- * and the packaged data as `fluxes_and_package_data_on_device` does. The
+ * and the packaged data as `fluxes_and_package_data_on_device` does (also
+ * with `normalization_inverse_spatial_metric`). The
  * `faces` hold the reconstructed and spacetime variables
  * (`fd::reconstruction_face_tags`) and aren't modified.
  *
@@ -165,7 +175,9 @@ PointwiseStatusSummary package_data_from_reconstruction_on_device(
     const FaceCovectorBatch& conormal, double sign,
     const FaceVectorBatch* mesh_velocity,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
-    const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere);
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere,
+    const FaceInverseMetricBatch* normalization_inverse_spatial_metric =
+        nullptr);
 
 void package_data_from_reconstruction_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
@@ -177,7 +189,9 @@ void package_data_from_reconstruction_on_device(
     const FaceCovectorBatch& conormal, double sign,
     const FaceVectorBatch* mesh_velocity,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
-    const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere);
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere,
+    const FaceInverseMetricBatch* normalization_inverse_spatial_metric =
+        nullptr);
 /// @}
 
 /*!

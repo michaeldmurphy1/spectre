@@ -34,6 +34,7 @@ namespace fd::device {
  *
  * \param exec the execution space instance that runs the kernel.
  * \param dt_vars the time derivatives, with the extents of the volume data.
+ * Can be a subview of some of the variables.
  * \param boundary_corrections the boundary corrections \f$\hat{F}^d\f$ on the
  * faces in each direction `d`, with `volume_extents[d] + 1` faces in
  * dimension `d` and the same variables as `dt_vars`.
@@ -44,7 +45,7 @@ namespace fd::device {
  */
 template <size_t Dim>
 void add_cartesian_flux_divergence(
-    const Kokkos::DefaultExecutionSpace& exec, const VolumeView& dt_vars,
+    const Kokkos::DefaultExecutionSpace& exec, const StridedVolumeView& dt_vars,
     const std::array<ConstVolumeView, Dim>& boundary_corrections,
     const ConstVolumeView& det_inverse_jacobian,
     const std::array<double, Dim>& one_over_delta,

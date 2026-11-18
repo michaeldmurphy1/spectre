@@ -13,6 +13,7 @@
 #include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/Index.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
+#include "Domain/Structure/Side.hpp"
 #include "Evolution/DgSubcell/FdPatch/GeometryKokkos.hpp"
 #include "Evolution/DgSubcell/Tags/Coordinates.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/OnDeviceKokkos.hpp"
@@ -145,17 +146,34 @@ class TimeDerivativeOnDevice {
       const BatchedVariables<face_spacetime_tags>& face_spacetime_variables);
 
   /*!
+   * \brief The variables on the `side` of the faces (a batch of \f$3N\f$ face
+   * sets).
+   *
+   * \details E.g. to set the `face_spacetime_tags` on each side when they
+   * differ, as for GhValenciaDivClean, whose spacetime is reconstructed.
+   * `apply()` only reads them. As on the host, the normal covectors on both
+   * sides are normalized with the inverse spatial metric of the upper side.
+   */
+  gsl::not_null<BatchedVariables<face_tags>*> faces(Side side);
+
+  /*!
    * \brief Compute the time derivatives `dt_vars` of a batch of elements.
    *
+   * \details The batches of the time derivatives and the evolved variables
+   * may hold other variables too, e.g. those of GhValenciaDivClean, which
+   * are unchanged.
+   *
    * \param exec the execution space instance that runs the kernels.
-   * \param dt_vars the time derivatives of the evolved variables.
+   * \param dt_vars the time derivatives of the evolved variables, which must
+   * hold the `dt_tags_on_device` contiguously and in that order.
    * \param face_status where the failures of the fix to the atmosphere on
    * both sides of the faces (see `fd::compute_conservatives_on_device`) are
    * added.
    * \param padded_ghost_variables the ghost variables of the elements padded
    * with ghost zones of width at least 2, filled by
    * `evolution::dg::subcell::fd_patch::GhostZones`.
-   * \param evolved_variables the evolved variables at the cell centers.
+   * \param evolved_variables the evolved variables at the cell centers, which
+   * must hold the `evolved_tags_on_device`.
    * \param primitives the primitive variables at the cell centers.
    * \param cell_spacetime_variables the spacetime variables at the cell
    * centers, which the sources need.
@@ -180,15 +198,18 @@ class TimeDerivativeOnDevice {
    * \param received_mortar_data the data received from DG neighbors, laid
    * out as described by `packaged_data_from_dg`.
    *
-   * All work is only enqueued on `exec`.
+   * All work is only enqueued on `exec`. It is defined in
+   * `TimeDerivativeKokkos.tpp` and instantiated for the variables of
+   * ValenciaDivClean.
    */
+  template <typename DtTags, typename EvolvedTags>
   void apply(
       const Kokkos::DefaultExecutionSpace& exec,
-      gsl::not_null<BatchedVariables<dt_tags_on_device>*> dt_vars,
+      gsl::not_null<BatchedVariables<DtTags>*> dt_vars,
       gsl::not_null<DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>
           face_status,
       const ::fd::device::VolumeView& padded_ghost_variables,
-      const BatchedVariables<evolved_tags_on_device>& evolved_variables,
+      const BatchedVariables<EvolvedTags>& evolved_variables,
       const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,
       const BatchedVariables<cell_spacetime_tags>& cell_spacetime_variables,
       const BatchedVariables<

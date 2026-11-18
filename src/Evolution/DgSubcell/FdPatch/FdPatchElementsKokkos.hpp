@@ -162,6 +162,9 @@ class FdPatchElements : public evolution::patches::PatchElements {
       const {
     return cell_geometry_;
   }
+  /// Whether the grid to inertial maps of all elements were affine at the last
+  /// `update_geometry()`
+  bool maps_are_affine() const { return maps_are_affine_; }
   /// The divergence of the mesh velocity of each element, which is constant
   /// on an element only for affine maps. Otherwise use `cell_mesh_velocity()`.
   Kokkos::View<const double*> div_mesh_velocity() const {

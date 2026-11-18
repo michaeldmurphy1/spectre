@@ -173,6 +173,16 @@ function(add_input_file_tests INPUT_FILE_DIR INPUT_FILE_WHITELIST)
       continue()
     endif()
 
+    # Skip tests of executables that only exist in builds with Kokkos
+    string(REGEX MATCH "RequiresKokkos:[^\n]+"
+      INPUT_FILE_REQUIRES_KOKKOS "${INPUT_FILE_CONTENTS}")
+    string(REGEX REPLACE "RequiresKokkos:[ ]*" ""
+      INPUT_FILE_REQUIRES_KOKKOS "${INPUT_FILE_REQUIRES_KOKKOS}")
+    string(STRIP "${INPUT_FILE_REQUIRES_KOKKOS}" INPUT_FILE_REQUIRES_KOKKOS)
+    if (INPUT_FILE_REQUIRES_KOKKOS AND NOT SPECTRE_KOKKOS)
+      continue()
+    endif()
+
     # Check if the executable name is present
     string(REGEX MATCH "Executable:[^\n]+"
       INPUT_FILE_EXECUTABLE "${INPUT_FILE_CONTENTS}")

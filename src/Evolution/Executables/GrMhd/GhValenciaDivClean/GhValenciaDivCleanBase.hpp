@@ -245,6 +245,15 @@
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
 
+#ifdef SPECTRE_KOKKOS
+#include "Evolution/DgSubcell/FdPatch/ActionsKokkos.hpp"
+#include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
+#include "Evolution/Patches/ActionsKokkos.hpp"
+#include "Evolution/Patches/PatchArray.hpp"
+#include "Evolution/Patches/SlabSize.hpp"
+#include "Evolution/Systems/GrMhd/GhValenciaDivClean/FdPatch/InitializePatchKokkos.hpp"
+#endif  // SPECTRE_KOKKOS
+
 /// \cond
 namespace Frame {
 
@@ -969,6 +978,76 @@ struct GhValenciaDivCleanTemplateBase<
               Parallel::Phase::PostFailureCleanup,
               tmpl::list<Actions::RunEventsOnFailure<Tags::Time>,
                          Parallel::Actions::TerminatePhase>>>>>;
+
+#ifdef SPECTRE_KOKKOS
+  // The FD elements on the device in FD patches, for metavariables that set
+  // `use_patches` (see `evolution::patches::PatchArray` and
+  // `grmhd::GhValenciaDivClean::fd_patch::Patch`)
+  using fd_patch_tag = grmhd::GhValenciaDivClean::fd_patch::Tags::Patch<
+      ordered_list_of_primitive_recovery_schemes>;
+  using fd_patch_step_actions =
+      tmpl::list<evolution::patches::Actions::SendBoundaryData<
+                     fd_patch_tag, dg_element_array_component>,
+                 evolution::patches::Actions::ReceiveBoundaryData<volume_dim,
+                                                                  fd_patch_tag>,
+                 evolution::patches::Actions::TakeStep<fd_patch_tag>>;
+  using fd_patch_component = evolution::patches::PatchArray<
+      derived_metavars,
+      tmpl::list<
+          Parallel::PhaseActions<
+              Parallel::Phase::Initialization,
+              tmpl::list<
+                  Initialization::Actions::InitializeItems<
+                      Initialization::TimeStepping<derived_metavars,
+                                                   TimeStepper, false, true>>,
+                  grmhd::GhValenciaDivClean::fd_patch::Actions::InitializePatch<
+                      ordered_list_of_primitive_recovery_schemes>,
+                  Parallel::Actions::TerminatePhase>>,
+          // The DG elements exchange the initial TCI data in this phase
+          Parallel::PhaseActions<
+              Parallel::Phase::InitializeInitialDataDependentQuantities,
+              tmpl::list<
+                  evolution::dg::subcell::fd_patch::Actions::SendInitialTciData<
+                      fd_patch_tag, dg_element_array_component>,
+                  evolution::dg::subcell::fd_patch::Actions::
+                      ReceiveInitialTciData<volume_dim, fd_patch_tag>,
+                  Parallel::Actions::TerminatePhase>>,
+          Parallel::PhaseActions<
+              Parallel::Phase::InitializeTimeStepperHistory,
+              evolution::patches::Actions::self_start_procedure<
+                  fd_patch_tag, fd_patch_step_actions>>,
+          Parallel::PhaseActions<
+              Parallel::Phase::Register,
+              tmpl::list<evolution::patches::Actions::RegisterWithObservers<
+                             fd_patch_tag>,
+                         Parallel::Actions::TerminatePhase>>,
+          // The observers don't keep the registrations across checkpoints
+          Parallel::PhaseActions<
+              Parallel::Phase::Restart,
+              tmpl::list<
+                  grmhd::GhValenciaDivClean::fd_patch::Actions::RebuildPatch<
+                      ordered_list_of_primitive_recovery_schemes>,
+                  evolution::patches::Actions::RegisterWithObservers<
+                      fd_patch_tag>,
+                  Parallel::Actions::TerminatePhase>>,
+          Parallel::PhaseActions<
+              Parallel::Phase::Evolve,
+              tmpl::flatten<tmpl::list<
+                  // As the DG elements at the start of each step
+                  grmhd::GhValenciaDivClean::fd_patch::Actions::FixVariables<
+                      ordered_list_of_primitive_recovery_schemes>,
+                  evolution::patches::Actions::RunEventsAndTriggers<
+                      Triggers::WhenToCheck::AtSteps, fd_patch_tag>,
+                  evolution::patches::Actions::RunEventsAndTriggers<
+                      Triggers::WhenToCheck::AtSlabs, fd_patch_tag>,
+                  Actions::ChangeSlabSize, fd_patch_step_actions,
+                  Actions::MutateApply<AdvanceTime<>>,
+                  evolution::patches::Actions::CheckLastStepAtSlabBoundaries<
+                      fd_patch_tag>,
+                  // As for the DG elements, so that all elements halt for
+                  // phase changes (e.g. checkpoints) at the same slab
+                  PhaseControl::Actions::ExecutePhaseChange>>>>>;
+#endif  // SPECTRE_KOKKOS
 
   struct registration
       : tt::ConformsTo<Parallel::protocols::RegistrationMetavariables> {

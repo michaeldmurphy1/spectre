@@ -2,6 +2,7 @@
 // See LICENSE.txt for details.
 
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservativesOnDeviceKokkos.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservativesOnDeviceKokkos.tpp"
 
 #include <cstddef>
 #include <string>
@@ -30,22 +31,7 @@
 #include "DataStructures/DeviceArgumentsKokkos.hpp"
 
 namespace grmhd::ValenciaDivClean {
-namespace {
-// `FixConservatives::AtGridPoint` with whether to assume a non-zero magnetic
-// field given for each element of the batch
-struct AtGridPointOfBatch {
-  using AtGridPoint = FixConservatives::AtGridPoint;
-  using return_tags = AtGridPoint::return_tags;
-  using argument_tags = tmpl::push_back<
-      tmpl::pop_back<AtGridPoint::argument_tags>,
-      ::Tags::PerElement<FixConservatives::AssumeNonZeroMagneticField>>;
-
-  template <typename... Args>
-  KOKKOS_FUNCTION static PointwiseStatus apply(const Args&... args) {
-    return AtGridPoint::apply(args...);
-  }
-};
-
+namespace FixConservativesOnDevice_detail {
 // Whether to assume a non-zero magnetic field on each element, as
 // `FixConservatives::assume_non_zero_magnetic_field` decides for an element
 Kokkos::View<const bool*> assume_non_zero_magnetic_field_on_device(
@@ -89,47 +75,9 @@ Kokkos::View<const bool*> assume_non_zero_magnetic_field_on_device(
       });
   return result;
 }
-}  // namespace
+}  // namespace FixConservativesOnDevice_detail
 
 namespace {
-// Fixes with a `PointwiseStatusSummary` result if `status` is `nullptr`, and
-// else records the status in `*status`
-template <typename StatusPointer>
-PointwiseStatusSummary fix_conservatives_impl(
-    const Kokkos::DefaultExecutionSpace& exec,
-    const gsl::not_null<BatchedVariables<FixConservativesOnDeviceTags>*>
-        conservatives,
-    const StatusPointer status,
-    const typename ::Tags::BatchView<
-        gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
-    const typename ::Tags::BatchView<
-        gr::Tags::InverseSpatialMetric<DataVector, 3>>::type&
-        inv_spatial_metric,
-    const typename ::Tags::BatchView<
-        gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
-        sqrt_det_spatial_metric,
-    const FixConservatives& fix_conservatives,
-    Kokkos::View<bool*>* const per_element_scratch) {
-  const auto& tilde_b = get<::Tags::BatchView<Tags::TildeB<>>>(*conservatives);
-  const Kokkos::View<const bool*> assume_non_zero_magnetic_field =
-      assume_non_zero_magnetic_field_on_device(exec, tilde_b, fix_conservatives,
-                                               per_element_scratch);
-  // The variables are both arguments and results. This is safe because the
-  // arguments at a grid point are read before the results there are written.
-  return ApplyPointwiseOnDevice_detail::apply_with_status<AtGridPointOfBatch>(
-      exec, conservatives, status, AtGridPointOfBatch::return_tags{},
-      AtGridPointOfBatch::argument_tags{},
-      [&]<typename... ArgumentTags>(tmpl::list<ArgumentTags...> /*meta*/) {
-        return make_device_arguments<ArgumentTags...>(
-            exec, get<::Tags::BatchView<Tags::TildeD>>(*conservatives),
-            get<::Tags::BatchView<Tags::TildeYe>>(*conservatives),
-            get<::Tags::BatchView<Tags::TildeTau>>(*conservatives),
-            get<::Tags::BatchView<Tags::TildeS<>>>(*conservatives), tilde_b,
-            spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
-            fix_conservatives, assume_non_zero_magnetic_field);
-      }(AtGridPointOfBatch::argument_tags{}));
-}
-
 // ERRORs with the variables before fixing at the failed grid point, which
 // `point(tmpl::type_<Tag>{})` returns. `is_first` is whether it is the first
 // failure, else any.
@@ -159,47 +107,6 @@ template <typename Point>
       << "\nRun on the host for the details of the root find.");
 }
 }  // namespace
-
-PointwiseStatusSummary fix_conservatives_on_device(
-    const Kokkos::DefaultExecutionSpace& exec,
-    const gsl::not_null<BatchedVariables<FixConservativesOnDeviceTags>*>
-        conservatives,
-    const typename ::Tags::BatchView<
-        gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
-    const typename ::Tags::BatchView<
-        gr::Tags::InverseSpatialMetric<DataVector, 3>>::type&
-        inv_spatial_metric,
-    const typename ::Tags::BatchView<
-        gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
-        sqrt_det_spatial_metric,
-    const FixConservatives& fix_conservatives,
-    Kokkos::View<bool*>* const per_element_scratch) {
-  return fix_conservatives_impl(exec, conservatives, nullptr, spatial_metric,
-                                inv_spatial_metric, sqrt_det_spatial_metric,
-                                fix_conservatives, per_element_scratch);
-}
-
-void fix_conservatives_on_device(
-    const Kokkos::DefaultExecutionSpace& exec,
-    const gsl::not_null<BatchedVariables<FixConservativesOnDeviceTags>*>
-        conservatives,
-    const gsl::not_null<
-        DeferredPointwiseStatus<fix_conservatives_snapshot_tags>*>
-        status,
-    const typename ::Tags::BatchView<
-        gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
-    const typename ::Tags::BatchView<
-        gr::Tags::InverseSpatialMetric<DataVector, 3>>::type&
-        inv_spatial_metric,
-    const typename ::Tags::BatchView<
-        gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
-        sqrt_det_spatial_metric,
-    const FixConservatives& fix_conservatives,
-    Kokkos::View<bool*>* const per_element_scratch) {
-  fix_conservatives_impl(exec, conservatives, status.get(), spatial_metric,
-                         inv_spatial_metric, sqrt_det_spatial_metric,
-                         fix_conservatives, per_element_scratch);
-}
 
 void error_fixing_conservatives_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
@@ -258,5 +165,35 @@ void error_fixing_conservatives_on_device(
         return get<::Tags::AtIndex<Tag>>(snapshot);
       });
 }
+template PointwiseStatusSummary fix_conservatives_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    gsl::not_null<BatchedVariables<FixConservativesOnDeviceTags>*>
+        conservatives,
+    const typename ::Tags::BatchView<
+        gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
+    const typename ::Tags::BatchView<
+        gr::Tags::InverseSpatialMetric<DataVector, 3>>::type&
+        inv_spatial_metric,
+    const typename ::Tags::BatchView<
+        gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
+        sqrt_det_spatial_metric,
+    const FixConservatives& fix_conservatives,
+    Kokkos::View<bool*>* per_element_scratch);
+template void fix_conservatives_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    gsl::not_null<BatchedVariables<FixConservativesOnDeviceTags>*>
+        conservatives,
+    gsl::not_null<DeferredPointwiseStatus<fix_conservatives_snapshot_tags>*>
+        status,
+    const typename ::Tags::BatchView<
+        gr::Tags::SpatialMetric<DataVector, 3>>::type& spatial_metric,
+    const typename ::Tags::BatchView<
+        gr::Tags::InverseSpatialMetric<DataVector, 3>>::type&
+        inv_spatial_metric,
+    const typename ::Tags::BatchView<
+        gr::Tags::SqrtDetSpatialMetric<DataVector>>::type&
+        sqrt_det_spatial_metric,
+    const FixConservatives& fix_conservatives,
+    Kokkos::View<bool*>* per_element_scratch);
 }  // namespace grmhd::ValenciaDivClean
 #endif  // SPECTRE_KOKKOS

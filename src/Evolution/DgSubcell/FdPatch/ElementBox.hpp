@@ -10,6 +10,7 @@
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/MetavariablesTag.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Variables.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
@@ -194,27 +195,29 @@ using default_initialized_tags = tmpl::push_back<
         typename Metavariables::system::variables_tag>,
     ::Tags::FixedLtsRatio>;
 
-template <size_t Dim, typename Metavariables>
-using initialized_tags = tmpl::list<
-    Parallel::Tags::GlobalCache<Metavariables>,
-    Parallel::Tags::MetavariablesImpl<Metavariables>, ::Tags::Time,
-    ::Tags::TimeStepId, ::Tags::TimeStep, ::domain::Tags::Mesh<Dim>,
-    ::domain::Tags::Element<Dim>, ::domain::Tags::ElementMap<Dim, Frame::Grid>,
-    ::domain::CoordinateMaps::Tags::CoordinateMap<Dim, Frame::Grid,
-                                                  Frame::Inertial>,
-    CellGeometry<Dim>, InertialCellGeometry<Dim>, subcell::Tags::ActiveGrid,
-    subcell::Tags::TciDecision, subcell::Tags::ReconstructionOrder<Dim>,
-    typename Metavariables::system::variables_tag,
-    typename Metavariables::system::primitive_variables_tag,
-    typename Metavariables::system::spacetime_variables_tag>;
+template <size_t Dim, typename Metavariables, typename VariablesTags>
+using initialized_tags = tmpl::append<
+    tmpl::list<Parallel::Tags::GlobalCache<Metavariables>,
+               Parallel::Tags::MetavariablesImpl<Metavariables>, ::Tags::Time,
+               ::Tags::TimeStepId, ::Tags::TimeStep, ::domain::Tags::Mesh<Dim>,
+               ::domain::Tags::Element<Dim>,
+               ::domain::Tags::ElementMap<Dim, Frame::Grid>,
+               ::domain::CoordinateMaps::Tags::CoordinateMap<Dim, Frame::Grid,
+                                                             Frame::Inertial>,
+               CellGeometry<Dim>, InertialCellGeometry<Dim>,
+               subcell::Tags::ActiveGrid, subcell::Tags::TciDecision,
+               subcell::Tags::ReconstructionOrder<Dim>>,
+    VariablesTags>;
 
-template <size_t Dim, typename Metavariables>
-using simple_tags = tmpl::append<initialized_tags<Dim, Metavariables>,
-                                 default_initialized_tags<Metavariables>>;
+template <size_t Dim, typename Metavariables, typename VariablesTags>
+using simple_tags =
+    tmpl::append<initialized_tags<Dim, Metavariables, VariablesTags>,
+                 default_initialized_tags<Metavariables>>;
 
 // As `evolution::dg::Initialization::Domain` and
-// `evolution::dg::subcell::Actions::SetSubcellGrid` for an element
-template <size_t Dim, typename Metavariables>
+// `evolution::dg::subcell::Actions::SetSubcellGrid` for an element, and the
+// `SystemComputeTags` of the evolved system
+template <size_t Dim, typename Metavariables, typename SystemComputeTags>
 using compute_tags = tmpl::remove_duplicates<tmpl::flatten<tmpl::list<
     db::wrap_tags_in<
         Parallel::Tags::FromGlobalCache,
@@ -262,15 +265,17 @@ using compute_tags = tmpl::remove_duplicates<tmpl::flatten<tmpl::list<
     // As for an element of the `DgElementArray`
     evolution::dg::Tags::EqualRateRegionsRef<
         Dim, typename Metavariables::equal_rate_regions>,
-    // After the grid tags that they depend on
+    SystemComputeTags,
+    // After the grid and system tags that they depend on
     ::StepChoosers::step_chooser_compute_tags<Metavariables>>>>;
 }  // namespace ElementBox_detail
 
 /// The type of the DataBox of `make_element_box`
-template <size_t Dim, typename Metavariables>
-using element_box_type = db::compute_databox_type<
-    tmpl::append<ElementBox_detail::simple_tags<Dim, Metavariables>,
-                 ElementBox_detail::compute_tags<Dim, Metavariables>>>;
+template <size_t Dim, typename Metavariables, typename VariablesTags,
+          typename SystemComputeTags>
+using element_box_type = db::compute_databox_type<tmpl::append<
+    ElementBox_detail::simple_tags<Dim, Metavariables, VariablesTags>,
+    ElementBox_detail::compute_tags<Dim, Metavariables, SystemComputeTags>>>;
 
 /*!
  * \brief A DataBox on the host for an element of an FD patch, with what the
@@ -278,8 +283,10 @@ using element_box_type = db::compute_databox_type<
  * choosers.
  *
  * \details The DataBox holds the element, its DG mesh, maps, the time and step
- * size, the `tci_decision` of the element, and host copies of its evolved,
- * primitive and spacetime variables on the subcell grid. Its coordinates,
+ * size, the `tci_decision` of the element, and host copies of its
+ * `variables` on the subcell grid (`VariablesTags`, e.g. the evolved,
+ * primitive and spacetime variables, as an element of the evolved system
+ * holds them). Its coordinates,
  * Jacobians and global cache items are the compute and reference items of an
  * element, except for the geometry at the cell centers, which the patch
  * computes:
@@ -289,6 +296,11 @@ using element_box_type = db::compute_databox_type<
  * - the inertial coordinates and logical to inertial Jacobians at the time of
  *   the DataBox, on the device if the mesh moves (`inertial_cell_geometry`,
  *   see `FdPatchElements::host_inertial_cell_geometry`).
+ *
+ * The `SystemComputeTags` are the compute tags that the DataBox of an element
+ * of the evolved system adds, e.g. the spatial metric computed from the
+ * spacetime metric for GhValenciaDivClean, so that events and step choosers
+ * can retrieve these items.
  *
  * The geometry for observations (the `Events::Tags::ObserverCoordinates` and
  * the logical to inertial `Events::Tags::ObserverInverseJacobian`,
@@ -300,8 +312,10 @@ using element_box_type = db::compute_databox_type<
  * The variables and the cell geometries may refer to memory owned elsewhere
  * (without copying), which must outlive the DataBox.
  */
-template <typename Metavariables, size_t Dim>
-element_box_type<Dim, Metavariables> make_element_box(
+template <typename Metavariables, typename VariablesTags,
+          typename SystemComputeTags, size_t Dim>
+element_box_type<Dim, Metavariables, VariablesTags, SystemComputeTags>
+make_element_box(
     Parallel::GlobalCache<Metavariables>& cache, Element<Dim> element,
     Mesh<Dim> dg_mesh, ElementMap<Dim, Frame::Grid> element_map,
     std::unique_ptr<
@@ -312,22 +326,28 @@ element_box_type<Dim, Metavariables> make_element_box(
     Variables<ElementBox_detail::cell_geometry_tags<Dim>> cell_geometry,
     Variables<ElementBox_detail::inertial_cell_geometry_tags<Dim>>
         inertial_cell_geometry,
-    typename Metavariables::system::variables_tag::type evolved_variables,
-    typename Metavariables::system::primitive_variables_tag::type primitives,
-    typename Metavariables::system::spacetime_variables_tag::type spacetime) {
-  return tmpl::as_pack<
-      ElementBox_detail::default_initialized_tags<Metavariables>>(
-      [&]<typename... DefaultTags>(tmpl::type_<DefaultTags>... /*meta*/) {
-        return db::create<ElementBox_detail::simple_tags<Dim, Metavariables>,
-                          ElementBox_detail::compute_tags<Dim, Metavariables>>(
-            &cache, Metavariables{}, time, time_step_id, std::move(time_step),
-            std::move(dg_mesh), std::move(element), std::move(element_map),
-            std::move(grid_to_inertial_map), std::move(cell_geometry),
-            std::move(inertial_cell_geometry), ActiveGrid::Subcell,
-            tci_decision,
-            std::optional<tnsr::I<DataVector, Dim, Frame::ElementLogical>>{},
-            std::move(evolved_variables), std::move(primitives),
-            std::move(spacetime), typename DefaultTags::type{}...);
-      });
+    tuples::tagged_tuple_from_typelist<VariablesTags> variables) {
+  return tmpl::as_pack<tmpl::append<
+      VariablesTags, ElementBox_detail::default_initialized_tags<
+                         Metavariables>>>([&]<typename... Tags>(
+                                              tmpl::type_<Tags>... /*meta*/) {
+    // The variables, then the default-initialized tags
+    const auto value = [&variables]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+      if constexpr (tmpl::list_contains_v<VariablesTags, Tag>) {
+        return std::move(get<Tag>(variables));
+      } else {
+        return typename Tag::type{};
+      }
+    };
+    return db::create<
+        ElementBox_detail::simple_tags<Dim, Metavariables, VariablesTags>,
+        ElementBox_detail::compute_tags<Dim, Metavariables, SystemComputeTags>>(
+        &cache, Metavariables{}, time, time_step_id, std::move(time_step),
+        std::move(dg_mesh), std::move(element), std::move(element_map),
+        std::move(grid_to_inertial_map), std::move(cell_geometry),
+        std::move(inertial_cell_geometry), ActiveGrid::Subcell, tci_decision,
+        std::optional<tnsr::I<DataVector, Dim, Frame::ElementLogical>>{},
+        value(tmpl::type_<Tags>{})...);
+  });
 }
 }  // namespace evolution::dg::subcell::fd_patch

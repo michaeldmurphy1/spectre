@@ -4,10 +4,13 @@
 #pragma once
 
 #include <cstddef>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "Domain/Domain.hpp"
 #include "Domain/ElementMap.hpp"
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
@@ -21,6 +24,7 @@
 #include "Time/Time.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/TMPL.hpp"
 
 #ifdef SPECTRE_KOKKOS
 /// \cond
@@ -39,7 +43,8 @@ namespace evolution::dg::subcell::fd_patch {
  * systems: the exchange of boundary data with the neighbors outside the patch
  * (`received_all()` and `receive()`), the time stepper history and the
  * DataBoxes of the elements for events (`make_element_box()`), which hold the
- * `ElementVariables` of an element. The derived patch adds the batched
+ * `ElementVariables` of an element and the `ElementBoxComputeTags` of the
+ * system (see `make_element_box`). The derived patch adds the batched
  * physics.
  *
  * The elements of FD patches never switch to DG, so no TCI runs. They send
@@ -48,19 +53,23 @@ namespace evolution::dg::subcell::fd_patch {
  * patches support), since their TCI decision is reset to 0 at initialization
  * and never recomputed.
  */
-template <typename System>
+template <typename System, typename ElementVariablesTags,
+          typename ElementBoxComputeTags = tmpl::list<>>
 class PatchBase {
+  static_assert(std::is_same_v<tmpl::front<ElementVariablesTags>,
+                               typename System::variables_tag>,
+                "The evolved variables come first in the variables of the "
+                "element boxes.");
+
  public:
   /// The TCI status that the elements of the patch send to their neighbors
   static constexpr int tci_status_sent = 0;
 
-  /// Host copies of the variables of an element, as the DataBox of an FD
-  /// element holds them (see `make_element_box`)
-  struct ElementVariables {
-    typename System::variables_tag::type evolved{};
-    typename System::primitive_variables_tag::type primitives{};
-    typename System::spacetime_variables_tag::type spacetime{};
-  };
+  /// Host copies of the variables of an element (`ElementVariablesTags`, e.g.
+  /// the evolved, primitive and spacetime variables), as the DataBox of an FD
+  /// element of the system holds them (see `make_element_box`)
+  using ElementVariables =
+      tuples::tagged_tuple_from_typelist<ElementVariablesTags>;
 
   /// @{
   /// The elements of the patch, their geometry and the exchange of boundary
@@ -77,9 +86,10 @@ class PatchBase {
         patch_elements_.subcell_mesh().number_of_grid_points();
     std::vector<ElementVariables> result(patch_elements_.number_of_elements());
     for (auto& element_variables : result) {
-      element_variables.evolved.initialize(number_of_cells);
-      element_variables.primitives.initialize(number_of_cells);
-      element_variables.spacetime.initialize(number_of_cells);
+      tmpl::for_each<ElementVariablesTags>(
+          [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+            get<Tag>(element_variables).initialize(number_of_cells);
+          });
     }
     return result;
   }
@@ -98,7 +108,8 @@ class PatchBase {
                         const TimeDelta& time_step,
                         ElementVariables variables) const {
     const Element<3>& element = patch_elements_.elements()[slot];
-    return evolution::dg::subcell::fd_patch::make_element_box<Metavariables>(
+    return evolution::dg::subcell::fd_patch::make_element_box<
+        Metavariables, ElementVariablesTags, ElementBoxComputeTags>(
         cache, element, patch_elements_.dg_mesh(),
         ElementMap<3, Frame::Grid>{element.id(),
                                    domain.blocks()[element.id().block_id()]},
@@ -106,8 +117,7 @@ class PatchBase {
         time_step_id, time_step, tci_status_sent,
         patch_elements_.host_cell_geometry(slot),
         patch_elements_.host_inertial_cell_geometry(slot),
-        std::move(variables.evolved), std::move(variables.primitives),
-        std::move(variables.spacetime));
+        std::move(variables));
   }
 
   /// Prepare what the DataBoxes of `make_element_box()` at `time` share, on
@@ -173,37 +183,38 @@ class PatchBase {
    * \brief The variables of each element on the subcell grid, copied from the
    * device on `exec`, which is fenced.
    *
-   * \details The `spacetime` batch may hold more variables than the
-   * `ElementVariables`, which get the `System::spacetime_variables_tag`. The
-   * variables are copied into pinned host memory that the patch allocates at
-   * the first call (see `evolution::patches::HostCopy`), and the returned
-   * `Variables` refer to it without owning the data. So they are valid until
-   * the next call (and while the patch exists), which is enough for the
-   * element boxes of one observation.
+   * \details The `batches` hold the `ElementVariablesTags` in their order, and
+   * may hold more variables than these. The variables are copied into pinned
+   * host memory that the patch allocates at the first call (see
+   * `evolution::patches::HostCopy`), and the returned `Variables` refer to it
+   * without owning the data. So they are valid until the next call (and while
+   * the patch exists), which is enough for the element boxes of one
+   * observation.
    */
-  template <typename SpacetimeTags>
+  template <typename... BatchTags>
   std::vector<ElementVariables> copy_element_variables(
       const Kokkos::DefaultExecutionSpace& exec,
-      const BatchedVariables<typename System::variables_tag::tags_list>&
-          evolved_variables,
-      const BatchedVariables<
-          typename System::primitive_variables_tag::tags_list>& primitives,
-      const BatchedVariables<SpacetimeTags>& spacetime) {
-    auto& host_evolved =
-        host_evolved_variables_.enqueue_copy(exec, evolved_variables);
-    auto& host_primitives = host_primitives_.enqueue_copy(exec, primitives);
-    auto& host_spacetime = host_spacetime_.enqueue_copy(exec, spacetime);
+      const BatchedVariables<BatchTags>&... batches) {
+    static_assert(sizeof...(BatchTags) ==
+                  tmpl::size<ElementVariablesTags>::value);
+    auto host_batches = std::apply(
+        [&](auto&... host_copies) {
+          return std::forward_as_tuple(
+              host_copies.enqueue_copy(exec, batches)...);
+        },
+        host_copies_);
     exec.fence(
         "evolution::dg::subcell::fd_patch::PatchBase::element_variables");
 
     std::vector<ElementVariables> result(patch_elements_.number_of_elements());
     for (size_t slot = 0; slot < result.size(); ++slot) {
-      set_data_ref_to_element(make_not_null(&result[slot].evolved),
-                              host_evolved, slot);
-      set_data_ref_to_element(make_not_null(&result[slot].primitives),
-                              host_primitives, slot);
-      set_data_ref_to_element(make_not_null(&result[slot].spacetime),
-                              host_spacetime, slot);
+      [&]<size_t... Is>(std::index_sequence<Is...> /*meta*/) {
+        (set_data_ref_to_element(
+             make_not_null(
+                 &get<tmpl::at_c<ElementVariablesTags, Is>>(result[slot])),
+             std::get<Is>(host_batches), slot),
+         ...);
+      }(std::make_index_sequence<sizeof...(BatchTags)>{});
     }
     return result;
   }
@@ -212,14 +223,13 @@ class PatchBase {
   FdPatchElements patch_elements_{};
   size_t number_of_rdmp_values_ = 0;
   // The variables of the elements copied to the host for the element boxes
-  evolution::patches::HostCopy<typename System::variables_tag::tags_list>
-      host_evolved_variables_{};
-  evolution::patches::HostCopy<
-      typename System::primitive_variables_tag::tags_list>
-      host_primitives_{};
-  evolution::patches::HostCopy<
-      typename System::spacetime_variables_tag::tags_list>
-      host_spacetime_{};
+  template <typename Tag>
+  struct host_copy {
+    using type = evolution::patches::HostCopy<typename Tag::type::tags_list>;
+  };
+  tmpl::wrap<tmpl::transform<ElementVariablesTags, host_copy<tmpl::_1>>,
+             std::tuple>
+      host_copies_{};
 };
 }  // namespace evolution::dg::subcell::fd_patch
 #endif  // SPECTRE_KOKKOS

@@ -283,3 +283,6 @@ following properties are available:
 - `Priority` (optional): Priority of running this test on CI. Possible values
   are: `low` (not usually run on CI), `normal` (run at least once on CI), `high`
   (run always on CI). Default: `normal`.
+- `RequiresKokkos` (optional): If `True`, the test is only added in builds
+  with Kokkos (`SPECTRE_KOKKOS`), e.g. for executables that evolve elements on
+  the device. Default: `False`.

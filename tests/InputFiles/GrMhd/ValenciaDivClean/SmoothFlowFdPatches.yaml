@@ -1,0 +1,227 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+Executable: EvolveValenciaDivCleanFdPatches
+Testing:
+  Check: parse;execute
+  Timeout: 20
+  Priority: High
+  RequiresKokkos: True
+ExpectedOutput:
+  - SmoothFlowFdPatchesVolume0.h5
+  - SmoothFlowFdPatchesReductions.h5
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+  UseSubcellGridPointsForDistribution: False
+
+ResourceInfo:
+  AvoidGlobalProc0: false
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: &initial_time_step 0.01
+  InitialSlabSize: *initial_time_step
+  MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
+  TimeStepper:
+    AdamsMoultonPcMonotonic:
+      Order: 3
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
+
+PhaseChangeAndTriggers:
+  - Trigger:
+      Slabs:
+       EvenlySpaced:
+         # Current implementation checks wallclock at these global syncs
+         Interval: 100
+         Offset: 0
+    PhaseChanges:
+      - CheckpointAndExitAfterWallclock:
+          WallclockHours: None
+
+DomainCreator:
+  AlignedLattice:
+    BlockBounds: [[-9.0, 3.0, 9.0], [-6.0, 6.0], [-6.0, 6.0]]
+    Distributions: [[], [], []]
+    SingularityPositions: [[], [], []]
+    InitialLevels: [2, 2, 0]
+    InitialGridPoints: [3, 3, 3]
+    RefinedLevels:
+    RefinedGridPoints:
+    BlocksToExclude:
+    BoundaryConditions: [Periodic, Periodic, Periodic]
+
+SpatialDiscretization:
+  BoundaryCorrection:
+    Rusanov:
+  DiscontinuousGalerkin:
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+    Filtering:
+      - None:
+          BlocksToFilter: All
+    OnlyDgBlocksAndGroups: ["Block(1,0,0)"]
+    Subcell:
+      TroubledCellIndicator:
+        PerssonTci:
+          Exponent: 4.0
+          NumHighestModes: 1
+        RdmpTci:
+          Delta0: 1.0e-7
+          Epsilon: 1.0e-3
+        FdToDgTci:
+          NumberOfStepsBetweenTciCalls: 1
+          MinTciCallsAfterRollback: 1
+          MinimumClearTcis: 1
+        AlwaysUseSubcells: true
+        EnableExtensionDirections: false
+        UseHalo: false
+      SubcellToDgReconstructionMethod: DimByDim
+      FiniteDifferenceDerivativeOrder: 2
+      FdInterpolationOrder: 1
+    TciOptions:
+      MinimumValueOfD: 1.0e-20
+      MinimumValueOfYe: 1.0e-20
+      MinimumValueOfTildeTau: 1.0e-50
+      MagneticFieldCutoff: DoNotCheckMagneticField
+      AtmosphereDensity: 1.01e-15
+      SafetyFactorForB: 1.0e-12
+  SubcellSolver:
+    Reconstructor:
+      MonotonisedCentralPrim:
+        ReconstructRhoTimesTemperature: false
+
+InitialData:
+  SmoothFlow:
+    MeanVelocity: [0.1, 0.05, 0.02]
+    WaveVector: [0.3490658503988659, 0.5235987755982988, 0.5235987755982988]
+    Pressure: 1.0
+    AdiabaticIndex: 1.4
+    PerturbationSize: 0.2
+
+EquationOfState:
+  FromInitialData
+
+EvolutionSystem:
+  ValenciaDivClean:
+    DampingParameter: 1.0
+
+VariableFixing:
+  FixConservatives:
+    Enable: false # Only needed when not using Kastaun for recovery
+    CutoffD: &CutoffD 1.0e-12
+    MinimumValueOfD: &MinimumD 1.0e-12
+    CutoffYe: 0.0
+    MinimumValueOfYe: 0.0
+    SafetyFactorForB: 1.0e-12
+    SafetyFactorForS: 1.0e-12
+    SafetyFactorForSCutoffD: 1.0e-12
+    SafetyFactorForSSlope: 0.0
+    MagneticField: AssumeNonZero
+  FixToAtmosphere:
+    DensityOfAtmosphere: 1.0e-12
+    DensityCutoff: 1.0e-12
+    VelocityLimiting:
+      AtmosphereMaxVelocity: 0
+      NearAtmosphereMaxVelocity: 1.0e-4
+      AtmosphereDensityCutoff: 3.0e-12
+      TransitionDensityBound: 1.0e-11
+    KappaLimiting:
+      DensityLowerBound: 2.0e-11
+      EplisonKappaMinus: 1.0e-3
+      DensityUpperBound: 2.0e-10
+      EpsilonKappaMax: 0.01
+      LimitAboveDensityUpperBound: False
+      MinTemperature: FromEos
+
+PrimitiveFromConservative:
+  CutoffDForInversion: *CutoffD
+  DensityWhenSkippingInversion: *MinimumD
+  KastaunMaxLorentzFactor: 10.0
+
+Observers:
+  VolumeFileName: "SmoothFlowFdPatchesVolume"
+  ReductionFileName: "SmoothFlowFdPatchesReductions"
+
+EventsAndTriggersAtCheckpoints:
+
+EventsAndTriggersAtSlabs:
+  - Trigger:
+      Slabs:
+        Specified:
+          Values: [3]
+    Events:
+      - ObserveNorms:
+          SubfileName: Norms
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
+          TensorsToObserve:
+            - Name: TildeD
+              NormType: Max
+              Components: Individual
+            - Name: TildeD
+              NormType: L2Norm
+              Components: Individual
+            - Name: TildeYe
+              NormType: Max
+              Components: Individual
+            - Name: TildeYe
+              NormType: L2Norm
+              Components: Individual
+            - Name: TildeTau
+              NormType: Max
+              Components: Individual
+            - Name: TildeTau
+              NormType: L2Norm
+              Components: Individual
+            - Name: TildeS
+              NormType: Max
+              Components: Individual
+            - Name: TildeS
+              NormType: L2Norm
+              Components: Individual
+            - Name: TildeB
+              NormType: Max
+              Components: Individual
+            - Name: TildeB
+              NormType: L2Norm
+              Components: Individual
+            - Name: TildePhi
+              NormType: Max
+              Components: Individual
+            - Name: TildePhi
+              NormType: L2Norm
+              Components: Individual
+      - ObserveFields:
+          SubfileName: VolumeData
+          VariablesToObserve:
+            - TildeD
+            - TildeTau
+            - TildeS
+            - TildeB
+            - TildePhi
+            - RestMassDensity
+            - Pressure
+          InterpolateToMesh: None
+          ProjectToMesh: None
+          CoordinatesFloatingPointType: Double
+          FloatingPointTypes: [Double]
+          BlocksToObserve: All
+      - Completion
+
+EventsAndTriggersAtSteps:
+
+EventsAndDenseTriggers:
+
+Patches:
+  MaxElementsPerPatch: Auto
+  DedicatedProcs: false
+
+EventsRunAtCleanup:
+  ObservationValue: -1000.0
+  Events:

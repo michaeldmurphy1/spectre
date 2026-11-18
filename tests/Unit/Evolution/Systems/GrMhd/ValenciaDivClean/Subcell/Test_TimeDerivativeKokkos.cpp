@@ -453,6 +453,11 @@ SPECTRE_TEST_CASE(
       FallbackReconstructorType::MonotonisedCentral, false};
   const fd::PositivityPreservingAdaptiveOrderPrim high_adaptive_order{
       4.0, 4.0, 4.0, FallbackReconstructorType::Minmod, false};
+  // Reconstructing rho T instead of T
+  const fd::MonotonisedCentralPrim monotonised_central_rho_t{true};
+  const fd::PositivityPreservingAdaptiveOrderPrim adaptive_order_rho_t{
+      4.0, std::nullopt, std::nullopt,
+      FallbackReconstructorType::MonotonisedCentral, true};
   for (const auto& correction_variant :
        {std::variant<BoundaryCorrections::Rusanov, BoundaryCorrections::Hll>{
             BoundaryCorrections::Rusanov{}},
@@ -463,6 +468,8 @@ SPECTRE_TEST_CASE(
           test(correction, monotonised_central);
           test(correction, adaptive_order);
           test(correction, high_adaptive_order);
+          test(correction, monotonised_central_rho_t);
+          test(correction, adaptive_order_rho_t);
         },
         correction_variant);
   }

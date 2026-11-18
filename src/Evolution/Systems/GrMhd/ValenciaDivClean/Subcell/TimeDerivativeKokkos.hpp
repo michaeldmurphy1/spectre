@@ -83,8 +83,8 @@ using cell_spacetime_tags =
  * it for one element on the host.
  *
  * \details This supports what FD patches need: monotonised central or
- * positivity-preserving adaptive-order reconstruction of the temperature (not
- * \f$\rho T\f$), finite difference
+ * positivity-preserving adaptive-order reconstruction of the temperature or
+ * \f$\rho T\f$, finite difference
  * derivative order 2 (no high-order flux corrections), the boundary correction
  * `Correction` (`Rusanov` or `Hll`), and an affine grid to inertial map (see
  * `evolution::patches::AffineGridToInertial`). Unlike the host,

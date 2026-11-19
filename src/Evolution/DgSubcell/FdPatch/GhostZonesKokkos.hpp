@@ -41,12 +41,13 @@ namespace evolution::dg::subcell::fd_patch {
  * unpadded batch (a `BatchedVariables`, so element `e` starts at
  * `e * number_of_variables * number_of_cells` and variable `v` of the element
  * at `v * number_of_cells` past that) and are then copied into a padded
- * `fd::device::VolumeView` for the reconstruction. `fill_from_patch()` does, in
- * one kernel:
- * - copy the cells of each element into the interior of its padded element,
+ * `fd::device::VolumeView` for the reconstruction. `fill_from_patch()` does:
+ * - copy the cells of each element into the interior of its padded element.
+ *   This is a structured copy (a `Kokkos::deep_copy` into a subview), which is
+ *   much faster than listing the points as for the ghost zones.
  * - for each face between two elements of the patch, including periodic faces,
  *   copy the `ghost_width` cells of the neighbor next to the face into the
- *   ghost zone.
+ *   ghost zone, in one kernel.
  *
  * All elements of a patch have the same mesh, and the cells of neighbors in
  * other blocks line up with the ghost cells (see

@@ -157,11 +157,6 @@ GhostZones<Dim>::GhostZones(
   const size_t padded_element_stride =
       number_of_variables * number_of_padded_cells;
 
-  std::vector<size_t> unpadded_points(number_of_cells);
-  std::iota(unpadded_points.begin(), unpadded_points.end(), 0_st);
-  const auto padded_points =
-      ::fd::device::padded_interior_points(subcell_extents_, ghost_width);
-
   for (size_t slot = 0; slot < elements.size(); ++slot) {
     const Element<Dim>& element = elements[slot];
     if (element.id() != element_ids[slot]) {
@@ -175,10 +170,6 @@ GhostZones<Dim>::GhostZones(
             << element.external_boundaries()
             << ". Only periodic boundaries are supported.");
     }
-    from_patch_.add_copy(slot * element_stride, number_of_cells,
-                         slot * padded_element_stride, number_of_padded_cells,
-                         unpadded_points, padded_points);
-
     for (const auto& direction : Direction<Dim>::all_directions()) {
       const auto& neighbors = element.neighbors().at(direction);
       if (neighbors.size() != 1) {
@@ -320,6 +311,26 @@ void GhostZones<Dim>::fill_from_patch(
              << ghost_variables.extent(0) << " values but expected "
              << number_of_elements_ * number_of_variables_ *
                     subcell_extents_.product());
+  // The interior of each element, as a structured copy: the unpadded ghost
+  // variables have the layout of a `VolumeView` without the ghost zones
+  std::array<size_t, 3> extents{1, 1, 1};
+  std::array<size_t, 3> ghosts{0, 0, 0};
+  for (size_t d = 0; d < Dim; ++d) {
+    gsl::at(extents, d) = subcell_extents_[d];
+    gsl::at(ghosts, d) = ghost_width_;
+  }
+  const auto interior = [&](const size_t d) {
+    return Kokkos::make_pair(gsl::at(ghosts, d),
+                             gsl::at(ghosts, d) + gsl::at(extents, d));
+  };
+  const Kokkos::View<const double*****, Kokkos::LayoutRight> unpadded(
+      ghost_variables.data(), number_of_elements_, number_of_variables_,
+      extents[2], extents[1], extents[0]);
+  Kokkos::deep_copy(exec,
+                    Kokkos::subview(padded_vars, Kokkos::ALL(), Kokkos::ALL(),
+                                    interior(2), interior(1), interior(0)),
+                    unpadded);
+  // The ghost zones between the elements of the patch
   from_patch_.apply(
       exec, Kokkos::View<double*>(padded_vars.data(), padded_vars.span()),
       ghost_variables, number_of_variables_);

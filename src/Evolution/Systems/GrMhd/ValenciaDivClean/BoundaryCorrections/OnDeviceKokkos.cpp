@@ -39,6 +39,7 @@
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/ScratchViewKokkos.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace grmhd::ValenciaDivClean::BoundaryCorrections {
@@ -643,7 +644,8 @@ struct BoundaryTerms {
 template <typename FaceTags>
 Kokkos::View<const bool*> use_hydro_speeds_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    const BatchedVariables<FaceTags>& faces, const Hll& hll) {
+    const BatchedVariables<FaceTags>& faces, const Hll& hll,
+    Kokkos::View<bool*>* const scratch = nullptr) {
   const auto& rest_mass_density = get(
       get<::Tags::BatchView<hydro::Tags::RestMassDensity<DataVector>>>(faces));
   const auto& tilde_b = get<::Tags::BatchView<Tags::TildeB<>>>(faces);
@@ -654,9 +656,8 @@ Kokkos::View<const bool*> use_hydro_speeds_on_device(
   const size_t number_of_elements = faces.number_of_elements();
   const double magnetic_field_cutoff = hll.magnetic_field_magnitude_for_hydro();
   const double density_cutoff = hll.light_speed_density_cutoff();
-  const Kokkos::View<bool*> result{
-      Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "UseHydroSpeeds"),
-      number_of_elements};
+  const Kokkos::View<bool*> result =
+      scratch_view(exec, scratch, "UseHydroSpeeds", number_of_elements);
   using TeamPolicy = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>;
   Kokkos::parallel_for(
       "UseHydroSpeeds",
@@ -796,7 +797,8 @@ void fluxes_and_package_data_on_device(
     const double sign, const FaceVectorBatch* const mesh_velocity,
     const Correction& correction,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
-    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric) {
+    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric,
+    Kokkos::View<bool*>* const use_hydro_speeds_scratch) {
   // The arguments that are the same for both corrections
   const auto common_argument = [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
     if constexpr (std::is_same_v<Tag, Conormal>) {
@@ -826,8 +828,8 @@ void fluxes_and_package_data_on_device(
     }
   } else {
     static_assert(std::is_same_v<Correction, Hll>);
-    Kokkos::View<const bool*> use_hydro_speeds =
-        use_hydro_speeds_on_device(exec, faces, correction);
+    Kokkos::View<const bool*> use_hydro_speeds = use_hydro_speeds_on_device(
+        exec, faces, correction, use_hydro_speeds_scratch);
     const double light_speed_density_cutoff =
         correction.light_speed_density_cutoff();
     EquationsOfState::visit_device_view(
@@ -1033,7 +1035,8 @@ GENERATE_INSTANTIATIONS(INSTANTIATION, (Rusanov, Hll))
       const FaceVectorBatch* mesh_velocity,                                \
       const CORRECTION(data) & correction,                                 \
       const EquationsOfState::EquationOfState<true, 3>& equation_of_state, \
-      const FaceInverseMetricBatch* normalization_inverse_spatial_metric);
+      const FaceInverseMetricBatch* normalization_inverse_spatial_metric,  \
+      Kokkos::View<bool*>* use_hydro_speeds_scratch);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (Rusanov, Hll),
                         (fd::face_tags, fd::device_face_tags))

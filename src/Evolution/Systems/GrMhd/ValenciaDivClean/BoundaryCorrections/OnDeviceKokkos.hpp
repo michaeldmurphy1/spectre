@@ -125,7 +125,9 @@ using FaceInverseMetricBatch =
  *
  * The kernel is only enqueued on `exec`, except for `Hll`, which first decides
  * for each face set whether to use the hydro characteristic speeds (see
- * `package_data_on_device`), also on the device.
+ * `package_data_on_device`), also on the device. `use_hydro_speeds_scratch`,
+ * if given, holds these decisions between calls (see `scratch_view`), so that
+ * they aren't allocated, and freed, which synchronizes the device, every time.
  */
 template <typename Correction, typename FaceTags>
 void fluxes_and_package_data_on_device(
@@ -137,7 +139,8 @@ void fluxes_and_package_data_on_device(
     const Correction& correction,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const FaceInverseMetricBatch* normalization_inverse_spatial_metric =
-        nullptr);
+        nullptr,
+    Kokkos::View<bool*>* use_hydro_speeds_scratch = nullptr);
 
 /*!
  * \brief Computes the packaged data of `Rusanov` on one side of the faces of a

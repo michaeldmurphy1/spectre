@@ -117,15 +117,19 @@ using initial_data_tags =
  *    outside the patch, in the layout of an FD element on the host.
  * 2. `receive()`: fill the ghost zones from the received boundary data, and
  *    keep the packaged data of the GRMHD variables that DG neighbors send.
- * 3. `take_step()`: compute the time derivative
+ * 3. `compute_time_derivative()`: compute the time derivative
  *    (`subcell::TimeDerivativeOnDevice`, as `subcell::TimeDerivative` on the
- *    host), record it in the history and update the evolved variables, then
- *    fix the conserved variables, recover the primitive variables
+ *    host) and record it in the history.
+ * 4. `update_variables()`: update the evolved variables, then fix the
+ *    conserved variables, recover the primitive variables
  *    (`FixConservativesAndComputePrims`), fix them to the atmosphere, limit
  *    the Lorentz factor and recompute the conserved variables
  *    (`FixToAtmosphere`, `LimitLorentzFactor`, `UpdateConservatives`). The
  *    spatial metric of the fixing and the recovery is that of the updated
  *    spacetime metric, as the compute tags of an element on the host give it.
+ *
+ * Dense output, which needs the history of the substep but not its update,
+ * goes between 3 and 4, as on the host.
  *
  * The host fixes the primitive variables again at the start of each step of
  * the evolution (not in the self start), which `fix_variables()` does.
@@ -276,22 +280,32 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& p);
 
-  /// Take the substep `time_step_id` (see the class documentation), with the
-  /// time stepper `history` of the elements. The `functions_of_time` are those
-  /// of the grid to inertial maps and the damping functions.
+  /// @{
+  /// Take the substep `time_step_id` (see the class documentation) in two
+  /// parts: compute the time derivative and record it in the time stepper
+  /// `history` of the elements, then update the variables. The
+  /// `functions_of_time` are those of the grid to inertial maps and the
+  /// damping functions.
   ///
   /// The kernels are only enqueued on `exec`, without waiting for them. Their
   /// failures, e.g. of the primitive recovery, are recorded on the device and
   /// reported by `check_last_step()`.
-  void take_step(const Kokkos::DefaultExecutionSpace& exec,
-                 gsl::not_null<EvolvedVariables*> evolved_variables,
-                 gsl::not_null<PrimitiveVariables*> primitives,
-                 gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
-                 const TimeStepper& time_stepper,
-                 const TimeStepId& time_step_id,
-                 const TimeStepId& next_time_step_id,
-                 const TimeDelta& time_step,
-                 const domain::FunctionsOfTimeMap& functions_of_time);
+  void compute_time_derivative(
+      const Kokkos::DefaultExecutionSpace& exec,
+      gsl::not_null<EvolvedVariables*> evolved_variables,
+      gsl::not_null<PrimitiveVariables*> primitives,
+      gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
+      const TimeStepId& time_step_id,
+      const domain::FunctionsOfTimeMap& functions_of_time);
+  void update_variables(const Kokkos::DefaultExecutionSpace& exec,
+                        gsl::not_null<EvolvedVariables*> evolved_variables,
+                        gsl::not_null<PrimitiveVariables*> primitives,
+                        gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
+                        const TimeStepper& time_stepper,
+                        const TimeStepId& time_step_id,
+                        const TimeStepId& next_time_step_id,
+                        const TimeDelta& time_step);
+  /// @}
 
   /// Fix the primitive variables to the atmosphere, limit their Lorentz
   /// factor and recompute the conserved variables, as the host does at the
@@ -302,8 +316,9 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
                      gsl::not_null<PrimitiveVariables*> primitives);
 
   /*!
-   * \brief ERRORs if the last `take_step()` or `fix_variables()` failed, e.g.
-   * in the primitive recovery, with the variables at a failed grid point.
+   * \brief ERRORs if the last `update_variables()` or `fix_variables()`
+   * failed, e.g. in the primitive recovery, with the variables at a failed
+   * grid point.
    * Waits for `exec`.
    *
    * \details `prepare_send()` calls this after it waits for the device, so

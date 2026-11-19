@@ -348,6 +348,39 @@ GENERATE_INSTANTIATIONS(
     (true, false), (true, false))
 
 #undef INSTANTIATION
+
+// The schemes are defined in .tpp files, which the recovery above
+// instantiates implicitly for each equation of state. These explicit
+// instantiations make sure there is a definition for other callers of a
+// scheme (e.g. tests), also if the compiler inlines all the calls in this file.
+using RecoveryEquationsOfState =
+    EquationsOfState::detail::DerivedClasses<true, 3>::type;
+static_assert(tmpl::size<RecoveryEquationsOfState>::value == 17,
+              "Update the indices of the equations of state below.");
+#define EOS(data) \
+  tmpl::at_c<RecoveryEquationsOfState, BOOST_PP_TUPLE_ELEM(1, data)>
+#define INSTANTIATION(_, data)                                                 \
+  template std::optional<grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::   \
+                             PrimitiveRecoveryData>                            \
+  grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::NewmanHamlin::apply<      \
+      PHYSICALITY(data), EOS(data)>(                                           \
+      double initial_guess_for_pressure, double tau,                           \
+      double momentum_density_squared,                                         \
+      double momentum_density_dot_magnetic_field,                              \
+      double magnetic_field_squared,                                           \
+      double rest_mass_density_times_lorentz_factor, double electron_fraction, \
+      const EOS(data) & equation_of_state,                                     \
+      const grmhd::ValenciaDivClean::PrimitiveFromConservativeOptions&         \
+          primitive_from_conservative_options);
+#undef PHYSICALITY
+#define PHYSICALITY(data) BOOST_PP_TUPLE_ELEM(0, data)
+
+GENERATE_INSTANTIATIONS(INSTANTIATION, (true, false),
+                        (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                         16))
+
+#undef INSTANTIATION
+#undef EOS
 #undef THERMODIM
 #undef PHYSICALITY
 #undef RECOVERY

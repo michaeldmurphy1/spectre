@@ -142,9 +142,11 @@ using initial_data_tags =
  * reconstructions, products of a GH boundary correction with the `Rusanov` or
  * `Hll` correction of the GRMHD variables (FD uses only the latter), FD
  * derivative order 2 for the GRMHD fluxes, global time stepping, and grid to
- * inertial maps that are affine or have a device version (see
+ * inertial maps that are affine, possibly time-dependent (e.g. the inner
+ * region of `domain::CoordinateMaps::TimeDependent::RotScaleTrans`, see
  * `evolution::dg::subcell::fd_patch::TimeDependentGeometry`). Anything else
- * is an error.
+ * is an error. Maps that aren't affine would need the divergence of the mesh
+ * velocity of each cell in the GRMHD sources.
  */
 template <typename OrderedListOfPrimitiveRecoverySchemes>
 class Patch : public evolution::dg::subcell::fd_patch::PatchBase<

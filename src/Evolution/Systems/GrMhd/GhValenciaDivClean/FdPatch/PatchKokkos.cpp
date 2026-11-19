@@ -313,6 +313,15 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::take_step(
     const domain::FunctionsOfTimeMap& functions_of_time) {
   const double time = time_step_id.substep_time();
   patch_elements().update_geometry(exec, time, functions_of_time);
+  if (not patch_elements().maps_are_affine()) {
+    ERROR("The GhValenciaDivClean FD patch "
+          << patch_elements().patch()
+          << " only supports grid to inertial maps that are affine, but at "
+             "time "
+          << time
+          << " they aren't: the GRMHD sources take the divergence of the mesh "
+             "velocity of each element, not of each cell.");
+  }
   // The failures of this substep are recorded on the device and reported by
   // `check_last_step()`, so nothing here waits for the device
   fixing_.reset_statuses(exec);

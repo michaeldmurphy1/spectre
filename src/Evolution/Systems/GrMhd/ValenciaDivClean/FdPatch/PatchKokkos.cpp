@@ -62,6 +62,7 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/MakeString.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace grmhd::ValenciaDivClean::fd_patch {
@@ -282,6 +283,65 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::initial_rdmp_data(
       get<::Tags::BatchView<Tags::TildeYe>>(evolved_variables),
       get<::Tags::BatchView<Tags::TildeTau>>(evolved_variables),
       get<::Tags::BatchView<Tags::TildeB<>>>(evolved_variables)));
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+bool Patch<OrderedListOfPrimitiveRecoverySchemes>::dense_output(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const EvolvedVariables& /*evolved_variables*/,
+    const PrimitiveVariables& primitives,
+    const CellSpacetimeVariables& cell_spacetime_variables,
+    const FaceSpacetimeVariables& /*face_spacetime_variables*/,
+    const gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
+    const TimeStepper& time_stepper, const double time) {
+  const Kokkos::Profiling::ScopedRegion region{
+      "ValenciaDivClean::fd_patch::Patch::dense_output"};
+  if (dense_evolved_variables_.number_of_elements() == 0) {
+    const size_t number_of_elements = patch_elements().number_of_elements();
+    const size_t number_of_cells =
+        patch_elements().subcell_mesh().number_of_grid_points();
+    dense_evolved_variables_ =
+        EvolvedVariables{exec, number_of_cells, number_of_elements};
+    dense_primitives_ =
+        PrimitiveVariables{exec, number_of_cells, number_of_elements};
+    dense_statuses_ = typename FixingAndRecovery<
+        OrderedListOfPrimitiveRecoverySchemes>::Statuses{exec};
+  }
+  if (not TimeSteppers::dense_update_u_on_device(
+          exec, make_not_null(&dense_evolved_variables_), history, time_stepper,
+          time)) {
+    return false;
+  }
+  deep_copy(exec, make_not_null(&dense_primitives_), primitives);
+  dense_statuses_.reset(exec);
+  fixing_.fix_conservatives_and_recover_primitives(
+      exec, make_not_null(&dense_evolved_variables_),
+      make_not_null(&dense_primitives_), cell_spacetime_variables,
+      make_not_null(&dense_statuses_));
+  dense_statuses_.copy_to_host(exec);
+  return true;
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+auto Patch<OrderedListOfPrimitiveRecoverySchemes>::dense_element_variables(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const EvolvedVariables& /*evolved_variables*/,
+    const PrimitiveVariables& /*primitives*/,
+    const CellSpacetimeVariables& cell_spacetime_variables,
+    const FaceSpacetimeVariables& /*face_spacetime_variables*/,
+    const double time) -> std::vector<ElementVariables> {
+  auto result =
+      this->copy_element_variables(exec, dense_evolved_variables_,
+                                   dense_primitives_, cell_spacetime_variables);
+  dense_statuses_.check(
+      exec, patch_elements(),
+      std::visit(
+          [](const auto& time_derivative) {
+            return time_derivative.number_of_face_points();
+          },
+          time_derivative_),
+      MakeString{} << "the dense output at time " << time << " of ");
+  return result;
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>

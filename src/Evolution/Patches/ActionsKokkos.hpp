@@ -39,6 +39,7 @@
 #include "Parallel/ArrayIndex.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Parallel/Invoke.hpp"
+#include "ParallelAlgorithms/Actions/FunctionsOfTimeAreReady.hpp"
 #include "ParallelAlgorithms/Actions/Goto.hpp"
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
 #include "ParallelAlgorithms/Actions/TerminatePhase.hpp"
@@ -47,6 +48,8 @@
 #include "ParallelAlgorithms/Events/ObserveFields.hpp"
 #include "ParallelAlgorithms/Events/ObserveNorms.hpp"
 #include "ParallelAlgorithms/Events/ObserveTimeStep.hpp"
+#include "ParallelAlgorithms/EventsAndDenseTriggers/EventsAndDenseTriggers.hpp"
+#include "ParallelAlgorithms/EventsAndDenseTriggers/Tags.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/EventsAndTriggers.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Tags.hpp"
@@ -55,6 +58,7 @@
 #include "Time/AdvanceTime.hpp"
 #include "Time/ChangeSlabSize/Event.hpp"
 #include "Time/ChangeSlabSize/Tags.hpp"
+#include "Time/EvolutionOrdering.hpp"
 #include "Time/Tags/HistoryEvolvedVariables.hpp"
 #include "Time/Tags/Time.hpp"
 #include "Time/Tags/TimeStep.hpp"
@@ -334,6 +338,20 @@ struct RunsOnElements<
     ::Events::ErrorIfDataTooBig<Dim, Fields, NonTensorComputeTags>>
     : std::true_type {};
 
+// The events that the elements of a patch run at the times of dense triggers,
+// on their DataBox with the dense output (a subset of `RunsOnElements`)
+template <typename T>
+struct RunsDenseOnElements : std::false_type {};
+template <size_t Dim, typename Fields, typename NonTensorComputeTags,
+          typename ArraySectionIdTag>
+struct RunsDenseOnElements<::dg::Events::ObserveFields<
+    Dim, Fields, NonTensorComputeTags, ArraySectionIdTag>> : std::true_type {};
+template <typename Fields, typename NonTensorComputeTags,
+          typename ArraySectionIdTag, typename OptionName>
+struct RunsDenseOnElements<::Events::ObserveNorms<
+    Fields, NonTensorComputeTags, ArraySectionIdTag, OptionName>>
+    : std::true_type {};
+
 template <typename Metavariables>
 using events_on_elements = tmpl::filter<
     tmpl::at<typename Metavariables::factory_creation::factory_classes, Event>,
@@ -392,6 +410,17 @@ bool runs_on_elements(const Event& event) {
   return result;
 }
 
+template <typename Metavariables>
+bool runs_dense_on_elements(const Event& event) {
+  bool result = false;
+  tmpl::for_each<tmpl::filter<events_on_elements<Metavariables>,
+                              RunsDenseOnElements<tmpl::_1>>>(
+      [&]<typename EventType>(tmpl::type_<EventType> /*meta*/) {
+        result = result or dynamic_cast<const EventType*>(&event) != nullptr;
+      });
+  return result;
+}
+
 // Errors because patches don't run the `event`, so the DG elements would wait
 // for them forever (e.g. in a reduction or an interpolation)
 [[noreturn]] inline void error_about_unsupported_event(const Event& event) {
@@ -401,17 +430,36 @@ bool runs_on_elements(const Event& event) {
       << pretty_type::get_runtime_type_name(event));
 }
 
+[[noreturn]] inline void error_about_unsupported_dense_event(
+    const Event& event) {
+  ERROR(
+      "FD patches only run Completion, ObserveFields and ObserveNorms events "
+      "in EventsAndDenseTriggers, but got "
+      << pretty_type::get_runtime_type_name(event));
+}
+
+// Where `for_each_element_box` gets the variables of the elements from
+enum class ElementVariables {
+  // The right size but no meaningful values
+  WithoutValues,
+  // The state of the elements at the current substep
+  State,
+  // The last dense output of the patch (see `Patch::dense_output`)
+  DenseOutput
+};
+
 // Calls `function(element_id, box)` with the DataBox of each element of the
-// patch (see `Patch::make_element_box`). If `copy_variables`, the variables of
-// the elements are copied from the device, once for all elements. Otherwise
-// they have the right size but no meaningful values, which is enough for
-// events whose `needs_evolved_variables()` is false (e.g. `ObserveTimeStep`
-// only counts the grid points) and saves most of the cost of the DataBoxes.
+// patch (see `Patch::make_element_box`) at the time in the DataBox of the
+// patch. The `variables` of the elements are copied from the device, once for
+// all elements. `ElementVariables::WithoutValues` is enough for events whose
+// `needs_evolved_variables()` is false (e.g. `ObserveTimeStep` only counts the
+// grid points) and saves most of the cost of the DataBoxes.
 template <typename PatchTag, typename DbTagsList, typename Metavariables,
           typename Function>
 void for_each_element_box(const gsl::not_null<db::DataBox<DbTagsList>*> box_ptr,
                           Parallel::GlobalCache<Metavariables>& cache,
-                          const bool copy_variables, const Function& function) {
+                          const ElementVariables variables_source,
+                          const Function& function) {
   constexpr size_t dim = Metavariables::volume_dim;
   const Kokkos::Profiling::ScopedRegion region{"patches::element_boxes"};
   const auto& box = *box_ptr;
@@ -422,23 +470,27 @@ void for_each_element_box(const gsl::not_null<db::DataBox<DbTagsList>*> box_ptr,
       Parallel::device_execution_space(), db::get<::Tags::Time>(box),
       Parallel::get<::domain::Tags::FunctionsOfTime>(cache));
   const auto& domain = db::get<::domain::Tags::Domain<dim>>(box);
-  using ElementVariables =
-      typename std::decay_t<decltype(patch)>::ElementVariables;
-  std::vector<ElementVariables> variables{};
-  if (copy_variables) {
+  std::vector<typename std::decay_t<decltype(patch)>::ElementVariables>
+      variables{};
+  if (variables_source == ElementVariables::WithoutValues) {
+    variables = patch.element_variables_without_values();
+  } else {
     const Kokkos::Profiling::ScopedRegion copy_region{
         "patches::element_boxes::copy_variables"};
+    const double time = db::get<::Tags::Time>(box);
     // The patch copies the variables into its host memory
-    variables = with_state<PatchTag>(box, [&box_ptr](const auto&... state) {
+    variables = with_state<PatchTag>(box, [&](const auto&... state) {
       return db::mutate<PatchTag>(
           [&](const auto mutable_patch) {
-            return mutable_patch->element_variables(
-                Parallel::device_execution_space(), state...);
+            return variables_source == ElementVariables::State
+                       ? mutable_patch->element_variables(
+                             Parallel::device_execution_space(), state...)
+                       : mutable_patch->dense_element_variables(
+                             Parallel::device_execution_space(), state...,
+                             time);
           },
           box_ptr);
     });
-  } else {
-    variables = patch.element_variables_without_values();
   }
   const auto& element_ids = patch.patch_elements().element_ids();
   for (size_t slot = 0; slot < element_ids.size(); ++slot) {
@@ -454,21 +506,27 @@ void for_each_element_box(const gsl::not_null<db::DataBox<DbTagsList>*> box_ptr,
 }
 
 // Runs the `events` on each element of the patch, as
-// `EventsAndTriggers::run_events` does for an element
+// `EventsAndTriggers::run_events` does for an element. With `dense_output`,
+// the variables of the elements are the last dense output of the patch.
 template <typename PatchTag, typename ParallelComponent, typename DbTagsList,
           typename Metavariables>
 void run_events_on_elements(const std::vector<const Event*>& events,
                             const gsl::not_null<db::DataBox<DbTagsList>*> box,
                             Parallel::GlobalCache<Metavariables>& cache,
-                            const Event::ObservationValue& observation_value) {
+                            const Event::ObservationValue& observation_value,
+                            const bool dense_output = false) {
   if (events.empty()) {
     return;
   }
-  const bool copy_variables = alg::any_of(events, [](const Event* const event) {
-    return event->needs_evolved_variables();
-  });
+  const bool needs_variables =
+      alg::any_of(events, [](const Event* const event) {
+        return event->needs_evolved_variables();
+      });
   for_each_element_box<PatchTag>(
-      box, cache, copy_variables,
+      box, cache,
+      not needs_variables ? ElementVariables::WithoutValues
+      : dense_output      ? ElementVariables::DenseOutput
+                          : ElementVariables::State,
       [&](const auto& element_id, auto& element_box) {
         const Kokkos::Profiling::ScopedRegion events_region{
             "patches::element_boxes::run_events"};
@@ -544,7 +602,7 @@ void change_slab_size(const ::Events::ChangeSlabSize& event,
   }
   // The step choosers (e.g. `Cfl`) may use the variables
   for_each_element_box<PatchTag>(
-      box, cache, true,
+      box, cache, ElementVariables::State,
       [&](const auto& /*element_id*/, const auto& element_box) {
         for (const auto& step_chooser : event.step_choosers()) {
           step_requests.process(step_chooser->desired_step(
@@ -598,7 +656,7 @@ struct RegisterWithObservers {
             cache));
     // Registration doesn't use the variables
     detail::for_each_element_box<PatchTag>(
-        make_not_null(&box), cache, false,
+        make_not_null(&box), cache, detail::ElementVariables::WithoutValues,
         [&](const ElementId<dim>& element_id, const auto& element_box) {
           const auto register_event = [&](const Event& event) {
             if (not detail::runs_on_elements<Metavariables>(event)) {
@@ -623,6 +681,8 @@ struct RegisterWithObservers {
           db::get<::Tags::EventsAndTriggers<Triggers::WhenToCheck::AtSlabs>>(
               box)
               .for_each_event(register_event);
+          db::get<::Tags::EventsAndDenseTriggers>(box).for_each_event(
+              register_event);
         });
     return {Parallel::AlgorithmExecution::Continue, std::nullopt};
   }
@@ -718,6 +778,144 @@ struct RunEventsAndTriggers {
       return {Parallel::AlgorithmExecution::Pause, std::nullopt};
     }
     return {Parallel::AlgorithmExecution::Continue, std::nullopt};
+  }
+};
+
+/*!
+ * \brief Run the events of the dense triggers whose times are in the current
+ * step, on the elements of the patch, as
+ * `evolution::Actions::RunEventsAndDenseTriggers` does for an element.
+ *
+ * \details Goes between `ComputeTimeDerivative` and `UpdateVariables`, where
+ * the host does dense output. Patches use global time stepping, so the
+ * triggers are checked once for all elements of the patch, with the DataBox of
+ * the patch, whose `::Tags::Time` is the time of the trigger while they are
+ * checked and the events run. For each time:
+ * - If an event needs the evolved variables, the patch computes them by dense
+ *   output (see `Patch::dense_output`), into its scratch data, after checking
+ *   that the functions of time are ready at that time. If dense output isn't
+ *   possible yet in this substep, e.g. before the corrector of
+ *   `TimeSteppers::AdamsMoultonPc`, the events run at a later substep of the
+ *   step, as on the host.
+ * - `Events::Completion` stops the evolution of the patch.
+ * - `ObserveFields` and `ObserveNorms` run on the DataBox of each element of
+ *   the patch at the time of the trigger (see `Patch::make_element_box`), with
+ *   the dense output. The observation value is the time.
+ *
+ * Other events are an error, since the DG elements would wait for the patches
+ * forever (e.g. in a reduction). Dense triggers are skipped during the self
+ * start, as on the host. `::Tags::PreviousTriggerTime` isn't set.
+ */
+template <typename PatchTag>
+struct RunEventsAndDenseTriggers {
+  template <typename DbTagsList, typename... InboxTags, typename Metavariables,
+            typename ActionList, typename ParallelComponent>
+  static Parallel::iterable_action_return_t apply(
+      db::DataBox<DbTagsList>& box,
+      const tuples::TaggedTuple<InboxTags...>& /*inboxes*/,
+      Parallel::GlobalCache<Metavariables>& cache, const int array_index,
+      ActionList /*meta*/, const ParallelComponent* const component) {
+    constexpr size_t dim = Metavariables::volume_dim;
+    const TimeStepId& time_step_id = db::get<::Tags::TimeStepId>(box);
+    if (time_step_id.slab_number() < 0) {
+      // As the elements, skip dense output during the self start
+      return {Parallel::AlgorithmExecution::Continue, std::nullopt};
+    }
+    const Kokkos::Profiling::ScopedRegion region{
+        "patches::RunEventsAndDenseTriggers"};
+    auto& events_and_dense_triggers =
+        db::get_mutable_reference<::Tags::EventsAndDenseTriggers>(
+            make_not_null(&box));
+    // The events are checked whether or not they trigger, so that a run fails
+    // early
+    events_and_dense_triggers.for_each_event([](const Event& event) {
+      if (dynamic_cast<const Events::Completion*>(&event) == nullptr and
+          not detail::runs_dense_on_elements<Metavariables>(event)) {
+        detail::error_about_unsupported_dense_event(event);
+      }
+    });
+
+    const double step_end =
+        (time_step_id.step_time() + db::get<::Tags::TimeStep>(box)).value();
+    const evolution_less_equal<double> before_equal{
+        time_step_id.time_runs_forward()};
+    // The time of the substep, restored on every return
+    const double substep_time = db::get<::Tags::Time>(box);
+    const auto set_time = [&box](const double time) {
+      if (db::get<::Tags::Time>(box) != time) {
+        db::mutate<::Tags::Time>(
+            [&time](const gsl::not_null<double*> box_time) {
+              *box_time = time;
+            },
+            make_not_null(&box));
+      }
+    };
+    bool completed = false;
+    const auto finish = [&](const Parallel::AlgorithmExecution execution)
+        -> Parallel::iterable_action_return_t {
+      set_time(substep_time);
+      return {completed ? Parallel::AlgorithmExecution::Pause : execution,
+              std::nullopt};
+    };
+
+    for (;;) {
+      const double next_trigger = events_and_dense_triggers.next_trigger(box);
+      if (before_equal(step_end, next_trigger)) {
+        return finish(Parallel::AlgorithmExecution::Continue);
+      }
+      set_time(next_trigger);
+
+      const auto triggered = events_and_dense_triggers.is_ready(
+          make_not_null(&box), cache, array_index, component);
+      using TriggeringState = std::decay_t<decltype(triggered)>;
+      if (triggered == TriggeringState::NotReady) {
+        return finish(Parallel::AlgorithmExecution::Retry);
+      }
+      const bool dense_output =
+          triggered == TriggeringState::NeedsEvolvedVariables;
+      if (dense_output) {
+        // As `domain::CheckFunctionsOfTimeAreReadyPostprocessor` on the host
+        if (not ::domain::functions_of_time_are_ready_algorithm_callback<
+                ::domain::Tags::FunctionsOfTime, dim>(
+                cache, array_index, component, next_trigger)) {
+          return finish(Parallel::AlgorithmExecution::Retry);
+        }
+        const auto& time_stepper =
+            db::get<::Tags::TimeStepper<TimeStepper>>(box);
+        const bool dense_output_succeeded =
+            detail::with_state<PatchTag>(box, [&](const auto&... state) {
+              return db::mutate<PatchTag, detail::history_tag<DbTagsList>>(
+                  [&](const auto patch, const auto history) {
+                    return patch->dense_output(
+                        Parallel::device_execution_space(), state..., history,
+                        time_stepper, next_trigger);
+                  },
+                  make_not_null(&box));
+            });
+        if (not dense_output_succeeded) {
+          // The events run at a later substep of the step
+          return finish(Parallel::AlgorithmExecution::Continue);
+        }
+      }
+
+      std::vector<const Event*> events_on_elements{};
+      events_and_dense_triggers.for_each_triggered_event(
+          [&](const Event& event) {
+            if (dynamic_cast<const Events::Completion*>(&event) != nullptr) {
+              completed = true;
+            } else {
+              events_on_elements.push_back(&event);
+            }
+          });
+      detail::run_events_on_elements<PatchTag, ParallelComponent>(
+          events_on_elements, make_not_null(&box), cache,
+          Event::ObservationValue{db::tag_name<::Tags::Time>(), next_trigger},
+          dense_output);
+      if (not events_and_dense_triggers.reschedule(make_not_null(&box), cache,
+                                                   array_index, component)) {
+        return finish(Parallel::AlgorithmExecution::Retry);
+      }
+    }
   }
 };
 

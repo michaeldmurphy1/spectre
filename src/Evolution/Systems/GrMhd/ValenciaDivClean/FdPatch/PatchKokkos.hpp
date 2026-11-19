@@ -279,6 +279,40 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& p);
 
+  /*!
+   * \brief Compute the variables of the elements at `time` in the current
+   * step by dense output (`TimeSteppers::dense_update_u_on_device`), then fix
+   * the conserved variables and recover the primitive variables, as
+   * `subcell::FixConservativesAndComputePrims` does after dense output on the
+   * host. The primitive variables of the substep are the initial guess of the
+   * recovery, as on the host.
+   *
+   * \details Enqueued on `exec` into scratch data of the patch, which is
+   * allocated at the first dense output; the state isn't changed. Call it
+   * between `compute_time_derivative()` and `update_variables()`, as the host
+   * does dense output between recording the history and the update. Returns
+   * false if dense output isn't possible yet in this substep (see
+   * `TimeStepper::dense_update_u`). The results are read with
+   * `dense_element_variables()`.
+   */
+  bool dense_output(const Kokkos::DefaultExecutionSpace& exec,
+                    const EvolvedVariables& evolved_variables,
+                    const PrimitiveVariables& primitives,
+                    const CellSpacetimeVariables& cell_spacetime_variables,
+                    const FaceSpacetimeVariables& face_spacetime_variables,
+                    gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
+                    const TimeStepper& time_stepper, double time);
+
+  /// The variables of each element from the last `dense_output()` (at
+  /// `time`), copied from the device on `exec`, which is fenced. ERRORs if
+  /// the fixing or the recovery of the dense output failed.
+  std::vector<ElementVariables> dense_element_variables(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const EvolvedVariables& evolved_variables,
+      const PrimitiveVariables& primitives,
+      const CellSpacetimeVariables& cell_spacetime_variables,
+      const FaceSpacetimeVariables& face_spacetime_variables, double time);
+
   /// @{
   /// Take the substep `time_step_id` (see the class documentation) in two
   /// parts: compute the time derivative and record it in the time stepper
@@ -336,6 +370,12 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
   BatchedVariables<subcell::PrimitiveGhostVariables::ghost_variables_tag_list>
       ghost_variables_{};
   BatchedVariables<subcell::dt_tags_on_device> dt_variables_{};
+  // The dense output and the failures of its fixing, allocated at the first
+  // dense output
+  EvolvedVariables dense_evolved_variables_{};
+  PrimitiveVariables dense_primitives_{};
+  typename FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::Statuses
+      dense_statuses_{};
   // The values saved during the self start
   evolution::patches::SavedBatches<EvolvedVariables, PrimitiveVariables>
       initial_values_{};

@@ -10,8 +10,6 @@
 #include "Evolution/DgSubcell/Tags/SubcellOptions.hpp"
 #include "NumericalAlgorithms/FiniteDifference/DerivativeOrder.hpp"
 #include "Parallel/GlobalCache.hpp"
-#include "ParallelAlgorithms/EventsAndDenseTriggers/EventsAndDenseTriggers.hpp"
-#include "ParallelAlgorithms/EventsAndDenseTriggers/Tags.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/EventsAndTriggers.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Tags.hpp"
@@ -36,13 +34,15 @@ namespace evolution::dg::subcell::fd_patch {
  *   corrections);
  * - global time stepping, since with local time stepping the DG neighbors
  *   would send data at times the patches never reach;
- * - events only in `EventsAndTriggersAtSteps` and `EventsAndTriggersAtSlabs`
- *   (see `evolution::patches::Actions::RunEventsAndTriggers`), since the DG
- *   elements would wait forever for the patches in the others.
+ * - no events in `EventsAndTriggersAtCheckpoints` and `EventsRunAtCleanup`,
+ *   since the DG elements would wait forever for the patches in them. (The
+ *   actions that run the other events check which ones the patches support,
+ *   see `evolution::patches::Actions::RunEventsAndTriggers` and
+ *   `evolution::patches::Actions::RunEventsAndDenseTriggers`.)
  *
  * The `box` is that of a patch, with the
- * `evolution::dg::subcell::Tags::SubcellOptions<3>`, the `::Tags::LtsMode`
- * and the `::Tags::EventsAndDenseTriggers`.
+ * `evolution::dg::subcell::Tags::SubcellOptions<3>` and the
+ * `::Tags::LtsMode`.
  */
 template <typename DbTagsList, typename Metavariables>
 void check_options(const db::DataBox<DbTagsList>& box,
@@ -65,7 +65,6 @@ void check_options(const db::DataBox<DbTagsList>& box,
   const auto add_event = [&unsupported_events](const Event& event) {
     unsupported_events.push_back(pretty_type::get_runtime_type_name(event));
   };
-  db::get<::Tags::EventsAndDenseTriggers>(box).for_each_event(add_event);
   Parallel::get<
       ::Tags::EventsAndTriggers<Triggers::WhenToCheck::AtCheckpoints>>(cache)
       .for_each_event(add_event);
@@ -74,10 +73,9 @@ void check_options(const db::DataBox<DbTagsList>& box,
   }
   if (not unsupported_events.empty()) {
     ERROR(
-        "FD patches only run events in EventsAndTriggersAtSteps and "
-        "EventsAndTriggersAtSlabs, but there are events in "
-        "EventsAndDenseTriggers, EventsAndTriggersAtCheckpoints or "
-        "EventsRunAtCleanup: "
+        "FD patches only run events in EventsAndTriggersAtSteps, "
+        "EventsAndTriggersAtSlabs and EventsAndDenseTriggers, but there are "
+        "events in EventsAndTriggersAtCheckpoints or EventsRunAtCleanup: "
         << unsupported_events);
   }
 }

@@ -991,6 +991,7 @@ struct GhValenciaDivCleanTemplateBase<
       evolution::patches::Actions::ReceiveBoundaryData<volume_dim,
                                                        fd_patch_tag>,
       evolution::patches::Actions::ComputeTimeDerivative<fd_patch_tag>,
+      evolution::patches::Actions::RunEventsAndDenseTriggers<fd_patch_tag>,
       evolution::patches::Actions::UpdateVariables<fd_patch_tag>>;
   using fd_patch_component = evolution::patches::PatchArray<
       derived_metavars,

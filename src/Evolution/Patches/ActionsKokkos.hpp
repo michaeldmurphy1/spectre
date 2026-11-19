@@ -218,9 +218,17 @@ struct ReceiveBoundaryData {
   }
 };
 
-/// \brief Take the current substep of all elements of the patch.
+/*!
+ * \brief Compute the time derivative of the current substep of all elements
+ * of the patch and record it in the time stepper history (see
+ * `Patch::compute_time_derivative`).
+ *
+ * \details The substep is completed by `UpdateVariables`. Dense output, which
+ * needs the recorded history but not the update, goes in between, as on the
+ * host.
+ */
 template <typename PatchTag>
-struct TakeStep {
+struct ComputeTimeDerivative {
   template <typename DbTagsList, typename... InboxTags, typename Metavariables,
             typename ActionList, typename ParallelComponent>
   static Parallel::iterable_action_return_t apply(
@@ -229,7 +237,35 @@ struct TakeStep {
       const Parallel::GlobalCache<Metavariables>& cache,
       const int /*array_index*/, ActionList /*meta*/,
       const ParallelComponent* const /*meta*/) {
-    const Kokkos::Profiling::ScopedRegion region{"patches::TakeStep"};
+    const Kokkos::Profiling::ScopedRegion region{
+        "patches::ComputeTimeDerivative"};
+    const TimeStepId& time_step_id = db::get<::Tags::TimeStepId>(box);
+    detail::mutate_with_state<PatchTag, detail::history_tag<DbTagsList>>(
+        make_not_null(&box),
+        [&](const auto patch, const auto... state_and_history) {
+          patch->compute_time_derivative(
+              Parallel::device_execution_space(), state_and_history...,
+              time_step_id,
+              Parallel::get<::domain::Tags::FunctionsOfTime>(cache));
+        });
+    return {Parallel::AlgorithmExecution::Continue, std::nullopt};
+  }
+};
+
+/// \brief Update the variables of all elements of the patch to the end of the
+/// current substep (see `Patch::update_variables`), after
+/// `ComputeTimeDerivative`.
+template <typename PatchTag>
+struct UpdateVariables {
+  template <typename DbTagsList, typename... InboxTags, typename Metavariables,
+            typename ActionList, typename ParallelComponent>
+  static Parallel::iterable_action_return_t apply(
+      db::DataBox<DbTagsList>& box,
+      const tuples::TaggedTuple<InboxTags...>& /*inboxes*/,
+      const Parallel::GlobalCache<Metavariables>& /*cache*/,
+      const int /*array_index*/, ActionList /*meta*/,
+      const ParallelComponent* const /*meta*/) {
+    const Kokkos::Profiling::ScopedRegion region{"patches::UpdateVariables"};
     const auto& time_stepper = db::get<::Tags::TimeStepper<TimeStepper>>(box);
     const TimeStepId& time_step_id = db::get<::Tags::TimeStepId>(box);
     const TimeStepId& next_time_step_id =
@@ -238,10 +274,9 @@ struct TakeStep {
     detail::mutate_with_state<PatchTag, detail::history_tag<DbTagsList>>(
         make_not_null(&box),
         [&](const auto patch, const auto... state_and_history) {
-          patch->take_step(
-              Parallel::device_execution_space(), state_and_history...,
-              time_stepper, time_step_id, next_time_step_id, time_step,
-              Parallel::get<::domain::Tags::FunctionsOfTime>(cache));
+          patch->update_variables(Parallel::device_execution_space(),
+                                  state_and_history..., time_stepper,
+                                  time_step_id, next_time_step_id, time_step);
         });
     return {Parallel::AlgorithmExecution::Continue, std::nullopt};
   }

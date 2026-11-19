@@ -303,13 +303,12 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::initial_rdmp_data(
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>
-void Patch<OrderedListOfPrimitiveRecoverySchemes>::take_step(
+void Patch<OrderedListOfPrimitiveRecoverySchemes>::compute_time_derivative(
     const Kokkos::DefaultExecutionSpace& exec,
     const gsl::not_null<EvolvedVariables*> evolved_variables,
     const gsl::not_null<PrimitiveVariables*> primitives,
     const gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
-    const TimeStepper& time_stepper, const TimeStepId& time_step_id,
-    const TimeStepId& next_time_step_id, const TimeDelta& time_step,
+    const TimeStepId& time_step_id,
     const domain::FunctionsOfTimeMap& functions_of_time) {
   const double time = time_step_id.substep_time();
   patch_elements().update_geometry(exec, time, functions_of_time);
@@ -369,11 +368,20 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::take_step(
       },
       time_derivative_);
 
-  // Time stepping
-  region.reset();
-  region.emplace("GhValenciaDivClean::fd_patch::Patch::update_u");
   TimeSteppers::record_on_device(exec, history, time_step_id,
                                  *evolved_variables, dt_variables_);
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+void Patch<OrderedListOfPrimitiveRecoverySchemes>::update_variables(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const gsl::not_null<EvolvedVariables*> evolved_variables,
+    const gsl::not_null<PrimitiveVariables*> primitives,
+    const gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
+    const TimeStepper& time_stepper, const TimeStepId& time_step_id,
+    const TimeStepId& next_time_step_id, const TimeDelta& time_step) {
+  std::optional<Kokkos::Profiling::ScopedRegion> region{};
+  region.emplace("GhValenciaDivClean::fd_patch::Patch::update_u");
   TimeSteppers::update_u_on_device(
       exec, evolved_variables, make_not_null(&stepper_errors_), history,
       time_stepper, time_step_id, next_time_step_id, time_step, false,

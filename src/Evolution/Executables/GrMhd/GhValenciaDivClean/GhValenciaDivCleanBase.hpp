@@ -985,12 +985,13 @@ struct GhValenciaDivCleanTemplateBase<
   // `grmhd::GhValenciaDivClean::fd_patch::Patch`)
   using fd_patch_tag = grmhd::GhValenciaDivClean::fd_patch::Tags::Patch<
       ordered_list_of_primitive_recovery_schemes>;
-  using fd_patch_step_actions =
-      tmpl::list<evolution::patches::Actions::SendBoundaryData<
-                     fd_patch_tag, dg_element_array_component>,
-                 evolution::patches::Actions::ReceiveBoundaryData<volume_dim,
-                                                                  fd_patch_tag>,
-                 evolution::patches::Actions::TakeStep<fd_patch_tag>>;
+  using fd_patch_step_actions = tmpl::list<
+      evolution::patches::Actions::SendBoundaryData<fd_patch_tag,
+                                                    dg_element_array_component>,
+      evolution::patches::Actions::ReceiveBoundaryData<volume_dim,
+                                                       fd_patch_tag>,
+      evolution::patches::Actions::ComputeTimeDerivative<fd_patch_tag>,
+      evolution::patches::Actions::UpdateVariables<fd_patch_tag>>;
   using fd_patch_component = evolution::patches::PatchArray<
       derived_metavars,
       tmpl::list<

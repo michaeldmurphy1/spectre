@@ -126,7 +126,8 @@ struct InitializePatch {
   using simple_tags = tmpl::append<
       tmpl::list<patch_tag>, state_tags,
       tmpl::list<history_tag, ::Tags::StepperErrorEstimatesEnabled>>;
-  // The dense triggers, to check that there are none (see `make_patch`)
+  // The dense triggers of the patch (see
+  // `evolution::patches::Actions::RunEventsAndDenseTriggers`)
   using simple_tags_from_options =
       tmpl::list<domain::Tags::InitialRefinementLevels<3>, ::Tags::Time,
                  ::Tags::EventsAndDenseTriggers>;

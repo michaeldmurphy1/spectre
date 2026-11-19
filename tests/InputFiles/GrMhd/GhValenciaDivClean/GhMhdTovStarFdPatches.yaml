@@ -242,7 +242,24 @@ EventsAndTriggersAtSlabs:
 
 EventsAndTriggersAtSteps:
 
+# Observed by dense output between steps, on the device for the FD elements
 EventsAndDenseTriggers:
+  - Trigger:
+      Times:
+        Specified:
+          Values: [0.015]
+    Events:
+      - ObserveNorms:
+          SubfileName: DenseNorms
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
+          TensorsToObserve:
+            - Name: SpacetimeMetric
+              NormType: L2Norm
+              Components: Individual
+            - Name: RestMassDensity
+              NormType: Max
+              Components: Individual
 
 Patches:
   MaxElementsPerPatch: Auto

@@ -43,6 +43,7 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/MakeString.hpp"
 #include "Utilities/PrettyType.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -300,6 +301,63 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::initial_rdmp_data(
               evolved_variables),
           get<::Tags::BatchView<ValenciaDivClean::Tags::TildeB<>>>(
               evolved_variables)));
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+bool Patch<OrderedListOfPrimitiveRecoverySchemes>::dense_output(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const EvolvedVariables& /*evolved_variables*/,
+    const PrimitiveVariables& primitives,
+    const gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
+    const TimeStepper& time_stepper, const double time) {
+  const Kokkos::Profiling::ScopedRegion region{
+      "GhValenciaDivClean::fd_patch::Patch::dense_output"};
+  if (dense_evolved_variables_.number_of_elements() == 0) {
+    const size_t number_of_elements = patch_elements().number_of_elements();
+    const size_t number_of_cells =
+        patch_elements().subcell_mesh().number_of_grid_points();
+    dense_evolved_variables_ =
+        EvolvedVariables{exec, number_of_cells, number_of_elements};
+    dense_primitives_ =
+        PrimitiveVariables{exec, number_of_cells, number_of_elements};
+    dense_fixing_metric_ = BatchedVariables<subcell::fixing_metric_tags>{
+        exec, number_of_cells, number_of_elements};
+    dense_statuses_ = typename ValenciaDivClean::fd_patch::FixingAndRecovery<
+        OrderedListOfPrimitiveRecoverySchemes>::Statuses{exec};
+  }
+  if (not TimeSteppers::dense_update_u_on_device(
+          exec, make_not_null(&dense_evolved_variables_), history, time_stepper,
+          time)) {
+    return false;
+  }
+  deep_copy(exec, make_not_null(&dense_primitives_), primitives);
+  dense_statuses_.reset(exec);
+  // With the metric of the dense spacetime metric, as
+  // `FixConservativesAndComputePrims`
+  subcell::fixing_metric_on_device(
+      exec, make_not_null(&dense_fixing_metric_),
+      get<::Tags::BatchView<gr::Tags::SpacetimeMetric<DataVector, 3>>>(
+          dense_evolved_variables_));
+  fixing_.fix_conservatives_and_recover_primitives(
+      exec, make_not_null(&dense_evolved_variables_),
+      make_not_null(&dense_primitives_), dense_fixing_metric_,
+      make_not_null(&dense_statuses_));
+  dense_statuses_.copy_to_host(exec);
+  return true;
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+auto Patch<OrderedListOfPrimitiveRecoverySchemes>::dense_element_variables(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const EvolvedVariables& /*evolved_variables*/,
+    const PrimitiveVariables& /*primitives*/, const double time)
+    -> std::vector<ElementVariables> {
+  auto result = this->copy_element_variables(exec, dense_evolved_variables_,
+                                             dense_primitives_, dt_variables_);
+  dense_statuses_.check(
+      exec, patch_elements(), number_of_face_points(),
+      MakeString{} << "the dense output at time " << time << " of ");
+  return result;
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>

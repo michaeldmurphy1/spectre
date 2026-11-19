@@ -26,6 +26,35 @@
 #ifdef SPECTRE_KOKKOS
 namespace grmhd::ValenciaDivClean::fd_patch {
 template <typename OrderedListOfPrimitiveRecoverySchemes>
+FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::Statuses::Statuses(
+    const Kokkos::DefaultExecutionSpace& exec)
+    : face_status_(exec),
+      fix_conservatives_status_(exec),
+      recovery_status_(exec),
+      atmosphere_status_(exec) {
+  reset(exec);
+  copy_to_host(exec);
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::Statuses::reset(
+    const Kokkos::DefaultExecutionSpace& exec) const {
+  face_status_.reset(exec);
+  fix_conservatives_status_.reset(exec);
+  recovery_status_.reset(exec);
+  atmosphere_status_.reset(exec);
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::Statuses::
+    copy_to_host(const Kokkos::DefaultExecutionSpace& exec) const {
+  face_status_.copy_to_host(exec);
+  fix_conservatives_status_.copy_to_host(exec);
+  recovery_status_.copy_to_host(exec);
+  atmosphere_status_.copy_to_host(exec);
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
 FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::FixingAndRecovery(
     const Kokkos::DefaultExecutionSpace& exec,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
@@ -36,30 +65,18 @@ FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::FixingAndRecovery(
       fix_to_atmosphere_(fix_to_atmosphere.device_view()),
       fix_conservatives_(fix_conservatives),
       primitive_from_conservative_options_(primitive_from_conservative_options),
-      face_status_(exec),
-      fix_conservatives_status_(exec),
-      recovery_status_(exec),
-      atmosphere_status_(exec) {
-  reset_statuses(exec);
-  copy_statuses_to_host(exec);
-}
+      statuses_(exec) {}
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>
 void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::reset_statuses(
     const Kokkos::DefaultExecutionSpace& exec) const {
-  face_status_.reset(exec);
-  fix_conservatives_status_.reset(exec);
-  recovery_status_.reset(exec);
-  atmosphere_status_.reset(exec);
+  statuses_.reset(exec);
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>
 void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::
     copy_statuses_to_host(const Kokkos::DefaultExecutionSpace& exec) const {
-  face_status_.copy_to_host(exec);
-  fix_conservatives_status_.copy_to_host(exec);
-  recovery_status_.copy_to_host(exec);
-  atmosphere_status_.copy_to_host(exec);
+  statuses_.copy_to_host(exec);
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>
@@ -70,6 +87,19 @@ void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::
         const gsl::not_null<BatchedVariables<EvolvedTags>*> evolved_variables,
         const gsl::not_null<Primitives*> primitives,
         const BatchedVariables<MetricTags>& metric) {
+  fix_conservatives_and_recover_primitives(exec, evolved_variables, primitives,
+                                           metric, make_not_null(&statuses_));
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+template <typename EvolvedTags, typename MetricTags>
+void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::
+    fix_conservatives_and_recover_primitives(
+        const Kokkos::DefaultExecutionSpace& exec,
+        const gsl::not_null<BatchedVariables<EvolvedTags>*> evolved_variables,
+        const gsl::not_null<Primitives*> primitives,
+        const BatchedVariables<MetricTags>& metric,
+        const gsl::not_null<Statuses*> statuses) {
   const auto& spatial_metric =
       get<::Tags::BatchView<gr::Tags::SpatialMetric<DataVector, 3>>>(metric);
   const auto& inv_spatial_metric =
@@ -81,14 +111,15 @@ void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::
   std::optional<Kokkos::Profiling::ScopedRegion> region{};
   region.emplace("ValenciaDivClean::fd_patch::fix_conservatives");
   fix_conservatives_on_device(
-      exec, evolved_variables, make_not_null(&fix_conservatives_status_),
-      spatial_metric, inv_spatial_metric, sqrt_det_spatial_metric,
-      fix_conservatives_, &fix_conservatives_scratch_);
+      exec, evolved_variables,
+      make_not_null(&statuses->fix_conservatives_status_), spatial_metric,
+      inv_spatial_metric, sqrt_det_spatial_metric, fix_conservatives_,
+      &fix_conservatives_scratch_);
   region.reset();
   region.emplace("ValenciaDivClean::fd_patch::primitive_recovery");
   primitive_from_conservative_on_device<OrderedListOfPrimitiveRecoverySchemes,
                                         true>(
-      exec, primitives, make_not_null(&recovery_status_),
+      exec, primitives, make_not_null(&statuses->recovery_status_),
       get<::Tags::BatchView<Tags::TildeD>>(*evolved_variables),
       get<::Tags::BatchView<Tags::TildeYe>>(*evolved_variables),
       get<::Tags::BatchView<Tags::TildeTau>>(*evolved_variables),
@@ -109,7 +140,7 @@ void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::
   const Kokkos::Profiling::ScopedRegion region{
       "ValenciaDivClean::fd_patch::fix_to_atmosphere"};
   ::VariableFixing::fix_to_atmosphere_on_device(
-      exec, primitives, make_not_null(&atmosphere_status_),
+      exec, primitives, make_not_null(&statuses_.atmosphere_status_),
       get<::Tags::BatchView<gr::Tags::SpatialMetric<DataVector, 3>>>(metric),
       *equation_of_state_, fix_to_atmosphere_);
 }
@@ -166,11 +197,20 @@ void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::check(
     const Kokkos::DefaultExecutionSpace& exec,
     const evolution::dg::subcell::fd_patch::FdPatchElements& patch_elements,
     const size_t number_of_face_points) const {
+  statuses_.check(exec, patch_elements, number_of_face_points);
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::Statuses::check(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const evolution::dg::subcell::fd_patch::FdPatchElements& patch_elements,
+    const size_t number_of_face_points, const std::string& context) const {
   exec.fence("ValenciaDivClean::fd_patch::FixingAndRecovery::check");
-  const auto description =
-      [&patch_elements](const PointwiseStatusSummary& status) {
-        return patch_elements.element_description(status.first_failed_element);
-      };
+  const auto description = [&patch_elements,
+                            &context](const PointwiseStatusSummary& status) {
+    return context +
+           patch_elements.element_description(status.first_failed_element);
+  };
   const size_t number_of_cells_of_all_elements =
       patch_elements.subcell_mesh().number_of_grid_points() *
       patch_elements.number_of_elements();
@@ -180,9 +220,10 @@ void FixingAndRecovery<OrderedListOfPrimitiveRecoverySchemes>::check(
     // The faces of all elements are in one batch, 3 face sets per element
     ::VariableFixing::error_fixing_to_atmosphere_on_device(
         face_status_, 2 * number_of_face_points,
-        "a face of " + patch_elements.element_description(
-                           status.first_failed_element %
-                           patch_elements.number_of_elements()));
+        context + "a face of " +
+            patch_elements.element_description(
+                status.first_failed_element %
+                patch_elements.number_of_elements()));
   }
   if (fix_conservatives_status_.failed()) {
     error_fixing_conservatives_on_device(

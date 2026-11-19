@@ -133,6 +133,16 @@ class EventsAndDenseTriggers {
                   const ArrayIndex& array_index,
                   const ComponentPointer component);
 
+  /// Call `function(event)` for each event associated with fired
+  /// triggers and mark the triggers as handled, as `run_events` does,
+  /// for callers that run the events themselves, e.g. on the DataBoxes
+  /// of the elements of a patch.  `Tags::PreviousTriggerTime` is not
+  /// set.  This must be called after is_ready returns something other
+  /// then NotReady.  Any repeated calls will be no-ops until a
+  /// successful call to reschedule.
+  template <typename F>
+  void for_each_triggered_event(F&& function);
+
   /// Schedule the next check.  This must be called after run_events
   /// for the current check.  Returns `true` on success, `false` if
   /// insufficient data is available and the call should be retried
@@ -272,6 +282,20 @@ void EventsAndDenseTriggers::run_events(
     }
     // Mark this trigger as handled so we will not reprocess it if
     // this method or is_ready is called again.
+    trigger_entry.is_triggered = false;
+  }
+}
+
+template <typename F>
+void EventsAndDenseTriggers::for_each_triggered_event(F&& function) {
+  ASSERT(initialized(), "Not initialized");
+  for (auto& trigger_entry : events_and_triggers_) {
+    if (trigger_entry.is_triggered == std::optional{true}) {
+      for (const auto& event : trigger_entry.events) {
+        function(*event);
+      }
+    }
+    // Mark this trigger as handled, as in run_events
     trigger_entry.is_triggered = false;
   }
 }

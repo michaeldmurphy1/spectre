@@ -106,13 +106,17 @@ using element_variables_tags =
  * 2. `FdPatchElements::receive()`: fill the ghost zones from the received
  *    boundary data, and keep the data that DG neighbors send for the packaged
  *    data.
- * 3. `take_step()`: compute the time derivative (`subcell::TimeDerivative` on
- *    the host), record it in the history and update the evolved variables
- *    (`RecordTimeStepperData`, `UpdateU`, `CleanHistory`), then fix the
- *    conserved variables, recover the primitive variables, fix them to the
- *    atmosphere and recompute the conserved variables
- *    (`FixConservativesAndComputePrims`, `FixToAtmosphere`,
+ * 3. `compute_time_derivative()`: compute the time derivative
+ *    (`subcell::TimeDerivative` on the host) and record it in the history
+ *    (`RecordTimeStepperData`).
+ * 4. `update_variables()`: update the evolved variables (`UpdateU`,
+ *    `CleanHistory`), then fix the conserved variables, recover the primitive
+ *    variables, fix them to the atmosphere and recompute the conserved
+ *    variables (`FixConservativesAndComputePrims`, `FixToAtmosphere`,
  *    `UpdateConservatives`).
+ *
+ * Dense output, which needs the history of the substep but not its update,
+ * goes between 3 and 4, as on the host.
  *
  * The state of the elements, i.e. their evolved, primitive and spacetime
  * variables (`state_tags`), is in the DataBox of the patch, and the methods
@@ -275,14 +279,25 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
   // NOLINTNEXTLINE(google-runtime-references)
   void pup(PUP::er& p);
 
-  /// Take the substep `time_step_id` (see the class documentation), with the
-  /// time stepper `history` of the elements. The `functions_of_time` are those
-  /// of the grid to inertial map.
+  /// @{
+  /// Take the substep `time_step_id` (see the class documentation) in two
+  /// parts: compute the time derivative and record it in the time stepper
+  /// `history` of the elements, then update the variables. The
+  /// `functions_of_time` are those of the grid to inertial map.
   ///
   /// The kernels are only enqueued on `exec`, without waiting for them. Their
   /// failures, e.g. of the primitive recovery, are recorded on the device and
   /// reported by `check_last_step()`.
-  void take_step(
+  void compute_time_derivative(
+      const Kokkos::DefaultExecutionSpace& exec,
+      gsl::not_null<EvolvedVariables*> evolved_variables,
+      gsl::not_null<PrimitiveVariables*> primitives,
+      gsl::not_null<CellSpacetimeVariables*> cell_spacetime_variables,
+      gsl::not_null<FaceSpacetimeVariables*> face_spacetime_variables,
+      gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
+      const TimeStepId& time_step_id,
+      const domain::FunctionsOfTimeMap& functions_of_time);
+  void update_variables(
       const Kokkos::DefaultExecutionSpace& exec,
       gsl::not_null<EvolvedVariables*> evolved_variables,
       gsl::not_null<PrimitiveVariables*> primitives,
@@ -290,18 +305,19 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
       gsl::not_null<FaceSpacetimeVariables*> face_spacetime_variables,
       gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
       const TimeStepper& time_stepper, const TimeStepId& time_step_id,
-      const TimeStepId& next_time_step_id, const TimeDelta& time_step,
-      const domain::FunctionsOfTimeMap& functions_of_time);
+      const TimeStepId& next_time_step_id, const TimeDelta& time_step);
+  /// @}
 
   /*!
-   * \brief ERRORs if the last `take_step()` failed, e.g. in the primitive
-   * recovery, with the variables at a failed grid point. Waits for `exec`.
+   * \brief ERRORs if the last `update_variables()` failed, e.g. in the
+   * primitive recovery, with the variables at a failed grid point. Waits for
+   * `exec`.
    *
    * \details `prepare_send()` calls this after it waits for the device, so
    * that the host waits for the device only once per substep. Call it also
    * before anything that needs the state of the last substep to be valid,
    * e.g. observations and checkpoints. Calling it again before the next
-   * `take_step()` checks the same substep again.
+   * `compute_time_derivative()` checks the same substep again.
    */
   void check_last_step(const Kokkos::DefaultExecutionSpace& exec) const;
 

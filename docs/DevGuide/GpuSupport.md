@@ -379,7 +379,9 @@ state, and the patch object holds the operations*.
 Operations that *change* the state of the elements, such as taking a step,
 can't reuse the per-element DG actions, which work on one element's
 `Variables` on the host. They have batched versions in the patch, with thin
-actions (`SendBoundaryData`, `ReceiveBoundaryData`, `TakeStep`).
+actions (`SendBoundaryData`, `ReceiveBoundaryData`, `ComputeTimeDerivative`,
+`UpdateVariables`). A substep is split into the time derivative and the update
+so that dense output can go in between, as on the host.
 
 Operations that only *depend on* the state, such as observations and step
 choosers, run through their own generic code instead. At an observation (or a

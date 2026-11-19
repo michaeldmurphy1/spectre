@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <string>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
@@ -64,6 +65,50 @@ class FixingAndRecovery {
  public:
   using Primitives = BatchedVariables<hydro::grmhd_tags<DataVector>>;
 
+  /*!
+   * \brief The failures of the operations since the last `reset()`, recorded
+   * on the device.
+   *
+   * \details The patch holds those of its substeps (`reset_statuses()`,
+   * `copy_statuses_to_host()`, `check()`), and may record the failures of
+   * other operations, e.g. of dense output, separately, so that they are
+   * reported with their own context and not as failures of the substep.
+   */
+  class Statuses {
+   public:
+    Statuses() = default;
+    /// Allocated on `exec`, without failures
+    explicit Statuses(const Kokkos::DefaultExecutionSpace& exec);
+
+    /// Reset to no failures, on `exec`
+    void reset(const Kokkos::DefaultExecutionSpace& exec) const;
+
+    /// Enqueue copying the statuses to the host, for `check()`
+    void copy_to_host(const Kokkos::DefaultExecutionSpace& exec) const;
+
+    /// ERRORs with the variables at a failed grid point if an operation
+    /// failed since the last `reset()`, in the order of a step. The
+    /// `context`, e.g. "the dense output at time 1.5 of ", goes before the
+    /// description of the element. Waits for `exec`. See
+    /// `FixingAndRecovery::check()`.
+    void check(
+        const Kokkos::DefaultExecutionSpace& exec,
+        const evolution::dg::subcell::fd_patch::FdPatchElements& patch_elements,
+        size_t number_of_face_points, const std::string& context = "") const;
+
+   private:
+    friend class FixingAndRecovery;
+    // Their device data changes in const member functions, like that of other
+    // views.
+    DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags> face_status_{};
+    DeferredPointwiseStatus<fix_conservatives_snapshot_tags>
+        fix_conservatives_status_{};
+    DeferredPointwiseStatus<primitive_recovery_snapshot_tags>
+        recovery_status_{};
+    DeferredPointwiseStatus<::VariableFixing::fix_to_atmosphere_snapshot_tags>
+        atmosphere_status_{};
+  };
+
   FixingAndRecovery() = default;
   FixingAndRecovery(const FixingAndRecovery&) = delete;
   FixingAndRecovery& operator=(const FixingAndRecovery&) = delete;
@@ -92,7 +137,7 @@ class FixingAndRecovery {
   /// reconstructed states on the faces to the atmosphere
   gsl::not_null<DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>
   face_status() {
-    return make_not_null(&face_status_);
+    return make_not_null(&statuses_.face_status_);
   }
 
   /// Reset the statuses of all operations to no failures, on `exec`
@@ -101,15 +146,25 @@ class FixingAndRecovery {
   /// Enqueue copying the statuses to the host, for `check()`
   void copy_statuses_to_host(const Kokkos::DefaultExecutionSpace& exec) const;
 
+  /// @{
   /// Fix the conserved variables (`fix_conservatives_on_device`) and recover
   /// the primitive variables (`primitive_from_conservative_on_device`),
-  /// enqueued on `exec`
+  /// enqueued on `exec`. The failures are recorded in the statuses of the
+  /// substep, or in `statuses`.
   template <typename EvolvedTags, typename MetricTags>
   void fix_conservatives_and_recover_primitives(
       const Kokkos::DefaultExecutionSpace& exec,
       gsl::not_null<BatchedVariables<EvolvedTags>*> evolved_variables,
       gsl::not_null<Primitives*> primitives,
       const BatchedVariables<MetricTags>& metric);
+  template <typename EvolvedTags, typename MetricTags>
+  void fix_conservatives_and_recover_primitives(
+      const Kokkos::DefaultExecutionSpace& exec,
+      gsl::not_null<BatchedVariables<EvolvedTags>*> evolved_variables,
+      gsl::not_null<Primitives*> primitives,
+      const BatchedVariables<MetricTags>& metric,
+      gsl::not_null<Statuses*> statuses);
+  /// @}
 
   /// Fix the primitive variables to the atmosphere
   /// (`::VariableFixing::fix_to_atmosphere_on_device`), enqueued on `exec`
@@ -162,14 +217,8 @@ class FixingAndRecovery {
   // step
   Kokkos::View<bool*> fix_conservatives_scratch_{};
   Kokkos::View<bool*> primitive_recovery_scratch_{};
-  // The failures since the last `reset_statuses()`. Their device data changes
-  // in const member functions, like that of other views.
-  DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags> face_status_{};
-  DeferredPointwiseStatus<fix_conservatives_snapshot_tags>
-      fix_conservatives_status_{};
-  DeferredPointwiseStatus<primitive_recovery_snapshot_tags> recovery_status_{};
-  DeferredPointwiseStatus<::VariableFixing::fix_to_atmosphere_snapshot_tags>
-      atmosphere_status_{};
+  // The failures of the substep since the last `reset_statuses()`
+  Statuses statuses_{};
 };
 }  // namespace grmhd::ValenciaDivClean::fd_patch
 #endif  // SPECTRE_KOKKOS

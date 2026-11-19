@@ -239,6 +239,8 @@ class TimeDerivativeOnDevice {
   std::array<double, 3> one_over_delta_xi_{};
   BatchedVariables<face_tags> lower_faces_{};
   BatchedVariables<face_tags> upper_faces_{};
+  // Whether `Hll` uses the hydro speeds on each face set, kept between calls
+  Kokkos::View<bool*> use_hydro_speeds_scratch_{};
   BatchedVariables<packaged_tags> lower_packaged_data_{};
   BatchedVariables<packaged_tags> upper_packaged_data_{};
   BatchedVariables<BoundaryCorrections::BoundaryCorrectionTags>

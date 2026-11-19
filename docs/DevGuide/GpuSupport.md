@@ -410,6 +410,20 @@ which replaces the events' compute tags for it. Computing it per element
 dominated the cost of an `ObserveNorms` (~0.21 ms per element on a GH200
 node).
 
+Dense events (`EventsAndDenseTriggers`) run the same way, at the times of the
+triggers within a step
+(`evolution::patches::Actions::RunEventsAndDenseTriggers`, between the time
+derivative and the update of a substep, as on the host). The
+patch checks the triggers once for all its elements, since they share the time
+step. If an event needs the variables, the patch computes them on the device by
+dense output of the time stepper (`TimeSteppers::dense_update_u_on_device`)
+into scratch data, without changing its state, and fixes and recovers them as
+the host does after dense output (`Patch::dense_output()`). The DataBoxes of
+the elements are then built at the time of the trigger from that data. Only
+`Events::Completion`, `dg::Events::ObserveFields` and `Events::ObserveNorms`
+are supported as dense events so far; others, e.g. the measurements of control
+systems, are an error.
+
 Since events and step choosers are compiled against this DataBox, it must
 provide every tag that any event or step chooser of the executable may read.
 Tags whose data patches don't have on the host are placeholders (the host time

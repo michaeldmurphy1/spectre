@@ -241,6 +241,37 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
       const EvolvedVariables& evolved_variables,
       const PrimitiveVariables& primitives);
 
+  /*!
+   * \brief Compute the variables of the elements at `time` in the current
+   * step by dense output (`TimeSteppers::dense_update_u_on_device`), then fix
+   * the conserved variables and recover the primitive variables, as
+   * `subcell::FixConservativesAndComputePrims` does after dense output on the
+   * host. The primitive variables of the substep are the initial guess of the
+   * recovery, as on the host.
+   *
+   * \details Enqueued on `exec` into scratch data of the patch, which is
+   * allocated at the first dense output; the state isn't changed. Call it
+   * between `compute_time_derivative()` and `update_variables()`, as the host
+   * does dense output between recording the history and the update. Returns
+   * false if dense output isn't possible yet in this substep (see
+   * `TimeStepper::dense_update_u`). The results are read with
+   * `dense_element_variables()`.
+   */
+  bool dense_output(const Kokkos::DefaultExecutionSpace& exec,
+                    const EvolvedVariables& evolved_variables,
+                    const PrimitiveVariables& primitives,
+                    gsl::not_null<TimeSteppers::DeviceHistory<>*> history,
+                    const TimeStepper& time_stepper, double time);
+
+  /// The variables of each element from the last `dense_output()` (at
+  /// `time`), copied from the device on `exec`, which is fenced. ERRORs if
+  /// the fixing or the recovery of the dense output failed. The time
+  /// derivatives are those of the current substep, as on the host.
+  std::vector<ElementVariables> dense_element_variables(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const EvolvedVariables& evolved_variables,
+      const PrimitiveVariables& primitives, double time);
+
   /// Compute the ghost variables and fill the ghost zones between the
   /// elements of the patch, and return the boundary data for the neighbors
   /// outside the patch, valid until `next_time_step_id`. The
@@ -372,6 +403,13 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
       ghost_variables_{};
   BatchedVariables<subcell::dt_tags_on_device> dt_variables_{};
   BatchedVariables<subcell::fixing_metric_tags> fixing_metric_{};
+  // The dense output, its fixing metric and the failures of its fixing,
+  // allocated at the first dense output
+  EvolvedVariables dense_evolved_variables_{};
+  PrimitiveVariables dense_primitives_{};
+  BatchedVariables<subcell::fixing_metric_tags> dense_fixing_metric_{};
+  typename ValenciaDivClean::fd_patch::FixingAndRecovery<
+      OrderedListOfPrimitiveRecoverySchemes>::Statuses dense_statuses_{};
   // The values saved during the self start
   evolution::patches::SavedBatches<EvolvedVariables, PrimitiveVariables>
       initial_values_{};

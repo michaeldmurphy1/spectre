@@ -4,6 +4,7 @@
 #include "Framework/TestingFramework.hpp"
 
 #include <optional>
+#include <vector>
 
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
@@ -410,6 +411,58 @@ void test_mutating_trigger() {
                                      component);
   CHECK(db::get<MutatingTrigger::WasCalled>(box));
 }
+
+// `for_each_triggered_event` visits the events of the fired triggers without
+// running them, and marks the triggers as handled, as `run_events` does
+void test_for_each_triggered_event() {
+  Parallel::GlobalCache<Metavariables> cache{};
+  const int array_index = 0;
+  const int* component = nullptr;
+  auto events_and_dense_triggers =
+      TestHelpers::test_creation<EventsAndDenseTriggers, Metavariables>(
+          "- Trigger: BoxTrigger<A>\n"
+          "  Events:\n"
+          "    - TestEvent<A>\n"
+          "- Trigger: BoxTrigger<B>\n"
+          "  Events:\n"
+          "    - TestEvent<B>\n"
+          "    - TestEvent<C>\n");
+  auto box = db::create<db::AddSimpleTags<
+      Parallel::Tags::MetavariablesImpl<Metavariables>, Tags::TimeStepId,
+      Tags::Time, ::Tags::PreviousTriggerTime, TriggerA::IsTriggered,
+      TriggerA::NextCheck, TriggerB::IsTriggered, TriggerB::NextCheck,
+      EventA::IsReady, EventB::IsReady, EventC::IsReady, EventCount>>(
+      Metavariables{}, TimeStepId(true, 0, Slab(0.0, 1.0).start()), 0.0,
+      std::optional<double>{}, std::optional<bool>{false},
+      std::optional<double>{}, std::optional<bool>{true},
+      std::optional<double>{}, true, true, true, 0);
+
+  using TriggeringState = EventsAndDenseTriggers::TriggeringState;
+  CHECK(events_and_dense_triggers.next_trigger(box) == 0.0);
+  CHECK(events_and_dense_triggers.is_ready(make_not_null(&box), cache,
+                                           array_index, component) !=
+        TriggeringState::NotReady);
+  std::vector<char> visited{};
+  const auto visit = [&visited](const Event& event) {
+    if (dynamic_cast<const EventA*>(&event) != nullptr) {
+      visited.push_back('A');
+    } else if (dynamic_cast<const EventB*>(&event) != nullptr) {
+      visited.push_back('B');
+    } else if (dynamic_cast<const EventC*>(&event) != nullptr) {
+      visited.push_back('C');
+    }
+  };
+  events_and_dense_triggers.for_each_triggered_event(visit);
+  CHECK(visited == std::vector<char>{'B', 'C'});
+  CHECK(not EventA::event_ran);
+  CHECK(not EventB::event_ran);
+  CHECK(not EventC::event_ran);
+  CHECK(db::get<EventCount>(box) == 0);
+  // The triggers are handled
+  visited.clear();
+  events_and_dense_triggers.for_each_triggered_event(visit);
+  CHECK(visited.empty());
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.Evolution.EventsAndDenseTriggers",
@@ -421,4 +474,5 @@ SPECTRE_TEST_CASE("Unit.Evolution.EventsAndDenseTriggers",
   do_test(true, true);
   do_test(false, true);
   test_mutating_trigger();
+  test_for_each_triggered_event();
 }

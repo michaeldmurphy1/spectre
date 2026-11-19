@@ -353,7 +353,8 @@ void TimeDerivativeOnDevice<Correction>::apply(
                                   : &upper_packaged_data_),
           side == 0 ? lower_faces_ : upper_faces_, conormal,
           gsl::at(signs, side), moving_mesh_velocity, correction,
-          equation_of_state, &normalization_inverse_spatial_metric);
+          equation_of_state, &normalization_inverse_spatial_metric,
+          &use_hydro_speeds_scratch_);
     }
   }
   packaged_data_from_dg.apply(

@@ -94,6 +94,16 @@ following configuration options:
   instead of stored, if profiles show the shared version is far from what the
   hardware can do. Such a rewrite needs a unit test comparing it with the host
   implementation on random data, so that the two can't drift apart.
+- Tensor expressions (`tenex::evaluate` and `tenex::update`) of
+  device-capable data types such as `double` work in device code, with every
+  multi-index computed at compile time, so the generated code only contains the
+  arithmetic. In kernels over batches of tensors (e.g. `Tags::BatchView`), use
+  `tenex::at_point(batch, i, e)`, which reads components where the expression
+  uses them, and evaluate into an `at_point` of the result, which stores each
+  component as soon as it is computed (see `tenex::AtPoint`). For large
+  expressions this matches hand-written kernels; evaluating into a local
+  `Tensor` and storing it at the end keeps all inputs live and spills
+  registers.
 - `ASSERT` and `ERROR` work in device code. On the device the message is
   streamed into a `DeviceMessage` (`Utilities/ErrorHandling/DeviceMessage.hpp`)
   and passed to `Kokkos::abort`. Only the first failing GPU thread prints its
@@ -430,6 +440,26 @@ the elements are then built at the time of the trigger from that data. Only
 `Events::Completion`, `dg::Events::ObserveFields` and `Events::ObserveNorms`
 are supported as dense events so far; others, e.g. the measurements of control
 systems, are an error.
+
+With `Patches: ObserveOnDevice: true` in the input file, patches observe the
+events they support on the device instead
+(`evolution::patches::Actions::detail::observe_norms_on_device`): for an
+`Events::ObserveNorms` (without array sections) whose tensors the patch can all
+compute on the device (`Patch::is_device_observable`), the patch computes them
+for all elements on the device at the time of the observation, from the state
+or the dense output (`Patch::device_observables`). A kernel reduces each
+component of each element to the values all norms are computed from
+(`Events::NormStatistics`, see `evolution::patches::norm_statistics_on_device`),
+and only these are copied to the host. Each element then contributes them to
+the observer as the event would on its DataBox
+(`Events::ObserveNorms::contribute_statistics`), so the output and the observer
+registration are the same. Other events run on the DataBoxes of the elements as
+above; at registration patch 0 prints which `ObserveNorms` run on the device and
+which tensors keep the others on the host. Supporting a new observable means
+computing it from the batches of the patch in `Patch::device_observables`, e.g.
+with tensor expressions at the grid points (see
+`grmhd::GhValenciaDivClean::fd_patch::device_observables`), and testing it
+against the compute tag of the host.
 
 Since events and step choosers are compiled against this DataBox, it must
 provide every tag that any event or step chooser of the executable may read.

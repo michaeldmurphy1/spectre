@@ -396,6 +396,37 @@ auto Patch<OrderedListOfPrimitiveRecoverySchemes>::dense_element_variables(
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>
+bool Patch<OrderedListOfPrimitiveRecoverySchemes>::is_device_observable(
+    const std::string& name) {
+  return fd_patch::is_device_observable<typename PrimitiveVariables::tags_list>(
+      name);
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
+const evolution::patches::DeviceObservables&
+Patch<OrderedListOfPrimitiveRecoverySchemes>::device_observables(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const std::vector<std::string>& tensor_names,
+    const EvolvedVariables& evolved_variables,
+    const PrimitiveVariables& primitives, const bool dense_output,
+    const double time, const domain::FunctionsOfTimeMap& functions_of_time) {
+  if (dense_output) {
+    dense_statuses_.check(
+        exec, patch_elements(), number_of_face_points(),
+        MakeString{} << "the dense output at time " << time << " of ");
+  }
+  fd_patch::device_observables(
+      exec, make_not_null(&device_observables_),
+      make_not_null(&device_observables_buffers_), tensor_names,
+      dense_output ? dense_evolved_variables_ : evolved_variables,
+      dense_output ? dense_primitives_ : primitives,
+      dense_output ? dense_fixing_metric_ : fixing_metric_,
+      patch_elements().observation_cell_geometry(exec, time, functions_of_time),
+      patch_elements().subcell_mesh());
+  return device_observables_;
+}
+
+template <typename OrderedListOfPrimitiveRecoverySchemes>
 void Patch<OrderedListOfPrimitiveRecoverySchemes>::compute_time_derivative(
     const Kokkos::DefaultExecutionSpace& exec,
     const gsl::not_null<EvolvedVariables*> evolved_variables,

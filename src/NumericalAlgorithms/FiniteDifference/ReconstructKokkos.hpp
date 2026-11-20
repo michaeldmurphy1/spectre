@@ -95,31 +95,48 @@ void reconstruct(
     // Also reconstruct in the neighbors' cells -1 and `number_of_cells`
     Kokkos::Array<int, 3> end = extents;
     end[dim] += 2;
-    const BatchCells cells{number_of_elements, number_of_variables, end};
+    // One thread per cell, looping over the variables
+    const BatchPoints points{number_of_elements, end};
+    const size_t variable_stride = padded_volume_vars.stride(1);
+    const size_t upper_stride = upper_side.stride(1);
+    const size_t lower_stride = lower_side.stride(1);
     Kokkos::parallel_for(
         "fd::device::reconstruct",
         Kokkos::RangePolicy<Kokkos::DefaultExecutionSpace,
-                            Kokkos::IndexType<int>>(exec, 0, cells.size()),
+                            Kokkos::IndexType<int>>(exec, 0, points.size()),
         KOKKOS_LAMBDA(const int index) {
-          auto [element, var, cell] = cells(index);
+          auto [element, cell] = points(index);
           cell[dim] -= 1;
-          const double* const q =
-              &padded_volume_vars(element, var, cell[2] + offsets[2],
+          const double* q =
+              &padded_volume_vars(element, 0, cell[2] + offsets[2],
                                   cell[1] + offsets[1], cell[0] + offsets[0]);
-          const auto lower_and_upper_values =
-              reconstruct_pointwise<Reconstructor>(
-                  q, stride, arguments, std::index_sequence_for<Args...>{});
           // The value on the lower face of the cell is on the upper side of
           // face `cell`, and the value on the upper face of the cell is on the
           // lower side of face `cell + 1`
-          if (cell[dim] >= 0) {
-            upper_side(element, var, cell[2], cell[1], cell[0]) =
-                std::get<0>(lower_and_upper_values);
-          }
-          if (cell[dim] < number_of_cells) {
-            cell[dim] += 1;
-            lower_side(element, var, cell[2], cell[1], cell[0]) =
-                std::get<1>(lower_and_upper_values);
+          const bool has_lower_face = cell[dim] >= 0;
+          const bool has_upper_face = cell[dim] < number_of_cells;
+          double* upper_side_value =
+              has_lower_face
+                  ? &upper_side(element, 0, cell[2], cell[1], cell[0])
+                  : nullptr;
+          cell[dim] += 1;
+          double* lower_side_value =
+              has_upper_face
+                  ? &lower_side(element, 0, cell[2], cell[1], cell[0])
+                  : nullptr;
+          for (size_t var = 0; var < number_of_variables; ++var) {
+            const auto lower_and_upper_values =
+                reconstruct_pointwise<Reconstructor>(
+                    q, stride, arguments, std::index_sequence_for<Args...>{});
+            if (has_lower_face) {
+              upper_side_value[var * upper_stride] =
+                  std::get<0>(lower_and_upper_values);
+            }
+            if (has_upper_face) {
+              lower_side_value[var * lower_stride] =
+                  std::get<1>(lower_and_upper_values);
+            }
+            q += variable_stride;
           }
         });
   }

@@ -96,6 +96,16 @@ if (SPECTRE_KOKKOS)
     PRIVATE
     USE_FD_PATCHES=true
     )
+  add_ghmhd_executable(
+    "BnsFdPatches"
+    "true"
+    "false"
+    )
+  target_compile_definitions(
+    EvolveGhValenciaDivCleanBnsFdPatches
+    PRIVATE
+    USE_FD_PATCHES=true
+    )
 endif()
 
 function(add_ghmhd_with_horizon_executable SUFFIX)

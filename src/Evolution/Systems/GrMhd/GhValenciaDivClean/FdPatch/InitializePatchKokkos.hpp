@@ -90,6 +90,19 @@ fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes> make_patch(
     ERROR("FD patches only support the Harmonic gauge, but got "
           << pretty_type::get_runtime_type_name(gauge_condition));
   }
+  // With control systems, the DG elements shorten their steps for the
+  // measurements if the time stepper isn't monotonic
+  // (`control_system::Actions::LimitTimeStep`), which the patches don't, so
+  // they would step differently
+  if constexpr (Metavariables::use_control_systems) {
+    if (not db::get<::Tags::TimeStepper<TimeStepper>>(box).monotonic()) {
+      ERROR(
+          "FD patches with control systems need a monotonic time stepper "
+          "(e.g. AdamsMoultonPcMonotonic), but got "
+          << pretty_type::get_runtime_type_name(
+                 db::get<::Tags::TimeStepper<TimeStepper>>(box)));
+    }
+  }
   const auto patch = static_cast<size_t>(array_index);
   return fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes>{
       Parallel::device_execution_space(),

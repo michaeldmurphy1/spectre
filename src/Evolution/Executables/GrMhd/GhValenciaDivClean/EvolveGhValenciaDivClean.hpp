@@ -48,6 +48,12 @@ struct EvolutionMetavars
 /// device in FD patches (`evolution::patches::PatchArray`, see
 /// `grmhd::GhValenciaDivClean::fd_patch::Patch` for what is supported). The DG
 /// elements are evolved on the host as in `EvolutionMetavars`.
+///
+/// With control systems, the patches wait for the functions of time as the
+/// elements do and switch the grid rotation if they hold the zeroth element,
+/// but they don't contribute to the measurements yet, which is an error at the
+/// first step after the self start (see
+/// `evolution::patches::Actions::RunEventsAndDenseTriggers`).
 template <bool UseControlSystems, bool UseParametrizedDeleptonization,
           typename... InterpolationTargetTags>
 struct EvolutionMetavarsWithFdPatches
@@ -56,9 +62,6 @@ struct EvolutionMetavarsWithFdPatches
                                          UseParametrizedDeleptonization,
                                          InterpolationTargetTags...>,
           true, UseControlSystems, UseParametrizedDeleptonization> {
-  static_assert(not UseControlSystems,
-                "FD patches don't check the functions of time of control "
-                "systems yet.");
   static_assert(not UseParametrizedDeleptonization,
                 "FD patches don't apply the parametrized deleptonization.");
   using base = GhValenciaDivCleanTemplateBase<

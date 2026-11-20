@@ -90,14 +90,10 @@ VolumeView make_volume_view(const Kokkos::DefaultExecutionSpace& exec,
  * face as the ghost width of `padded_vars`. If there are more ghost cells, the
  * ones closest to the element are used.
  *
- * \note This is done on the host for now, so the padded data has to be copied
- * to the device afterwards. Eventually the volume and ghost data will already
- * be on the device and this will be a kernel that packs the whole batch at
- * once, taking views instead of spans for each element. Ideally the data would
- * be written directly into the padded view instead, e.g. the volume data into
- * a subview of its interior and received ghost data into its ghost zones, so no
- * copy is needed at all. In either case only the packing changes: the kernels
- * that take the padded view keep their interface.
+ * \note This packs on the host, element by element, and the padded data is
+ * then copied to the device, e.g. in tests. FD patches fill the padded view of
+ * a whole batch on the device instead (see
+ * `evolution::dg::subcell::fd_patch::GhostZones`).
  */
 template <size_t Dim>
 void pack_with_ghost_zones(

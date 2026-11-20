@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <variant>
 
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
@@ -116,6 +117,14 @@ using cell_spacetime_tags =
  * two with `Hll` (see `face_tags`), and step 5 is one kernel, so that the
  * intermediate results stay on the stack instead of in memory.
  */
+/// The divergence of the mesh velocity: one value per element (an element
+/// indexed view), which is enough for grid to inertial maps that are affine,
+/// or one per cell (a batch, e.g. projected from the DG grid as the host does)
+using DivergenceOfMeshVelocity = std::variant<
+    Kokkos::View<const double*>,
+    typename ::Tags::BatchView<
+        evolution::dg::subcell::fd_patch::Tags::CellDivMeshVelocity>::type>;
+
 template <typename Correction>
 class TimeDerivativeOnDevice {
  public:
@@ -183,9 +192,8 @@ class TimeDerivativeOnDevice {
    * centers.
    * \param mesh_is_moving whether the mesh of any element moves, so the
    * mesh velocity on the faces is used.
-   * \param div_mesh_velocity the divergence of the mesh velocity of each
-   * element (constant on an element because the grid to inertial map is
-   * affine).
+   * \param div_mesh_velocity the divergence of the mesh velocity, of each
+   * element or of each cell (see `DivergenceOfMeshVelocity`).
    * \param correction the boundary correction.
    * \param equation_of_state the equation of state, for the reconstruction
    * and the boundary corrections.
@@ -216,7 +224,7 @@ class TimeDerivativeOnDevice {
           evolution::dg::subcell::fd_patch::inertial_face_tags>& face_geometry,
       const BatchedVariables<
           evolution::dg::subcell::fd_patch::inertial_cell_tags>& cell_geometry,
-      bool mesh_is_moving, const Kokkos::View<const double*>& div_mesh_velocity,
+      bool mesh_is_moving, const DivergenceOfMeshVelocity& div_mesh_velocity,
       const Correction& correction,
       const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
       const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere,

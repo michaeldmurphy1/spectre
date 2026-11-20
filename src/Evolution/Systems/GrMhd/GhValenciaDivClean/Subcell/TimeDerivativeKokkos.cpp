@@ -268,7 +268,8 @@ void TimeDerivativeOnDevice<Correction>::apply(
         evolution::dg::subcell::fd_patch::inertial_face_tags>& face_geometry,
     const BatchedVariables<
         evolution::dg::subcell::fd_patch::inertial_cell_tags>& cell_geometry,
-    const Kokkos::View<const double*>& div_mesh_velocity,
+    const ValenciaDivClean::subcell::DivergenceOfMeshVelocity&
+        div_mesh_velocity,
     const Kokkos::View<const ConstraintDamping::GaussianSum<dim>*>&
         damping_functions,
     const Correction& correction,

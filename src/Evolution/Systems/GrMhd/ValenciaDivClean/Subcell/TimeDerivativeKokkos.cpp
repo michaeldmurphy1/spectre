@@ -122,8 +122,7 @@ template class TimeDerivativeOnDevice<BoundaryCorrections::Hll>;
       const BatchedVariables<                                                  \
           evolution::dg::subcell::fd_patch::inertial_cell_tags>&               \
           cell_geometry,                                                       \
-      bool mesh_is_moving,                                                     \
-      const Kokkos::View<const double*>& div_mesh_velocity,                    \
+      bool mesh_is_moving, const DivergenceOfMeshVelocity& div_mesh_velocity,  \
       const CORRECTION(data) & correction,                                     \
       const EquationsOfState::EquationOfState<true, 3>& equation_of_state,     \
       const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere, \

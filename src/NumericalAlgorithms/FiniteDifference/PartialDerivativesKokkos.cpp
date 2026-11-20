@@ -151,34 +151,41 @@ void partial_derivatives_impl(const Kokkos::DefaultExecutionSpace& exec,
   const auto offsets = setup.offsets;
   const auto strides = setup.strides;
   const auto weights = setup.weights;
-  const detail::BatchCells cells{padded_volume_vars.extent(0),
-                                 padded_volume_vars.extent(1), extents};
+  // One thread per cell, looping over the variables, so the cell index and the
+  // inverse Jacobian are computed and loaded once for all variables
+  const size_t number_of_variables = padded_volume_vars.extent(1);
+  const detail::BatchPoints points{padded_volume_vars.extent(0), extents};
   Kokkos::parallel_for(
       "fd::device::partial_derivatives",
       Kokkos::RangePolicy<Kokkos::DefaultExecutionSpace,
-                          Kokkos::IndexType<int>>(exec, 0, cells.size()),
+                          Kokkos::IndexType<int>>(exec, 0, points.size()),
       KOKKOS_LAMBDA(const int index) {
-        const auto [element, var, cell] = cells(index);
-        const double* const q =
-            &padded_volume_vars(element, var, cell[2] + offsets[2],
-                                cell[1] + offsets[1], cell[0] + offsets[0]);
-        Kokkos::Array<double, Dim> logical_derivatives{};
-        for (size_t d = 0; d < Dim; ++d) {
-          logical_derivatives[d] =
-              Stencil::pointwise(q, strides[d], weights[d]);
-        }
+        const auto [element, cell] = points(index);
         const int point =
             cell[0] + extents[0] * (cell[1] + extents[1] * cell[2]);
-        for (size_t i = 0; i < Dim; ++i) {
-          double derivative =
-              jacobian[i](point, element) * logical_derivatives[0];
-          for (size_t j = 1; j < Dim; ++j) {
-            derivative +=
-                jacobian[Dim * j + i](point, element) * logical_derivatives[j];
+        Kokkos::Array<double, Dim * Dim> inverse_jacobian_at_point{};
+        for (size_t k = 0; k < Dim * Dim; ++k) {
+          inverse_jacobian_at_point[k] = jacobian[k](point, element);
+        }
+        for (size_t var = 0; var < number_of_variables; ++var) {
+          const double* q =
+              &padded_volume_vars(element, var, cell[2] + offsets[2],
+                                  cell[1] + offsets[1], cell[0] + offsets[0]);
+          Kokkos::Array<double, Dim> logical_derivatives{};
+          for (size_t d = 0; d < Dim; ++d) {
+            logical_derivatives[d] =
+                Stencil::pointwise(q, strides[d], weights[d]);
           }
-          partial_derivatives(element,
-                              static_cast<int>(Dim) * var + static_cast<int>(i),
-                              cell[2], cell[1], cell[0]) = derivative;
+          for (size_t i = 0; i < Dim; ++i) {
+            double derivative =
+                inverse_jacobian_at_point[i] * logical_derivatives[0];
+            for (size_t j = 1; j < Dim; ++j) {
+              derivative += inverse_jacobian_at_point[Dim * j + i] *
+                            logical_derivatives[j];
+            }
+            partial_derivatives(element, Dim * var + i, cell[2], cell[1],
+                                cell[0]) = derivative;
+          }
         }
       });
 }

@@ -307,9 +307,9 @@ void TimeDerivativeOnDevice<Correction>::apply(
     // The padded view may have wider ghost zones than the reconstruction needs
     const auto ghost_width = static_cast<int>(::fd::device::detail::ghost_width(
         padded_ghost_variables, subcell_extents_));
-    const ::fd::device::detail::BatchCells cells{
+    // One thread per cell, looping over the variables
+    const ::fd::device::detail::BatchPoints points{
         number_of_elements_,
-        number_of_gh_variables,
         {static_cast<int>(subcell_extents_[0]),
          static_cast<int>(subcell_extents_[1]),
          static_cast<int>(subcell_extents_[2])}};
@@ -317,12 +317,14 @@ void TimeDerivativeOnDevice<Correction>::apply(
         "GhValenciaDivClean::subcell::TimeDerivativeOnDevice::filtered_"
         "interior",
         Kokkos::RangePolicy<Kokkos::DefaultExecutionSpace,
-                            Kokkos::IndexType<int>>(exec, 0, cells.size()),
+                            Kokkos::IndexType<int>>(exec, 0, points.size()),
         KOKKOS_LAMBDA(const int index) {
-          const auto [element, var, cell] = cells(index);
-          padded_gh_variables(element, var, cell[2] + ghost_width,
-                              cell[1] + ghost_width, cell[0] + ghost_width) =
-              evolved_gh_variables(element, var, cell[2], cell[1], cell[0]);
+          const auto [element, cell] = points(index);
+          for (size_t var = 0; var < number_of_gh_variables; ++var) {
+            padded_gh_variables(element, var, cell[2] + ghost_width,
+                                cell[1] + ghost_width, cell[0] + ghost_width) =
+                evolved_gh_variables(element, var, cell[2], cell[1], cell[0]);
+          }
         });
   }
 

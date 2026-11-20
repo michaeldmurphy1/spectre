@@ -51,23 +51,31 @@ void add_cartesian_flux_divergence(
 #endif  // SPECTRE_DEBUG
   }
 
-  const detail::BatchCells cells{dt_vars.extent(0), dt_vars.extent(1), extents};
+  // One thread per cell, looping over the variables, so the determinant is
+  // loaded once for all variables
+  const size_t number_of_variables = dt_vars.extent(1);
+  const detail::BatchPoints points{dt_vars.extent(0), extents};
   Kokkos::parallel_for(
       "fd::device::add_cartesian_flux_divergence",
       Kokkos::RangePolicy<Kokkos::DefaultExecutionSpace,
-                          Kokkos::IndexType<int>>(exec, 0, cells.size()),
+                          Kokkos::IndexType<int>>(exec, 0, points.size()),
       KOKKOS_LAMBDA(const int index) {
-        const auto [element, var, cell] = cells(index);
+        const auto [element, cell] = points(index);
         const double det_inv_jacobian =
             det_inverse_jacobian(element, 0, cell[2], cell[1], cell[0]);
-        double& dt_var = dt_vars(element, var, cell[2], cell[1], cell[0]);
+        Kokkos::Array<Kokkos::Array<int, 3>, Dim> upper_faces{};
         for (size_t d = 0; d < Dim; ++d) {
-          Kokkos::Array<int, 3> upper_face = cell;
-          ++upper_face[d];
-          dt_var += inverse_spacings[d] * det_inv_jacobian *
-                    (corrections[d](element, var, upper_face[2], upper_face[1],
-                                    upper_face[0]) -
-                     corrections[d](element, var, cell[2], cell[1], cell[0]));
+          upper_faces[d] = cell;
+          ++upper_faces[d][d];
+        }
+        for (size_t var = 0; var < number_of_variables; ++var) {
+          double& dt_var = dt_vars(element, var, cell[2], cell[1], cell[0]);
+          for (size_t d = 0; d < Dim; ++d) {
+            dt_var += inverse_spacings[d] * det_inv_jacobian *
+                      (corrections[d](element, var, upper_faces[d][2],
+                                      upper_faces[d][1], upper_faces[d][0]) -
+                       corrections[d](element, var, cell[2], cell[1], cell[0]));
+          }
         }
       });
 }

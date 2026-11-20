@@ -1159,18 +1159,16 @@ void test_impl(const Spectral::Quadrature quadrature,
           mortar_infos.at(mortar_id).mortar_size();
       const Mesh<Dim - 1> face_mesh = mesh.slice_away(dimension);
 
-      auto& dt_boundary_correction =
-          [&dt_boundary_correction_on_mortar,
-           &dt_boundary_correction_projected_onto_face, &face_mesh,
-           &mortar_mesh, &mortar_size]() -> Variables<dt_variables_tags>& {
-        if (Spectral::needs_projection(face_mesh, mortar_mesh, mortar_size)) {
-          dt_boundary_correction_projected_onto_face =
-              ::dg::project_from_mortar(dt_boundary_correction_on_mortar,
-                                        face_mesh, mortar_mesh, mortar_size);
-          return dt_boundary_correction_projected_onto_face;
-        }
-        return dt_boundary_correction_on_mortar;
-      }();
+      Variables<dt_variables_tags>* dt_boundary_correction_on_face =
+          &dt_boundary_correction_on_mortar;
+      if (Spectral::needs_projection(face_mesh, mortar_mesh, mortar_size)) {
+        dt_boundary_correction_projected_onto_face =
+            ::dg::project_from_mortar(dt_boundary_correction_on_mortar,
+                                      face_mesh, mortar_mesh, mortar_size);
+        dt_boundary_correction_on_face =
+            &dt_boundary_correction_projected_onto_face;
+      }
+      auto& dt_boundary_correction = *dt_boundary_correction_on_face;
 
       // Lift the boundary terms from the face into the volume
       Scalar<DataVector> magnitude_of_face_normal{};

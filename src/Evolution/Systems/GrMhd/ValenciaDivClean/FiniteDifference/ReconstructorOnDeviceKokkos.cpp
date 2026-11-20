@@ -162,11 +162,14 @@ void ReconstructorOnDevice::reconstruct(
     Kokkos::parallel_for(
         "grmhd::ValenciaDivClean::fd::ReconstructorOnDevice::"
         "rho_times_temperature",
-        Kokkos::MDRangePolicy<Kokkos::DefaultExecutionSpace, Kokkos::Rank<4>,
-                              Kokkos::IndexType<size_t>>(
-            exec, {0, 0, 0, 0},
-            {padded.extent(0), padded.extent(2), padded.extent(3),
-             padded.extent(4)}),
+        // `Iterate::Right`, so consecutive threads access consecutive `i` (the
+        // default on GPUs iterates fastest over the elements)
+        Kokkos::MDRangePolicy<
+            Kokkos::DefaultExecutionSpace,
+            Kokkos::Rank<4, Kokkos::Iterate::Right, Kokkos::Iterate::Right>,
+            Kokkos::IndexType<size_t>>(exec, {0, 0, 0, 0},
+                                       {padded.extent(0), padded.extent(2),
+                                        padded.extent(3), padded.extent(4)}),
         KOKKOS_LAMBDA(const size_t e, const size_t k, const size_t j,
                       const size_t i) {
           const size_t outside = (k < ghost_width or k >= interior_end[0]) +
@@ -223,8 +226,10 @@ void ReconstructorOnDevice::reconstruct(
         Kokkos::parallel_for(
             "grmhd::ValenciaDivClean::fd::ReconstructorOnDevice::"
             "divide_by_rest_mass_density",
-            Kokkos::MDRangePolicy<Kokkos::DefaultExecutionSpace,
-                                  Kokkos::Rank<4>, Kokkos::IndexType<size_t>>(
+            Kokkos::MDRangePolicy<
+                Kokkos::DefaultExecutionSpace,
+                Kokkos::Rank<4, Kokkos::Iterate::Right, Kokkos::Iterate::Right>,
+                Kokkos::IndexType<size_t>>(
                 exec, {0, 0, 0, 0},
                 {face_vars.extent(0), face_vars.extent(2), face_vars.extent(3),
                  face_vars.extent(4)}),

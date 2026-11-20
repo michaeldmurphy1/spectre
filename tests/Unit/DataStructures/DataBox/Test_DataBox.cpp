@@ -2082,11 +2082,8 @@ struct ParentCompute : Parent<N>, db::ComputeTag {
                              Boxed<double>(*arg.second * 2.));
   }
   using argument_tags = tmpl::list<Parent<N - 1>>;
-  static int count;
+  static inline int count = 0;
 };
-
-template <size_t N>
-int ParentCompute<N>::count = 0;
 
 template <size_t N>
 struct First : db::SimpleTag {
@@ -2691,11 +2688,8 @@ struct CountingFunc {
     count++;
     *result = 8.2;
   }
-  static int count;
+  static inline int count = 0;
 };
-
-template <int Id>
-int CountingFunc<Id>::count = 0;
 
 template <int Id>
 struct CountingTag : db::SimpleTag {
@@ -2724,11 +2718,8 @@ struct CountingTagDoubleCompute : CountingTagDouble<SecondId>, db::ComputeTag {
     *result = *t * 6.0;
   }
   using argument_tags = tmpl::list<Second<SecondId>>;
-  static int count;
+  static inline int count = 0;
 };
-
-template <size_t SecondId>
-int CountingTagDoubleCompute<SecondId>::count = 0;
 
 // clang-tidy: this function is too long. Yes, well we need to check lots
 void serialization_subitem_compute_items() {  // NOLINT
@@ -3587,12 +3578,8 @@ struct CopyFromOptionCompute : CopyFromOption<Label>, db::ComputeTag {
     *result = value;
   }
   // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-  static int calls;
+  static inline int calls = 0;
 };
-
-template <int Label>
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-int CopyFromOptionCompute<Label>::calls = 0;
 }  // namespace test_databox_tags
 
 void test_ambiguous_tags() {

@@ -1045,13 +1045,14 @@ SPECTRE_ALWAYS_INLINE bool DataBox<tmpl::list<Tags...>>::reset_compute_item() {
     return was_evaluated;
   } else if constexpr (db::is_reference_tag_v<ImmutableItemTag>) {
     return true;
+  } else {
+    ERROR(
+        "Trying to reset a tag that is neither a compute or reference tag. "
+        "This is an implementation bug. A decision needs to be made as to "
+        "whether the tag was previously evaluated or not. If it was not, then "
+        "anything that depends on this tag will not be reset.");
+    return false;
   }
-  ERROR(
-      "Trying to reset a tag that is neither a compute or reference tag. This "
-      "is an implementation bug. A decision needs to be made as to whether the "
-      "tag was previously evaluated or not. If it was not, then anything that "
-      "depends on this tag will not be reset.");
-  return false;
 }
 
 template <typename... Tags>

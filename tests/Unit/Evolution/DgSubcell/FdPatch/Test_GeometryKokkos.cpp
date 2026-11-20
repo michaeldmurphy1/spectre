@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -611,6 +612,22 @@ void test_non_affine_map() {
           logical_to_grid.corners),
       Catch::Matchers::ContainsSubstring(
           "FD patches only support affine grid to inertial maps"));
+  // A map that isn't finite, e.g. because a function of time is NaN, isn't
+  // taken as affine
+  auto nan_functions_of_time = make_functions_of_time(time, true);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  nan_functions_of_time["Translation"] =
+      std::make_unique<domain::FunctionsOfTime::PiecewisePolynomial<2>>(
+          0.0,
+          std::array<DataVector, 3>{
+              {{nan, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}}},
+          time + 1.0);
+  CHECK_THROWS_WITH(
+      evolution::patches::affine_grid_to_inertial(*make_grid_to_inertial(),
+                                                  time, nan_functions_of_time,
+                                                  logical_to_grid.corners),
+      Catch::Matchers::ContainsSubstring(
+          "The grid to inertial map isn't finite at the grid origin"));
 }
 }  // namespace
 

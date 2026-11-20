@@ -13,6 +13,7 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Domain/CoordinateMaps/CoordinateMap.hpp"
 #include "Domain/CoordinateMaps/DeviceMap.hpp"
+#include "Utilities/Algorithm.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 
@@ -62,7 +63,27 @@ AffineGridToInertial affine_grid_to_inertial(
     }
   }
 
-  // Check that the map is affine at the sample points
+  // A map that isn't defined at the origin (e.g. a singular radial map) can't
+  // be sampled there
+  const auto all_finite = [](const auto& tensor) {
+    return alg::all_of(tensor,
+                       [](const double value) { return std::isfinite(value); });
+  };
+  if (not(all_finite(offset) and all_finite(matrix) and
+          all_finite(result.inverse_jacobian) and
+          all_finite(result.velocity_offset) and
+          all_finite(result.velocity_matrix))) {
+    ERROR(
+        "The grid to inertial map isn't finite at the grid origin or the "
+        "unit vectors (it maps the origin to "
+        << offset << " with the Jacobian " << matrix
+        << " and the mesh velocity " << origin_velocity
+        << "). FD patches only support affine grid to inertial maps, which "
+           "are sampled there.");
+  }
+
+  // Check that the map is affine at the sample points. The comparisons are
+  // written so that NaN fails them.
   constexpr double tolerance = 1.0e-10;
   const auto max_abs = [](const auto& tensor) {
     double value = 0.0;
@@ -97,8 +118,9 @@ AffineGridToInertial affine_grid_to_inertial(
       for (size_t j = 0; j < 3; ++j) {
         expected_mapped += matrix.get(i, j) * point.get(j);
         expected_velocity += result.velocity_matrix.get(i, j) * point.get(j);
-        if (std::abs(all_inv_jac.get(j, i)[p] - inverse_jacobian.get(j, i)) >
-            tolerance * inverse_scale) {
+        if (not(std::abs(all_inv_jac.get(j, i)[p] -
+                         inverse_jacobian.get(j, i)) <=
+                tolerance * inverse_scale)) {
           ERROR(
               "The grid to inertial map isn't affine: its inverse Jacobian "
               "at the grid point "
@@ -107,10 +129,10 @@ AffineGridToInertial affine_grid_to_inertial(
               << ". FD patches only support affine grid to inertial maps.");
         }
       }
-      if (std::abs(all_mapped.get(i)[p] - expected_mapped) >
-              tolerance * matrix_scale * point_scale or
-          std::abs(all_velocities.get(i)[p] - expected_velocity) >
-              tolerance * velocity_scale * point_scale) {
+      if (not(std::abs(all_mapped.get(i)[p] - expected_mapped) <=
+                  tolerance * matrix_scale * point_scale and
+              std::abs(all_velocities.get(i)[p] - expected_velocity) <=
+                  tolerance * velocity_scale * point_scale)) {
         tnsr::I<double, 3, Frame::Inertial> mapped{};
         tnsr::I<double, 3, Frame::Inertial> velocity{};
         for (size_t d = 0; d < 3; ++d) {

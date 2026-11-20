@@ -10,6 +10,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   ActionsKokkos.hpp
+  DeviceObservablesKokkos.hpp
   GridToInertial.hpp
   HostCopyKokkos.hpp
   InboxTags.hpp
@@ -26,6 +27,7 @@ spectre_target_headers(
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  DeviceObservablesKokkos.cpp
   GridToInertial.cpp
   PatchElementsKokkos.cpp
   PatchTable.cpp

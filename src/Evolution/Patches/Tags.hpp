@@ -6,8 +6,10 @@
 #include <cstddef>
 #include <string>
 
+#include "DataStructures/DataBox/Tag.hpp"
 #include "Options/Auto.hpp"
 #include "Options/String.hpp"
+#include "Utilities/TMPL.hpp"
 
 namespace evolution::patches::OptionTags {
 /// \ingroup OptionGroupsGroup
@@ -32,6 +34,20 @@ struct MaxElementsPerPatch {
 };
 
 /// \ingroup OptionTagsGroup
+/// Whether patches compute the observations they support on the device (see
+/// `evolution::patches::Tags::ObserveOnDevice`)
+struct ObserveOnDevice {
+  using type = bool;
+  static constexpr Options::String help{
+      "Whether patches compute the observations they support (e.g. the norms "
+      "of ObserveNorms for the tensors the patch can compute on the device) "
+      "on the device, copying only their results to the host. Otherwise all "
+      "observations copy the variables of the elements to the host and "
+      "evaluate the events on DataBoxes of the elements there."};
+  using group = PatchesGroup;
+};
+
+/// \ingroup OptionTagsGroup
 /// Whether the elements outside patches avoid the processors of the patches
 /// (see `evolution::patches::PatchTable::dedicated_procs`)
 struct DedicatedProcs {
@@ -43,3 +59,16 @@ struct DedicatedProcs {
   using group = PatchesGroup;
 };
 }  // namespace evolution::patches::OptionTags
+
+namespace evolution::patches::Tags {
+/// Whether patches compute the observations they support on the device (see
+/// `OptionTags::ObserveOnDevice`)
+struct ObserveOnDevice : db::SimpleTag {
+  using type = bool;
+  using option_tags = tmpl::list<OptionTags::ObserveOnDevice>;
+  static constexpr bool pass_metavariables = false;
+  static bool create_from_options(const bool observe_on_device) {
+    return observe_on_device;
+  }
+};
+}  // namespace evolution::patches::Tags

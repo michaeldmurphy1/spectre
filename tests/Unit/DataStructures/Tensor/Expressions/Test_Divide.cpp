@@ -197,6 +197,17 @@ void test_divide_rank0_denominator(const gsl::not_null<Generator*> generator,
                             T.get(i, k) / result3_expected_denominator);
     }
   }
+
+  // \f$L_{i}{}^{k} = L_{i}{}^{k} / R\f$ with `tenex::update`, starting from
+  // \f$L_{i}{}^{k} = T_{i}{}^{k}\f$
+  tnsr::iJ<DataType, dim> result4 = T;
+  tenex::update<ti::i, ti::K>(make_not_null(&result4),
+                              result4(ti::i, ti::K) / R());
+  for (size_t i = 0; i < dim; i++) {
+    for (size_t k = 0; k < dim; k++) {
+      CHECK_ITERABLE_APPROX(result4.get(i, k), T.get(i, k) / get(R));
+    }
+  }
 }
 
 // \brief Test the division of a tensor expression over a rank 0 tensor

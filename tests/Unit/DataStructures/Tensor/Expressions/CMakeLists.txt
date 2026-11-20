@@ -29,6 +29,10 @@ set(LIBRARY_SOURCES
   Test_TimeIndex.cpp
   )
 
+if(SPECTRE_KOKKOS)
+  list(APPEND LIBRARY_SOURCES Test_EvaluateKokkos.cpp)
+endif()
+
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")
 
 target_link_libraries(
@@ -37,5 +41,6 @@ target_link_libraries(
   DataStructures
   GeneralRelativity
   GeneralRelativityHelpers
+  SpectreKokkos
   Utilities
   )

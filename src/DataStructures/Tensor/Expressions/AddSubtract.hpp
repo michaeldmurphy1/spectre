@@ -25,6 +25,7 @@
 #include "DataStructures/Tensor/Expressions/TimeIndex.hpp"
 #include "Utilities/Algorithm.hpp"
 #include "Utilities/ForceInline.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeArray.hpp"
 #include "Utilities/Requires.hpp"
 #include "Utilities/TMPL.hpp"
@@ -438,8 +439,7 @@ struct AddSub<T1, T2, ArgsList1<Args1...>, ArgsList2<Args2...>, Sign>
   static constexpr bool primary_subtree_contains_primary_start =
       is_primary_start or primary_child_subtree_contains_primary_start;
 
-  AddSub(T1 t1, T2 t2) : t1_(std::move(t1)), t2_(std::move(t2)) {}
-  ~AddSub() override = default;
+  constexpr AddSub(T1 t1, T2 t2) : t1_(std::move(t1)), t2_(std::move(t2)) {}
 
   /// \brief Assert that the LHS tensor of the equation does not also appear in
   /// this expression's subtree
@@ -492,9 +492,10 @@ struct AddSub<T1, T2, ArgsList1<Args1...>, ArgsList2<Args2...>, Sign>
   ///
   /// \param op1_multi_index the multi-index of the left operand
   /// \return the second operand's multi-index
-  SPECTRE_ALWAYS_INLINE std::array<size_t, num_tensor_indices_op2>
+  SPECTRE_ALWAYS_INLINE static constexpr std::array<size_t,
+                                                    num_tensor_indices_op2>
   get_op2_multi_index(
-      const std::array<size_t, num_tensor_indices>& op1_multi_index) const {
+      const std::array<size_t, num_tensor_indices>& op1_multi_index) {
     if constexpr (ops_have_generic_indices_at_same_positions) {
       if constexpr (op1_spatial_spacetime_index_positions.size() != 0 or
                     op2_spatial_spacetime_index_positions.size() != 0) {
@@ -646,6 +647,23 @@ struct AddSub<T1, T2, ArgsList1<Args1...>, ArgsList2<Args2...>, Sign>
       const std::array<size_t, num_tensor_indices>& result_multi_index) const {
     return add_or_subtract(result_multi_index,
                            get_op2_multi_index(result_multi_index));
+  }
+
+  /// \brief Returns the value of the component at the compile-time
+  /// multi-index `MultiIndex`
+  ///
+  /// \details The multi-indices of the operands are computed at compile
+  /// time, so this is free of runtime index arithmetic. This is used for
+  /// device-capable data types (see `tenex::evaluate`).
+  template <std::array<size_t, num_tensor_indices> MultiIndex>
+  SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION decltype(auto) get() const {
+    if constexpr (Sign == 1) {
+      return t1_.template get<MultiIndex>() +
+             t2_.template get<get_op2_multi_index(MultiIndex)>();
+    } else {
+      return t1_.template get<MultiIndex>() -
+             t2_.template get<get_op2_multi_index(MultiIndex)>();
+    }
   }
 
   /// \brief Helper for evaluating the LHS Tensor's result component at this
@@ -858,7 +876,7 @@ struct AddSub<T1, T2, ArgsList1<Args1...>, ArgsList2<Args2...>, Sign>
 template <typename T1, typename T2, typename X1, typename X2, typename Symm1,
           typename Symm2, typename IndexList1, typename IndexList2,
           typename Args1, typename Args2>
-SPECTRE_ALWAYS_INLINE auto operator+(
+SPECTRE_ALWAYS_INLINE constexpr auto operator+(
     const TensorExpression<T1, X1, Symm1, IndexList1, Args1>& t1,
     const TensorExpression<T2, X2, Symm2, IndexList2, Args2>& t2) {
   using op1_generic_indices =
@@ -902,7 +920,7 @@ SPECTRE_ALWAYS_INLINE auto operator+(
 template <typename T, typename X, typename Symm, typename IndexList,
           typename... Args, typename N,
           Requires<std::is_arithmetic_v<N>> = nullptr>
-SPECTRE_ALWAYS_INLINE auto operator+(
+SPECTRE_ALWAYS_INLINE constexpr auto operator+(
     const TensorExpression<T, X, Symm, IndexList, tmpl::list<Args...>>& t,
     const N number) {
   static_assert(
@@ -914,7 +932,7 @@ SPECTRE_ALWAYS_INLINE auto operator+(
 template <typename T, typename X, typename Symm, typename IndexList,
           typename... Args, typename N,
           Requires<std::is_arithmetic_v<N>> = nullptr>
-SPECTRE_ALWAYS_INLINE auto operator+(
+SPECTRE_ALWAYS_INLINE constexpr auto operator+(
     const N number,
     const TensorExpression<T, X, Symm, IndexList, tmpl::list<Args...>>& t) {
   static_assert(
@@ -925,7 +943,7 @@ SPECTRE_ALWAYS_INLINE auto operator+(
 }
 template <typename T, typename X, typename Symm, typename IndexList,
           typename... Args, typename N>
-SPECTRE_ALWAYS_INLINE auto operator+(
+SPECTRE_ALWAYS_INLINE constexpr auto operator+(
     const TensorExpression<T, X, Symm, IndexList, tmpl::list<Args...>>& t,
     const std::complex<N>& number) {
   static_assert(
@@ -936,7 +954,7 @@ SPECTRE_ALWAYS_INLINE auto operator+(
 }
 template <typename T, typename X, typename Symm, typename IndexList,
           typename... Args, typename N>
-SPECTRE_ALWAYS_INLINE auto operator+(
+SPECTRE_ALWAYS_INLINE constexpr auto operator+(
     const std::complex<N>& number,
     const TensorExpression<T, X, Symm, IndexList, tmpl::list<Args...>>& t) {
   static_assert(
@@ -953,7 +971,7 @@ SPECTRE_ALWAYS_INLINE auto operator+(
 template <typename T1, typename T2, typename X1, typename X2, typename Symm1,
           typename Symm2, typename IndexList1, typename IndexList2,
           typename Args1, typename Args2>
-SPECTRE_ALWAYS_INLINE auto operator-(
+SPECTRE_ALWAYS_INLINE constexpr auto operator-(
     const TensorExpression<T1, X1, Symm1, IndexList1, Args1>& t1,
     const TensorExpression<T2, X2, Symm2, IndexList2, Args2>& t2) {
   using op1_generic_indices =
@@ -993,7 +1011,7 @@ SPECTRE_ALWAYS_INLINE auto operator-(
 template <typename T, typename X, typename Symm, typename IndexList,
           typename... Args, typename N,
           Requires<std::is_arithmetic_v<N>> = nullptr>
-SPECTRE_ALWAYS_INLINE auto operator-(
+SPECTRE_ALWAYS_INLINE constexpr auto operator-(
     const TensorExpression<T, X, Symm, IndexList, tmpl::list<Args...>>& t,
     const N number) {
   static_assert(
@@ -1005,7 +1023,7 @@ SPECTRE_ALWAYS_INLINE auto operator-(
 template <typename T, typename X, typename Symm, typename IndexList,
           typename... Args, typename N,
           Requires<std::is_arithmetic_v<N>> = nullptr>
-SPECTRE_ALWAYS_INLINE auto operator-(
+SPECTRE_ALWAYS_INLINE constexpr auto operator-(
     const N number,
     const TensorExpression<T, X, Symm, IndexList, tmpl::list<Args...>>& t) {
   static_assert(
@@ -1016,7 +1034,7 @@ SPECTRE_ALWAYS_INLINE auto operator-(
 }
 template <typename T, typename X, typename Symm, typename IndexList,
           typename... Args, typename N>
-SPECTRE_ALWAYS_INLINE auto operator-(
+SPECTRE_ALWAYS_INLINE constexpr auto operator-(
     const TensorExpression<T, X, Symm, IndexList, tmpl::list<Args...>>& t,
     const std::complex<N>& number) {
   static_assert(
@@ -1027,7 +1045,7 @@ SPECTRE_ALWAYS_INLINE auto operator-(
 }
 template <typename T, typename X, typename Symm, typename IndexList,
           typename... Args, typename N>
-SPECTRE_ALWAYS_INLINE auto operator-(
+SPECTRE_ALWAYS_INLINE constexpr auto operator-(
     const std::complex<N>& number,
     const TensorExpression<T, X, Symm, IndexList, tmpl::list<Args...>>& t) {
   static_assert(

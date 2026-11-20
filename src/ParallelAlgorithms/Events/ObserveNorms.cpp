@@ -31,51 +31,23 @@ void check_norm_is_observable(const std::string& tensor_name,
   }
 }
 
-template <size_t Dim>
-void fill_norm_values_and_names(
+namespace {
+// Fills the norm of each component of the tensor (`Individual`) or of the
+// whole tensor (`Sum`), where `component_norm(storage_index)` is the norm
+// `tensor_norm_type` of a component
+template <typename ComponentNorm>
+void fill_norm_values_and_names_impl(
     const gsl::not_null<std::unordered_map<
         std::string, std::pair<std::vector<double>, std::vector<std::string>>>*>
         norm_values_and_names,
-    const std::pair<std::vector<std::string>, std::vector<DataVector>>&
-        names_and_components,
-    const Mesh<Dim>& mesh, const DataVector& det_jacobian,
+    const std::vector<std::string>& component_names,
     const std::string& tensor_name, const std::string& tensor_norm_type,
-    const std::string& tensor_component, const size_t number_of_points) {
+    const std::string& tensor_component, const ComponentNorm& component_norm) {
   auto& [values, names] = (*norm_values_and_names)[tensor_norm_type];
-  const auto& components = names_and_components.second;
-  if (components[0].size() != number_of_points) {
-    ERROR("The number of grid points of the mesh is "
-          << number_of_points << " but the tensor '" << tensor_name << "' has "
-          << components[0].size()
-          << " points. This means you're computing norms of tensors over "
-             "different grids, which will give the wrong answer for "
-             "norms that use the grid points.");
-  }
-
-  using std::abs;
-  const auto& component_names = names_and_components.first;
   if (tensor_component == "Individual") {
     for (size_t storage_index = 0; storage_index < component_names.size();
          ++storage_index) {
-      if (tensor_norm_type == "Max") {
-        values.push_back(max(components[storage_index]));
-      } else if (tensor_norm_type == "Min") {
-        values.push_back(min(components[storage_index]));
-      } else if (tensor_norm_type == "L1Norm") {
-        values.push_back(alg::accumulate(abs(components[storage_index]), 0.0));
-      } else if (tensor_norm_type == "L1IntegralNorm") {
-        values.push_back(definite_integral(
-            abs(components[storage_index]) * det_jacobian, mesh));
-      } else if (tensor_norm_type == "L2Norm") {
-        values.push_back(
-            alg::accumulate(square(components[storage_index]), 0.0));
-      } else if (tensor_norm_type == "L2IntegralNorm") {
-        values.push_back(definite_integral(
-            square(components[storage_index]) * det_jacobian, mesh));
-      } else if (tensor_norm_type == "VolumeIntegral") {
-        values.push_back(
-            definite_integral(components[storage_index] * det_jacobian, mesh));
-      }
+      values.push_back(component_norm(storage_index));
       names.push_back(
           tensor_norm_type + "(" +
           (component_names.size() == 1
@@ -93,28 +65,99 @@ void fill_norm_values_and_names(
     for (size_t storage_index = 0; storage_index < component_names.size();
          ++storage_index) {
       if (tensor_norm_type == "Max") {
-        value = std::max(value, max(components[storage_index]));
+        value = std::max(value, component_norm(storage_index));
       } else if (tensor_norm_type == "Min") {
-        value = std::min(value, min(components[storage_index]));
-      } else if (tensor_norm_type == "L1Norm") {
-        value += alg::accumulate(abs(components[storage_index]), 0.0);
-      } else if (tensor_norm_type == "L1IntegralNorm") {
-        value += definite_integral(
-            abs(components[storage_index]) * det_jacobian, mesh);
-      } else if (tensor_norm_type == "L2Norm") {
-        value += alg::accumulate(square(components[storage_index]), 0.0);
-      } else if (tensor_norm_type == "L2IntegralNorm") {
-        value += definite_integral(
-            square(components[storage_index]) * det_jacobian, mesh);
-      } else if (tensor_norm_type == "VolumeIntegral") {
-        value +=
-            definite_integral(components[storage_index] * det_jacobian, mesh);
+        value = std::min(value, component_norm(storage_index));
+      } else {
+        value += component_norm(storage_index);
       }
     }
 
     names.push_back(tensor_norm_type + "(" + tensor_name + ")");
     values.push_back(value);
   }
+}
+}  // namespace
+
+template <size_t Dim>
+void fill_norm_values_and_names(
+    const gsl::not_null<std::unordered_map<
+        std::string, std::pair<std::vector<double>, std::vector<std::string>>>*>
+        norm_values_and_names,
+    const std::pair<std::vector<std::string>, std::vector<DataVector>>&
+        names_and_components,
+    const Mesh<Dim>& mesh, const DataVector& det_jacobian,
+    const std::string& tensor_name, const std::string& tensor_norm_type,
+    const std::string& tensor_component, const size_t number_of_points) {
+  const auto& components = names_and_components.second;
+  if (components[0].size() != number_of_points) {
+    ERROR("The number of grid points of the mesh is "
+          << number_of_points << " but the tensor '" << tensor_name << "' has "
+          << components[0].size()
+          << " points. This means you're computing norms of tensors over "
+             "different grids, which will give the wrong answer for "
+             "norms that use the grid points.");
+  }
+
+  using std::abs;
+  fill_norm_values_and_names_impl(
+      norm_values_and_names, names_and_components.first, tensor_name,
+      tensor_norm_type, tensor_component,
+      [&](const size_t storage_index) -> double {
+        const DataVector& component = components[storage_index];
+        if (tensor_norm_type == "Max") {
+          return max(component);
+        } else if (tensor_norm_type == "Min") {
+          return min(component);
+        } else if (tensor_norm_type == "L1Norm") {
+          return alg::accumulate(abs(component), 0.0);
+        } else if (tensor_norm_type == "L1IntegralNorm") {
+          return definite_integral(abs(component) * det_jacobian, mesh);
+        } else if (tensor_norm_type == "L2Norm") {
+          return alg::accumulate(square(component), 0.0);
+        } else if (tensor_norm_type == "L2IntegralNorm") {
+          return definite_integral(square(component) * det_jacobian, mesh);
+        } else if (tensor_norm_type == "VolumeIntegral") {
+          return definite_integral(component * det_jacobian, mesh);
+        }
+        ERROR("Unknown norm type " << tensor_norm_type);
+      });
+}
+
+void fill_norm_values_and_names(
+    const gsl::not_null<std::unordered_map<
+        std::string, std::pair<std::vector<double>, std::vector<std::string>>>*>
+        norm_values_and_names,
+    const std::vector<std::string>& component_names,
+    const std::vector<NormStatistics>& component_statistics,
+    const std::string& tensor_name, const std::string& tensor_norm_type,
+    const std::string& tensor_component) {
+  if (component_statistics.size() != component_names.size()) {
+    ERROR("The tensor '" << tensor_name << "' has " << component_names.size()
+                         << " components but norm statistics of "
+                         << component_statistics.size());
+  }
+  fill_norm_values_and_names_impl(
+      norm_values_and_names, component_names, tensor_name, tensor_norm_type,
+      tensor_component, [&](const size_t storage_index) -> double {
+        const NormStatistics& statistics = component_statistics[storage_index];
+        if (tensor_norm_type == "Max") {
+          return statistics.max;
+        } else if (tensor_norm_type == "Min") {
+          return statistics.min;
+        } else if (tensor_norm_type == "L1Norm") {
+          return statistics.sum_abs;
+        } else if (tensor_norm_type == "L1IntegralNorm") {
+          return statistics.integral_abs;
+        } else if (tensor_norm_type == "L2Norm") {
+          return statistics.sum_square;
+        } else if (tensor_norm_type == "L2IntegralNorm") {
+          return statistics.integral_square;
+        } else if (tensor_norm_type == "VolumeIntegral") {
+          return statistics.integral;
+        }
+        ERROR("Unknown norm type " << tensor_norm_type);
+      });
 }
 
 std::pair<std::vector<std::string>, std::vector<DataVector>>

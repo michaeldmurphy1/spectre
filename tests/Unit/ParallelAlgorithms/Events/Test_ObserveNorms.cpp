@@ -39,9 +39,11 @@
 #include "Framework/TestCreation.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "IO/Observer/Actions/RegisterEvents.hpp"
+#include "IO/Observer/GetSectionObservationKey.hpp"
 #include "IO/Observer/ObservationId.hpp"
 #include "IO/Observer/ObserverComponent.hpp"
 #include "IO/Observer/Tags.hpp"
+#include "NumericalAlgorithms/LinearOperators/DefiniteIntegral.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
@@ -50,11 +52,14 @@
 #include "Parallel/Phase.hpp"
 #include "Parallel/PhaseDependentActionList.hpp"
 #include "Parallel/Reduction.hpp"
+#include "ParallelAlgorithms/Events/NormStatistics.hpp"
 #include "ParallelAlgorithms/Events/ObserveNorms.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/MakeArray.hpp"
+#include "Utilities/Numeric.hpp"
+#include "Utilities/OptionalHelpers.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/Serialization/RegisterDerivedClassesWithCharm.hpp"
 #include "Utilities/Serialization/Serialize.hpp"
@@ -222,6 +227,25 @@ Domain<3> make_test_domain() {
                    {{"Shells", {"Shell0", "Shell1", "Shell2"}}}};
 }
 
+// The norm statistics of the components of the tensor `Tag`, as
+// `ObserveNorms` computes the norms
+template <typename Tag, typename Box>
+std::pair<std::vector<std::string>, std::vector<Events::NormStatistics>>
+norm_statistics(const Box& box, const Mesh<3>& mesh,
+                const DataVector& det_jacobian) {
+  const auto [names, components] = value(get<Tag>(box)).get_vector_of_data();
+  std::vector<Events::NormStatistics> statistics{};
+  for (const DataVector& component : components) {
+    statistics.push_back(
+        {max(component), min(component), alg::accumulate(abs(component), 0.0),
+         alg::accumulate(square(component), 0.0),
+         definite_integral(abs(component) * det_jacobian, mesh),
+         definite_integral(square(component) * det_jacobian, mesh),
+         definite_integral(component * det_jacobian, mesh)});
+  }
+  return {names, statistics};
+}
+
 template <typename ArraySectionIdTag, typename ObserveEvent>
 void test(const std::unique_ptr<ObserveEvent> observe,
           const Spectral::Basis basis, const Spectral::Quadrature quadrature,
@@ -379,6 +403,45 @@ void test(const std::unique_ptr<ObserveEvent> observe,
   CHECK(results.volume_integral_values[1] == approx(41.0));
   CHECK(results.volume_integral_values[2] == approx(68.0));
   CHECK(results.volume_integral_values[3] == approx(95.0));
+
+  // The same observation from the norm statistics of the tensors, as computed
+  // elsewhere (e.g. on a device)
+  const auto results_from_box = results;
+  const DataVector det_jacobian = 1.0 / get(det_inv_jacobian);
+  const Events::NormStatisticsOfTensors statistics{
+      {"Var0", norm_statistics<Var0>(obs_box, mesh, det_jacobian)},
+      {"Var1", norm_statistics<Var1>(obs_box, mesh, det_jacobian)},
+      {"Var0TimesTwo",
+       norm_statistics<Var0TimesTwo>(obs_box, mesh, det_jacobian)},
+      {"Var0TimesThree",
+       norm_statistics<Var0TimesThree>(obs_box, mesh, det_jacobian)}};
+  const auto& observe_norms =
+      dynamic_cast<const ObserveNormsEvent<ArraySectionIdTag>&>(*observe);
+  observe_norms.contribute_statistics(
+      ActionTesting::cache<element_component>(runner, array_index), array_index,
+      std::add_pointer_t<element_component>{}, {"TimeName", observation_time},
+      observers::get_section_observation_key<ArraySectionIdTag>(box),
+      get<domain::Tags::Domain<3>>(box), num_points,
+      definite_integral(det_jacobian, mesh), statistics);
+  ActionTesting::invoke_queued_simple_action<observer_component>(
+      make_not_null(&runner), 0);
+  CHECK(results.observation_id == results_from_box.observation_id);
+  CHECK(results.subfile_name == results_from_box.subfile_name);
+  CHECK(results.reduction_names == results_from_box.reduction_names);
+  CHECK(results.time == results_from_box.time);
+  CHECK(results.number_of_grid_points ==
+        results_from_box.number_of_grid_points);
+  CHECK(results.volume == results_from_box.volume);
+  CHECK(results.max_values == results_from_box.max_values);
+  CHECK(results.min_values == results_from_box.min_values);
+  CHECK(results.l1_norm_values == results_from_box.l1_norm_values);
+  CHECK(results.l1_integral_norm_values ==
+        results_from_box.l1_integral_norm_values);
+  CHECK(results.l2_norm_values == results_from_box.l2_norm_values);
+  CHECK(results.l2_integral_norm_values ==
+        results_from_box.l2_integral_norm_values);
+  CHECK(results.volume_integral_values ==
+        results_from_box.volume_integral_values);
 }
 
 template <Spectral::Basis basis, typename ArraySectionIdTag,

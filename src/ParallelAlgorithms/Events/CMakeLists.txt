@@ -27,6 +27,7 @@ spectre_target_headers(
   ErrorIfDataTooBig.hpp
   Factory.hpp
   MonitorMemory.hpp
+  NormStatistics.hpp
   ObserveAdaptiveSteppingDiagnostics.hpp
   ObserveConstantsPerElement.hpp
   ObserveDataBox.hpp

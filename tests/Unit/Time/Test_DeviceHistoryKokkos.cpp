@@ -135,13 +135,27 @@ void test_integration(const TimeStepper& stepper, const size_t order,
     copy_to_device(inserted.derivative, record.derivative);
   }
   check_matches(device_history, history);
+  // The slots that hold data
+  const auto slots_in_use = [&device_history]() {
+    size_t result = 0;
+    const auto count = [&result](const auto& record) {
+      result += record.value.has_value() ? 2 : 1;
+    };
+    for (const auto& record : device_history.bookkeeping()) {
+      count(record);
+    }
+    for (const auto& record : device_history.bookkeeping().substeps()) {
+      count(record);
+    }
+    return result;
+  };
+  size_t most_slots_in_use = slots_in_use();
 
   DataVector u = analytic(0.0);
   const DeviceBatch device_u("u", number_of_points, number_of_elements);
   copy_to_device(device_u, u);
 
   size_t dense_outputs = 0;
-  size_t capacity_after_first_step = 0;
   TimeStepId time_step_id(true, 0, slab.start());
   while (time_step_id.step_time() < slab.end()) {
     CAPTURE(time_step_id);
@@ -159,6 +173,7 @@ void test_integration(const TimeStepper& stepper, const size_t order,
           });
     }
     check_matches(device_history, history);
+    most_slots_in_use = std::max(most_slots_in_use, slots_in_use());
 
     // Dense output in the current and the previous step.  Steppers
     // using the derivative at the end of a step for dense output can
@@ -222,14 +237,10 @@ void test_integration(const TimeStepper& stepper, const size_t order,
     check_matches(device_history, history);
 
     time_step_id = stepper.next_time_id_for_error(time_step_id, time_step);
-    if (capacity_after_first_step == 0 and time_step_id.substep() == 0) {
-      capacity_after_first_step = device_history.capacity();
-    }
   }
   CHECK(dense_outputs > 0);
-  // The evolution reaches a steady state, so the history allocates
-  // no more slots after the first step.
-  CHECK(device_history.capacity() == capacity_after_first_step);
+  // The history allocates only as many slots as it uses at once
+  CHECK(device_history.capacity() == most_slots_in_use);
   CHECK_ITERABLE_CUSTOM_APPROX(u, analytic(slab.end().value()),
                                Approx::custom().epsilon(1.0e-2).scale(1.0));
 

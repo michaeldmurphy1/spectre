@@ -356,8 +356,11 @@ class DeviceHistory {
     if (unused != in_use.end()) {
       return static_cast<size_t>(unused - in_use.begin());
     }
+    // One more slot, so that the capacity is the most slots the time stepper
+    // uses at once (e.g. 5 for AdamsMoultonPc of order 3). Growing only
+    // happens in the first steps.
     const size_t slot = capacity();
-    reserve(exec, std::max(2 * capacity(), size_t{2}));
+    reserve(exec, capacity() + 1);
     return slot;
   }
 

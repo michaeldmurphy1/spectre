@@ -172,6 +172,45 @@ class BatchCells {
   Kokkos::Array<int, 3> extents_;
   int size_;
 };
+
+/*!
+ * \brief The cells `(element, z, y, x)` of a batch, without the variables,
+ * enumerated by a flat index with `x` varying fastest.
+ *
+ * Like `BatchCells`, but for kernels in which each thread loops over the
+ * variables of its cell: the cell index is decoded and the cell's data (e.g.
+ * an inverse Jacobian) is loaded once for all variables, and each variable is
+ * reached by adding its stride to pointers computed once. Consecutive threads
+ * still access consecutive `x` for each variable.
+ */
+class BatchPoints {
+ public:
+  struct Point {
+    int element;
+    /// The cell index in `(x, y, z)` order
+    Kokkos::Array<int, 3> index;
+  };
+
+  /// `extents` are in `(x, y, z)` order. Errors if the total number of cells
+  /// doesn't fit in an `int`.
+  BatchPoints(size_t number_of_elements, const Kokkos::Array<int, 3>& extents);
+
+  int size() const { return size_; }
+
+  KOKKOS_INLINE_FUNCTION Point operator()(int index) const {
+    Point result{};
+    for (size_t d = 0; d < 3; ++d) {
+      result.index[d] = index % extents_[d];
+      index /= extents_[d];
+    }
+    result.element = index;
+    return result;
+  }
+
+ private:
+  Kokkos::Array<int, 3> extents_;
+  int size_;
+};
 }  // namespace detail
 }  // namespace fd::device
 #endif  // SPECTRE_KOKKOS

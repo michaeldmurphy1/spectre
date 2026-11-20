@@ -10,6 +10,7 @@
 #include "DataStructures/DataBox/DataBox.hpp"
 #include "DataStructures/TaggedTuple.hpp"
 #include "Evolution/Patches/PatchTable.hpp"
+#include "Evolution/Patches/Tags.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Parallel/Algorithms/AlgorithmArray.hpp"
 #include "Parallel/GlobalCache.hpp"
@@ -74,7 +75,8 @@ struct PatchArray {
   using array_index = int;
 
   using const_global_cache_tags =
-      tmpl::list<typename Metavariables::patch_table_tag>;
+      tmpl::list<typename Metavariables::patch_table_tag,
+                 Tags::ObserveOnDevice>;
 
   using simple_tags_from_options = Parallel::get_simple_tags_from_options<
       Parallel::get_initialization_actions_list<phase_dependent_action_list>>;

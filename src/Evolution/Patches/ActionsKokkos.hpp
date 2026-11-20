@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -25,11 +26,14 @@
 #include "Domain/FunctionsOfTime/Tags.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Evolution/DiscontinuousGalerkin/InboxTags.hpp"
+#include "Evolution/Patches/DeviceObservablesKokkos.hpp"
 #include "Evolution/Patches/InboxTags.hpp"
 #include "Evolution/Patches/PatchTable.hpp"
 #include "Evolution/Patches/SlabSize.hpp"
+#include "Evolution/Patches/Tags.hpp"
 #include "IO/Observer/Actions/ObserverRegistration.hpp"
 #include "IO/Observer/Actions/RegisterEvents.hpp"
+#include "IO/Observer/GetSectionObservationKey.hpp"
 #include "IO/Observer/ObservationId.hpp"
 #include "IO/Observer/ObserverComponent.hpp"
 #include "IO/Observer/TypeOfObservation.hpp"
@@ -39,12 +43,14 @@
 #include "Parallel/ArrayIndex.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Parallel/Invoke.hpp"
+#include "Parallel/Printf/Printf.hpp"
 #include "ParallelAlgorithms/Actions/FunctionsOfTimeAreReady.hpp"
 #include "ParallelAlgorithms/Actions/Goto.hpp"
 #include "ParallelAlgorithms/Actions/MutateApply.hpp"
 #include "ParallelAlgorithms/Actions/TerminatePhase.hpp"
 #include "ParallelAlgorithms/Events/Completion.hpp"
 #include "ParallelAlgorithms/Events/ErrorIfDataTooBig.hpp"
+#include "ParallelAlgorithms/Events/NormStatistics.hpp"
 #include "ParallelAlgorithms/Events/ObserveFields.hpp"
 #include "ParallelAlgorithms/Events/ObserveNorms.hpp"
 #include "ParallelAlgorithms/Events/ObserveTimeStep.hpp"
@@ -505,9 +511,159 @@ void for_each_element_box(const gsl::not_null<db::DataBox<DbTagsList>*> box_ptr,
   }
 }
 
+// Whether `T` is an `Events::ObserveNorms`
+template <typename T>
+struct IsObserveNorms : std::false_type {};
+template <typename Fields, typename NonTensorComputeTags,
+          typename ArraySectionIdTag, typename OptionName>
+struct IsObserveNorms<::Events::ObserveNorms<Fields, NonTensorComputeTags,
+                                             ArraySectionIdTag, OptionName>>
+    : std::true_type {};
+
+template <typename Metavariables>
+using observe_norms_events =
+    tmpl::filter<events_on_elements<Metavariables>, IsObserveNorms<tmpl::_1>>;
+
+// Whether patches of type `Patch` can compute observables on the device (see
+// `Patch::device_observables`)
+template <typename Patch>
+concept ComputesDeviceObservables = requires(const std::string& name) {
+  { Patch::is_device_observable(name) } -> std::same_as<bool>;
+};
+
+// The tensors of the `ObserveNorms` `event` that patches of type `Patch` can't
+// compute on the device, or `std::nullopt` if `event` isn't an
+// `ObserveNorms` that patches can observe on the device at all
+template <typename Patch, typename Metavariables>
+std::optional<std::vector<std::string>> tensors_not_observable_on_device(
+    const Event& event) {
+  if constexpr (not ComputesDeviceObservables<Patch>) {
+    (void)event;
+    return std::nullopt;
+  } else {
+    std::optional<std::vector<std::string>> result{};
+    tmpl::for_each<observe_norms_events<Metavariables>>(
+        [&]<typename EventType>(tmpl::type_<EventType> /*meta*/) {
+          const auto* const derived_event =
+              dynamic_cast<const EventType*>(&event);
+          // Sections need the DataBox of the elements
+          if (derived_event != nullptr and
+              std::is_same_v<typename EventType::array_section_id_tag, void>) {
+            result = std::vector<std::string>{};
+            for (const std::string& name : derived_event->tensor_names()) {
+              if (not Patch::is_device_observable(name)) {
+                result->push_back(name);
+              }
+            }
+          }
+        });
+    return result;
+  }
+}
+
+// Whether the patch computes the observations of `event` on the device:
+// `ObserveNorms` of tensors the patch can all compute on the device
+template <typename Patch, typename Metavariables>
+bool observes_on_device(const Event& event) {
+  const auto missing =
+      tensors_not_observable_on_device<Patch, Metavariables>(event);
+  return missing.has_value() and missing->empty();
+}
+
+// Runs the `ObserveNorms` `events` (see `observes_on_device`) on the device:
+// the patch computes the observed tensors of all its elements on the device,
+// they are reduced there (see `norm_statistics_on_device`) and only the
+// results of each element are copied to the host and contributed to the
+// observer, as if the event had run on the DataBox of the element. With
+// `dense_output`, the tensors are computed from the last dense output of the
+// patch.
+template <typename PatchTag, typename ParallelComponent, typename DbTagsList,
+          typename Metavariables>
+void observe_norms_on_device(const std::vector<const Event*>& events,
+                             const gsl::not_null<db::DataBox<DbTagsList>*> box,
+                             Parallel::GlobalCache<Metavariables>& cache,
+                             const Event::ObservationValue& observation_value,
+                             const bool dense_output) {
+  constexpr size_t dim = Metavariables::volume_dim;
+  const Kokkos::Profiling::ScopedRegion region{
+      "patches::observe_norms_on_device"};
+  const auto& exec = Parallel::device_execution_space();
+  // Report failures of the last substep before anything sees its state
+  db::get<PatchTag>(*box).check_last_step(exec);
+
+  // The tensors of all events, each computed once
+  std::vector<std::string> tensor_names{};
+  const auto for_each_event = [&events](const auto& function) {
+    for (const Event* const event : events) {
+      call_with_dynamic_type<void, observe_norms_events<Metavariables>>(
+          event, function);
+    }
+  };
+  for_each_event([&tensor_names](const auto* const derived_event) {
+    for (const std::string& name : derived_event->tensor_names()) {
+      if (not alg::found(tensor_names, name)) {
+        tensor_names.push_back(name);
+      }
+    }
+  });
+
+  const double time = db::get<::Tags::Time>(*box);
+  // The observables are memory of the patch, valid until the next call
+  const evolution::patches::DeviceObservables& observables =
+      *with_state<PatchTag>(*box, [&](const auto&... state) {
+        return db::mutate<PatchTag>(
+            [&](const auto mutable_patch) {
+              return &mutable_patch->device_observables(
+                  exec, tensor_names, state..., dense_output, time,
+                  Parallel::get<::domain::Tags::FunctionsOfTime>(cache));
+            },
+            box);
+      });
+  const auto statistics =
+      evolution::patches::norm_statistics_on_device(exec, observables);
+
+  const Kokkos::Profiling::ScopedRegion contribute_region{
+      "patches::observe_norms_on_device::contribute"};
+  const auto& patch = db::get<PatchTag>(*box);
+  const auto& element_ids = patch.patch_elements().element_ids();
+  const auto& domain = db::get<::domain::Tags::Domain<dim>>(*box);
+  const size_t number_of_points =
+      patch.patch_elements().subcell_mesh().number_of_grid_points();
+  // The last component is the volume
+  const size_t volume_component = statistics.extent(1) - 1;
+  // The names and statistics of the tensors, whose statistics are replaced by
+  // those of each element in turn
+  ::Events::NormStatisticsOfTensors tensors_statistics{};
+  for (const auto& tensor : observables.tensors) {
+    tensors_statistics.emplace(
+        tensor.name,
+        std::pair{tensor.component_names, std::vector<::Events::NormStatistics>(
+                                              tensor.component_names.size())});
+  }
+  for (size_t slot = 0; slot < element_ids.size(); ++slot) {
+    for (const auto& tensor : observables.tensors) {
+      auto& component_statistics = tensors_statistics.at(tensor.name).second;
+      for (size_t c = 0; c < component_statistics.size(); ++c) {
+        component_statistics[c] = statistics(slot, tensor.first_component + c);
+      }
+    }
+    for_each_event([&](const auto* const derived_event) {
+      derived_event->contribute_statistics(
+          cache, element_ids[slot],
+          static_cast<const ParallelComponent*>(nullptr), observation_value,
+          observers::get_section_observation_key<void>(*box), domain,
+          number_of_points, statistics(slot, volume_component).integral,
+          tensors_statistics);
+    });
+  }
+}
+
 // Runs the `events` on each element of the patch, as
 // `EventsAndTriggers::run_events` does for an element. With `dense_output`,
 // the variables of the elements are the last dense output of the patch.
+//
+// With `Tags::ObserveOnDevice`, the events that the patch can observe on the
+// device run there instead (see `observe_norms_on_device`).
 template <typename PatchTag, typename ParallelComponent, typename DbTagsList,
           typename Metavariables>
 void run_events_on_elements(const std::vector<const Event*>& events,
@@ -515,11 +671,30 @@ void run_events_on_elements(const std::vector<const Event*>& events,
                             Parallel::GlobalCache<Metavariables>& cache,
                             const Event::ObservationValue& observation_value,
                             const bool dense_output = false) {
-  if (events.empty()) {
+  using Patch = typename PatchTag::type;
+  std::vector<const Event*> host_events{};
+  if constexpr (ComputesDeviceObservables<Patch>) {
+    std::vector<const Event*> device_events{};
+    for (const Event* const event : events) {
+      if (Parallel::get<Tags::ObserveOnDevice>(cache) and
+          observes_on_device<Patch, Metavariables>(*event)) {
+        device_events.push_back(event);
+      } else {
+        host_events.push_back(event);
+      }
+    }
+    if (not device_events.empty()) {
+      observe_norms_on_device<PatchTag, ParallelComponent>(
+          device_events, box, cache, observation_value, dense_output);
+    }
+  } else {
+    host_events = events;
+  }
+  if (host_events.empty()) {
     return;
   }
   const bool needs_variables =
-      alg::any_of(events, [](const Event* const event) {
+      alg::any_of(host_events, [](const Event* const event) {
         return event->needs_evolved_variables();
       });
   for_each_element_box<PatchTag>(
@@ -537,7 +712,7 @@ void run_events_on_elements(const std::vector<const Event*>& events,
                 Metavariables, std::decay_t<decltype(element_box)>>>(
                 make_not_null(&element_box));
         observation_box_region.reset();
-        for (const Event* const event : events) {
+        for (const Event* const event : host_events) {
           call_with_dynamic_type<void, events_on_elements<Metavariables>>(
               event, [&]<typename EventType>(EventType* const derived_event) {
                 // One profiling region per type of event, named without its
@@ -555,6 +730,53 @@ void run_events_on_elements(const std::vector<const Event*>& events,
               });
         }
       });
+}
+
+// Prints which `ObserveNorms` events patches observe on the device and, for
+// the others, which tensors they can't compute there (see
+// `observes_on_device`), so that a slow observation isn't a surprise
+template <typename Patch, typename Metavariables, typename DbTagsList>
+void report_device_observations(const db::DataBox<DbTagsList>& box) {
+  const auto report = [](const Event& event) {
+    tmpl::for_each<observe_norms_events<Metavariables>>(
+        [&event]<typename EventType>(tmpl::type_<EventType> /*meta*/) {
+          const auto* const derived_event =
+              dynamic_cast<const EventType*>(&event);
+          if (derived_event == nullptr) {
+            return;
+          }
+          std::string tensors{};
+          for (const std::string& name : derived_event->tensor_names()) {
+            tensors += (tensors.empty() ? "" : ", ") + name;
+          }
+          const auto missing =
+              tensors_not_observable_on_device<Patch, Metavariables>(event);
+          if (missing.has_value() and missing->empty()) {
+            Parallel::printf("Patches observe the norms of %s on the device.\n",
+                             tensors);
+          } else {
+            std::string reason{};
+            if (missing.has_value()) {
+              for (const std::string& name : *missing) {
+                reason += (reason.empty() ? "" : ", ") + name;
+              }
+              reason = "they can't compute " + reason + " on the device";
+            } else {
+              reason = ComputesDeviceObservables<Patch>
+                           ? "the event uses array sections"
+                           : "they can't compute observables on the device";
+            }
+            Parallel::printf(
+                "Patches observe the norms of %s on the host, because %s.\n",
+                tensors, reason);
+          }
+        });
+  };
+  db::get<::Tags::EventsAndTriggers<Triggers::WhenToCheck::AtSteps>>(box)
+      .for_each_event(report);
+  db::get<::Tags::EventsAndTriggers<Triggers::WhenToCheck::AtSlabs>>(box)
+      .for_each_event(report);
+  db::get<::Tags::EventsAndDenseTriggers>(box).for_each_event(report);
 }
 
 // Requests a slab size for the elements of the patch as
@@ -648,9 +870,13 @@ struct RegisterWithObservers {
   static Parallel::iterable_action_return_t apply(
       db::DataBox<DbTagsList>& box,
       const tuples::TaggedTuple<InboxTags...>& /*inboxes*/,
-      Parallel::GlobalCache<Metavariables>& cache, const int /*array_index*/,
+      Parallel::GlobalCache<Metavariables>& cache, const int array_index,
       ActionList /*meta*/, const ParallelComponent* const /*meta*/) {
     constexpr size_t dim = Metavariables::volume_dim;
+    if (array_index == 0 and Parallel::get<Tags::ObserveOnDevice>(cache)) {
+      detail::report_device_observations<typename PatchTag::type,
+                                         Metavariables>(box);
+    }
     auto& observer = *Parallel::local_branch(
         Parallel::get_parallel_component<observers::Observer<Metavariables>>(
             cache));

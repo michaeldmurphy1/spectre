@@ -221,6 +221,7 @@ EventsAndDenseTriggers:
 Patches:
   MaxElementsPerPatch: Auto
   DedicatedProcs: false
+  ObserveOnDevice: true
 
 EventsRunAtCleanup:
   ObservationValue: -1000.0

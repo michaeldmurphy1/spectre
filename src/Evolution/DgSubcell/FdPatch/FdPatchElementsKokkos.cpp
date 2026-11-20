@@ -178,6 +178,30 @@ void FdPatchElements::prepare_host_inertial_cell_geometry(
   exec.fence("fd_patch::FdPatchElements::prepare_host_inertial_cell_geometry");
 }
 
+const BatchedVariables<cell_geometry_tags>&
+FdPatchElements::observation_cell_geometry(
+    const Kokkos::DefaultExecutionSpace& exec, const double time,
+    const ::domain::FunctionsOfTimeMap& functions_of_time) const {
+  if (not mesh_is_moving()) {
+    if (not compute_cell_geometry_) {
+      ERROR("The cell geometry of FD patch "
+            << patch()
+            << " for observations on the device is only kept with "
+               "compute_cell_geometry.");
+    }
+    return cell_inertial_geometry_;
+  }
+  const Kokkos::Profiling::ScopedRegion region{
+      "fd_patch::FdPatchElements::observation_cell_geometry"};
+  // A copy of the handle, which refers to the same data, so the buffer can be
+  // filled in this const function
+  auto cells = observation_cells_;
+  ::domain::inertial_geometry_on_device<false>(
+      exec, make_not_null(&cells), logical_to_grid_.cell_points,
+      device_maps_at(exec, time, functions_of_time));
+  return observation_cells_;
+}
+
 Variables<host_inertial_cell_tags> FdPatchElements::host_inertial_cell_geometry(
     const size_t slot) const {
   Variables<host_inertial_cell_tags> result{};

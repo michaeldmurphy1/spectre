@@ -391,10 +391,8 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::compute_time_derivative(
   }
   gaussian_sums_.set(exec, gaussian_sums);
   // The array of the three sums, whose address doesn't change between substeps
-  const Kokkos::View<const ConstraintDamping::GaussianSum<3>*> damping{
-      reinterpret_cast<const ConstraintDamping::GaussianSum<3>*>(
-          gaussian_sums_.device().data()),
-      3};
+  const Kokkos::View<const ConstraintDamping::GaussianSum<3>*> damping =
+      gaussian_sums_.device_array();
 
   // Time derivative
   std::optional<Kokkos::Profiling::ScopedRegion> region{};

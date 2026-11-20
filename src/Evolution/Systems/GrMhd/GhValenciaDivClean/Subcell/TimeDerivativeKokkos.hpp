@@ -194,8 +194,9 @@ class TimeDerivativeOnDevice {
    * Jacobian and mesh velocities on the faces (a batch of \f$3N\f$ face sets).
    * \param cell_geometry the determinant of the inverse Jacobian at the cell
    * centers.
-   * \param div_mesh_velocity the divergence of the mesh velocity of each
-   * element.
+   * \param div_mesh_velocity the divergence of the mesh velocity, of each
+   * element or of each cell (see
+   * `ValenciaDivClean::subcell::DivergenceOfMeshVelocity`).
    * \param damping_functions the damping functions of \f$\gamma_0\f$,
    * \f$\gamma_1\f$ and \f$\gamma_2\f$ at the current time, in device memory.
    * \param correction the boundary correction of the GRMHD variables.
@@ -230,7 +231,8 @@ class TimeDerivativeOnDevice {
           evolution::dg::subcell::fd_patch::inertial_face_tags>& face_geometry,
       const BatchedVariables<
           evolution::dg::subcell::fd_patch::inertial_cell_tags>& cell_geometry,
-      const Kokkos::View<const double*>& div_mesh_velocity,
+      const ValenciaDivClean::subcell::DivergenceOfMeshVelocity&
+          div_mesh_velocity,
       const Kokkos::View<const ConstraintDamping::GaussianSum<dim>*>&
           damping_functions,
       const Correction& correction,

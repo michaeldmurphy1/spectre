@@ -176,11 +176,14 @@ struct ScaledBoundaryTerms {
 };
 
 // The sources as the time derivatives, as `subcell::TimeDerivative` sets them
-// before adding the flux divergence, including the mesh velocity term
+// before adding the flux divergence, including the mesh velocity term. The
+// `DivTag` is the divergence of the mesh velocity, of each element
+// (`::Tags::PerElement<DivMeshVelocity>`) or of each cell
+// (`fd_patch::Tags::CellDivMeshVelocity`).
+template <typename DivTag>
 struct SourcesAsTimeDerivatives {
   using return_tags = dt_tags_on_device;
-  using argument_tags = tmpl::push_back<ComputeSources::argument_tags,
-                                        ::Tags::PerElement<DivMeshVelocity>>;
+  using argument_tags = tmpl::push_back<ComputeSources::argument_tags, DivTag>;
 
   template <typename... SourceArgs>
   KOKKOS_FUNCTION static void apply(
@@ -217,7 +220,8 @@ struct SourcesAsTimeDerivatives {
   }
 
  private:
-  // Calls `function` with all arguments but the last, and returns the last
+  // Calls `function` with all arguments but the last, and returns the last,
+  // which is a `double` or a `Scalar<double>`
   template <typename Function, typename... Args>
   KOKKOS_FUNCTION static double apply_all_but_last(const Function& function,
                                                    const Args&... args) {
@@ -231,7 +235,12 @@ struct SourcesAsTimeDerivatives {
       const Args&... args) {
     const auto arguments = std::forward_as_tuple(args...);
     function(std::get<Is>(arguments)...);
-    return std::get<sizeof...(Args) - 1>(arguments);
+    const auto& last = std::get<sizeof...(Args) - 1>(arguments);
+    if constexpr (std::is_same_v<std::decay_t<decltype(last)>, double>) {
+      return last;
+    } else {
+      return get(last);
+    }
   }
 };
 
@@ -291,7 +300,7 @@ void TimeDerivativeOnDevice<Correction>::apply(
     const BatchedVariables<
         evolution::dg::subcell::fd_patch::inertial_cell_tags>& cell_geometry,
     const bool mesh_is_moving,
-    const Kokkos::View<const double*>& div_mesh_velocity,
+    const DivergenceOfMeshVelocity& div_mesh_velocity,
     const Correction& correction,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere,
@@ -300,8 +309,7 @@ void TimeDerivativeOnDevice<Correction>::apply(
         packaged_data_from_dg,
     const Kokkos::View<const double*>& received_mortar_data) {
   ASSERT(dt_vars->number_of_elements() == number_of_elements_ and
-             face_geometry.number_of_elements() == 3 * number_of_elements_ and
-             div_mesh_velocity.extent(0) == number_of_elements_,
+             face_geometry.number_of_elements() == 3 * number_of_elements_,
          "The batches don't match the " << number_of_elements_
                                         << " elements of the time derivative");
 
@@ -389,38 +397,44 @@ void TimeDerivativeOnDevice<Correction>::apply(
       }(packaged_tags{}));
 
   // 4. Sources, mesh velocity term and flux divergence
-  const auto argument = [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
-    if constexpr (tmpl::list_contains_v<evolved_tags_on_device, Tag>) {
-      return get<::Tags::BatchView<Tag>>(evolved_variables);
-    } else if constexpr (tmpl::list_contains_v<hydro::grmhd_tags<DataVector>,
-                                               Tag>) {
-      return get<::Tags::BatchView<Tag>>(primitives);
-    } else if constexpr (tmpl::list_contains_v<cell_spacetime_tags, Tag>) {
-      return get<::Tags::BatchView<Tag>>(cell_spacetime_variables);
-    } else if constexpr (std::is_same_v<Tag,
-                                        Tags::ConstraintDampingParameter>) {
-      return constraint_damping_parameter;
-    } else if constexpr (std::is_same_v<Tag, domain::Tags::Mesh<3>>) {
-      return dg_mesh_;
-    } else {
-      static_assert(
-          std::is_same_v<Tag,
-                         ::Tags::PerElement<
-                             TimeDerivativeOnDevice_detail::DivMeshVelocity>>,
-          "Unexpected argument of the sources");
-      return div_mesh_velocity;
-    }
-  };
-  apply_pointwise_on_device<
-      TimeDerivativeOnDevice_detail::SourcesAsTimeDerivatives>(
-      exec, dt_vars,
-      TimeDerivativeOnDevice_detail::SourcesAsTimeDerivatives::return_tags{},
-      TimeDerivativeOnDevice_detail::SourcesAsTimeDerivatives::argument_tags{},
-      [&]<typename... ArgumentTags>(tmpl::list<ArgumentTags...> /*meta*/) {
-        return make_device_arguments<ArgumentTags...>(
-            exec, argument(tmpl::type_<ArgumentTags>{})...);
-      }(TimeDerivativeOnDevice_detail::SourcesAsTimeDerivatives::
-            argument_tags{}));
+  std::visit(
+      [&]<typename DivMesh>(const DivMesh& div_mesh) {
+        using DivTag = tmpl::conditional_t<
+            std::is_same_v<DivMesh, Kokkos::View<const double*>>,
+            ::Tags::PerElement<TimeDerivativeOnDevice_detail::DivMeshVelocity>,
+            evolution::dg::subcell::fd_patch::Tags::CellDivMeshVelocity>;
+        using Sources =
+            TimeDerivativeOnDevice_detail::SourcesAsTimeDerivatives<DivTag>;
+        const auto argument = [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+          if constexpr (tmpl::list_contains_v<evolved_tags_on_device, Tag>) {
+            return get<::Tags::BatchView<Tag>>(evolved_variables);
+          } else if constexpr (tmpl::list_contains_v<
+                                   hydro::grmhd_tags<DataVector>, Tag>) {
+            return get<::Tags::BatchView<Tag>>(primitives);
+          } else if constexpr (tmpl::list_contains_v<cell_spacetime_tags,
+                                                     Tag>) {
+            return get<::Tags::BatchView<Tag>>(cell_spacetime_variables);
+          } else if constexpr (std::is_same_v<
+                                   Tag, Tags::ConstraintDampingParameter>) {
+            return constraint_damping_parameter;
+          } else if constexpr (std::is_same_v<Tag, domain::Tags::Mesh<3>>) {
+            return dg_mesh_;
+          } else {
+            static_assert(std::is_same_v<Tag, DivTag>,
+                          "Unexpected argument of the sources");
+            return div_mesh;
+          }
+        };
+        apply_pointwise_on_device<Sources>(
+            exec, dt_vars, typename Sources::return_tags{},
+            typename Sources::argument_tags{},
+            [&]<typename... ArgumentTags>(
+                tmpl::list<ArgumentTags...> /*meta*/) {
+              return make_device_arguments<ArgumentTags...>(
+                  exec, argument(tmpl::type_<ArgumentTags>{})...);
+            }(typename Sources::argument_tags{}));
+      },
+      div_mesh_velocity);
 
   std::array<::fd::device::ConstVolumeView, 3> corrections{};
   for (size_t d = 0; d < 3; ++d) {

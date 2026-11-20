@@ -169,6 +169,10 @@ BatchCells::BatchCells(const size_t number_of_elements,
     : number_of_variables_(static_cast<int>(number_of_variables)),
       extents_(extents),
       size_(checked_size(number_of_elements, number_of_variables, extents)) {}
+
+BatchPoints::BatchPoints(const size_t number_of_elements,
+                         const Kokkos::Array<int, 3>& extents)
+    : extents_(extents), size_(checked_size(number_of_elements, 1, extents)) {}
 }  // namespace detail
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)

@@ -54,24 +54,28 @@ void kreiss_oliger_filter_impl(const Kokkos::DefaultExecutionSpace& exec,
     strides[d] = static_cast<int>(padded_volume_vars.stride(4 - d));
   }
 
-  const detail::BatchCells cells{padded_volume_vars.extent(0),
-                                 padded_volume_vars.extent(1), extents};
+  // One thread per cell, looping over the variables
+  const size_t number_of_variables = padded_volume_vars.extent(1);
+  const detail::BatchPoints points{padded_volume_vars.extent(0), extents};
   Kokkos::parallel_for(
       "fd::device::kreiss_oliger_filter",
       Kokkos::RangePolicy<Kokkos::DefaultExecutionSpace,
-                          Kokkos::IndexType<int>>(exec, 0, cells.size()),
+                          Kokkos::IndexType<int>>(exec, 0, points.size()),
       KOKKOS_LAMBDA(const int index) {
-        const auto [element, var, cell] = cells(index);
-        const double* const q =
-            &padded_volume_vars(element, var, cell[2] + offsets[2],
-                                cell[1] + offsets[1], cell[0] + offsets[0]);
-        // As `fd::kreiss_oliger_filter`: the dissipation in each direction,
-        // then the value of the cell
-        double filtered = Stencil::pointwise(q, strides[0], epsilon);
-        for (size_t d = 1; d < Dim; ++d) {
-          filtered += Stencil::pointwise(q, strides[d], epsilon);
+        const auto [element, cell] = points(index);
+        for (size_t var = 0; var < number_of_variables; ++var) {
+          const double* q =
+              &padded_volume_vars(element, var, cell[2] + offsets[2],
+                                  cell[1] + offsets[1], cell[0] + offsets[0]);
+          // As `fd::kreiss_oliger_filter`: the dissipation in each
+          // direction, then the value of the cell
+          double filtered = Stencil::pointwise(q, strides[0], epsilon);
+          for (size_t d = 1; d < Dim; ++d) {
+            filtered += Stencil::pointwise(q, strides[d], epsilon);
+          }
+          filtered_vars(element, var, cell[2], cell[1], cell[0]) =
+              filtered + *q;
         }
-        filtered_vars(element, var, cell[2], cell[1], cell[0]) = filtered + *q;
       });
 }
 }  // namespace

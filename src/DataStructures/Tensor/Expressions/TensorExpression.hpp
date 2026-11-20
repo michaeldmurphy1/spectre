@@ -253,6 +253,18 @@ struct Expression {};
 /// it and update the result component being accumulated. `tenex::evaluate`
 /// should call this function on the root node for the whole tree if there is
 /// determined to be any splits in the tree.
+/// - function template
+/// \code
+/// template <std::array<size_t, num_tensor_indices> MultiIndex>
+/// KOKKOS_FUNCTION decltype(auto) get() const
+/// \endcode
+/// The same as the `get` function described above, but for a multi-index that
+/// is known at compile time. The multi-indices of the operands are computed in
+/// constant expressions, so the evaluation has no index arithmetic or lookups
+/// at runtime. `tenex::evaluate` uses this for device-capable data types such
+/// as `double` (see `tt::is_device_capable`), which is what makes tensor
+/// expressions efficient in GPU kernels. It is only instantiated for these data
+/// types.
 ///
 /// ## Data type support
 /// Which types can be used, which operations with which types can be performed,
@@ -325,23 +337,20 @@ struct TensorExpression<Derived, DataType, Symm, tmpl::list<Indices...>,
   /// The number of tensor indices of the `Derived` class
   static constexpr auto num_tensor_indices = tmpl::size<index_list>::value;
 
-  virtual ~TensorExpression() = 0;
-
   /// @{
   /// Derived is casted down to the derived class. This is enabled by the
   /// [CRTP](https://en.wikipedia.org/wiki/Curiously_recurring_template_pattern)
   ///
   /// \returns const TensorExpression<Derived, DataType, Symm, IndexList,
   /// ArgsList<Args...>>&
-  SPECTRE_ALWAYS_INLINE const auto& operator~() const {
+  SPECTRE_ALWAYS_INLINE constexpr const auto& operator~() const {
     return static_cast<const Derived&>(*this);
   }
   /// @}
-};
 
-template <typename Derived, typename DataType, typename Symm,
-          typename... Indices, template <typename...> class ArgsList,
-          typename... Args>
-TensorExpression<Derived, DataType, Symm, tmpl::list<Indices...>,
-                 ArgsList<Args...>>::~TensorExpression() = default;
+ protected:
+  // Only derived classes can be constructed. This isn't a virtual destructor
+  // so that expressions can be built and evaluated in device code.
+  constexpr TensorExpression() = default;
+};
 /// @}

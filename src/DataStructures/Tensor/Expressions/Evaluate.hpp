@@ -9,7 +9,10 @@
 #include <array>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <type_traits>
+#include <utility>
 
 #include "DataStructures/ComplexDataVector.hpp"
 #include "DataStructures/DataVector.hpp"
@@ -25,9 +28,12 @@
 #include "Utilities/Algorithm.hpp"
 #include "Utilities/ContainerHelpers.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
+#include "Utilities/ForceInline.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/Requires.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 /// \cond
 template <typename X, typename Symm, typename IndexList>
@@ -327,65 +333,128 @@ constexpr std::array<size_t, NumIndices> get_reordered_tensorindex_values(
   }
 }
 
+/// The values of the `TensorIndex`s in `TensorIndexList`
+template <typename TensorIndexList>
+struct TensorIndexValues;
+
+/// \cond
+template <typename... TensorIndices>
+struct TensorIndexValues<tmpl::list<TensorIndices...>> {
+  static constexpr std::array<size_t, sizeof...(TensorIndices)> value{
+      {TensorIndices::value...}};
+};
+/// \endcond
+
+/// The list of `TensorIndex`s with the values `Values`
+template <auto Values, typename Ints = std::make_index_sequence<Values.size()>>
+struct TensorIndexListFromValues;
+
+/// \cond
+template <auto Values, size_t... Ints>
+struct TensorIndexListFromValues<Values, std::index_sequence<Ints...>> {
+  using type = tmpl::list<TensorIndex<Values[Ints]>...>;
+};
+
+template <typename LhsSymmetry, typename... LhsTensorIndices, size_t... LhsInts>
+constexpr std::array<size_t, sizeof...(LhsTensorIndices)>
+reordered_lhs_tensorindex_values(
+    const std::index_sequence<LhsInts...>& /*lhs_ints*/) {
+  return get_reordered_tensorindex_values<LhsTensorIndices...>(
+      std::array<std::int32_t, sizeof...(LhsTensorIndices)>{
+          {tmpl::at_c<LhsSymmetry, LhsInts>::value...}});
+}
+/// \endcond
+
 /*!
  * \ingroup TensorExpressionsGroup
- * \brief Evaluate subtrees of the RHS expression or the RHS expression as a
- * whole and assign the result to the LHS tensor
+ * \brief Which components of a LHS tensor are evaluated from a RHS expression,
+ * and the multi-index of the RHS expression that each one is evaluated from
  *
- * \details This is for internal use only and should never be directly called.
- * See `tenex::evaluate` and use it, instead.
+ * \details `LhsTensorType` is the type of the LHS tensor (only its symmetry and
+ * indices are used, not its data type), `RhsExpression` is the type of the RHS
+ * expression and `LhsTensorIndices` are the generic indices of the LHS, e.g.
+ * the types of `ti::a` and `ti::b`.
  *
- * `EvaluateSubtrees` controls whether we wish to evaluate RHS subtrees or the
- * entire RHS expression as one expression. See`TensorExpression` documentation
- * on equation splitting for more details on what this means.
+ * LHS components are not evaluated where a concrete time index is used for a
+ * spacetime index and the component is not the time component, or where a
+ * generic spatial index is used for a spacetime index and the component is a
+ * time component.
  *
- * If `EvaluateSubtrees == false`, then it's safe if the LHS tensor is used in
- * the RHS expression, so long as the generic index orders are the same. This
- * means that the callee of this function needs to first verify this is true
- * before calling this function. Under these conditions, this is a safe
- * operation because the implementation modifies each LHS component once and
- * does not revisit and access any LHS components after they've been updated.
- * For example, say we do `tenex::evaluate<ti_a, ti_b>(make_not_null(&L),
- * 5.0 * L(ti_a, ti_b));`. This function will first compute the RHS for some
- * concrete LHS, e.g. \f$L_{00}\f$. To compute this, it accesses \f$L_{00}\f$
- * in the RHS tree, multiplies it by `5.0`, then updates \f$L_{00}\f$ to be the
- * result of this multiplication. Next, it might compute \f$L_{01}\f$, where
- * only \f$L_{01}\f$ is accessed, and which hasn't yet been modified. Then the
- * next component is computed and updated, and so forth. These steps are
- * performed once for each unique LHS index. Therefore, it is important to note
- * that this kind of operation being safe to perform is
- * implementation-dependent. Specifically, the safety of the operation depends
- * on the order of LHS component access and assignment.
- *
- * \note `LhsTensorIndices` must be passed by reference because non-type
- * template parameters cannot be class types until C++20.
- *
- * @tparam EvaluateSubtrees whether or not to evaluate subtrees of RHS
- * expression
- * @tparam LhsTensorIndices the `TensorIndex`s of the `Tensor` on the LHS of the
- * tensor expression, e.g. `ti::a`, `ti::b`, `ti::c`
- * @param lhs_tensor pointer to the resultant LHS `Tensor` to fill
- * @param rhs_tensorexpression the RHS TensorExpression to be evaluated
+ * Everything is computed at compile time. `tenex::evaluate` uses the member
+ * functions at runtime for vector data types and in constant expressions (as
+ * template arguments) for device-capable data types.
  */
-template <bool EvaluateSubtrees, typename... LhsTensorIndices,
-          typename LhsDataType, typename LhsSymmetry, typename LhsIndexList,
-          typename Derived, typename RhsDataType, typename RhsSymmetry,
-          typename RhsIndexList, typename... RhsTensorIndices,
-          size_t... LhsInts>
-void evaluate_impl(
-    const gsl::not_null<Tensor<LhsDataType, LhsSymmetry, LhsIndexList>*>
-        lhs_tensor,
-    const TensorExpression<Derived, RhsDataType, RhsSymmetry, RhsIndexList,
-                           tmpl::list<RhsTensorIndices...>>&
-        rhs_tensorexpression,
-    const std::index_sequence<LhsInts...>& /*lhs_ints*/) {
-  constexpr size_t num_lhs_indices = sizeof...(LhsTensorIndices);
-  constexpr size_t num_rhs_indices = sizeof...(RhsTensorIndices);
+template <typename LhsTensorType, typename RhsExpression,
+          typename... LhsTensorIndices>
+struct LhsComponentMap {
+  /// The LHS generic indices in canonical order for the LHS symmetry
+  static constexpr std::array<size_t, sizeof...(LhsTensorIndices)>
+      reordered_tensorindex_values =
+          reordered_lhs_tensorindex_values<typename LhsTensorType::symmetry,
+                                           LhsTensorIndices...>(
+              std::make_index_sequence<sizeof...(LhsTensorIndices)>{});
+  using reordered_lhs_tensorindex_list =
+      typename TensorIndexListFromValues<reordered_tensorindex_values>::type;
+  /// The positions of the reordered LHS generic indices in the RHS
+  static constexpr std::array<size_t, RhsExpression::num_tensor_indices>
+      index_transformation = compute_tensorindex_transformation(
+          reordered_tensorindex_values,
+          TensorIndexValues<typename RhsExpression::args_list>::value);
+  /// Positions of indices in the LHS tensor where generic spatial indices are
+  /// used for spacetime indices
+  static constexpr auto lhs_spatial_spacetime_index_positions =
+      get_spatial_spacetime_index_positions<typename LhsTensorType::index_list,
+                                            reordered_lhs_tensorindex_list>();
+  /// Positions of indices in the RHS expression where generic spatial indices
+  /// are used for spacetime indices
+  static constexpr auto rhs_spatial_spacetime_index_positions =
+      get_spatial_spacetime_index_positions<
+          typename RhsExpression::index_list,
+          typename RhsExpression::args_list>();
+  /// Positions of indices in the LHS tensor where concrete time indices are
+  /// used
+  static constexpr auto lhs_time_index_positions =
+      get_time_index_positions<reordered_lhs_tensorindex_list>();
 
+  /// Whether the LHS component with storage index `storage_index` is evaluated
+  static constexpr bool is_evaluated(const size_t storage_index) {
+    return is_evaluated_lhs_multi_index(
+        LhsTensorType::structure::get_canonical_tensor_index(storage_index),
+        lhs_spatial_spacetime_index_positions, lhs_time_index_positions);
+  }
+
+  /// The multi-index of the RHS expression that the evaluated LHS component
+  /// with storage index `storage_index` is computed from
+  static constexpr std::array<size_t, RhsExpression::num_tensor_indices>
+  rhs_multi_index(const size_t storage_index) {
+    auto lhs_multi_index =
+        LhsTensorType::structure::get_canonical_tensor_index(storage_index);
+    for (size_t j = 0; j < lhs_spatial_spacetime_index_positions.size(); j++) {
+      gsl::at(lhs_multi_index,
+              gsl::at(lhs_spatial_spacetime_index_positions, j)) -= 1;
+    }
+    auto result = transform_multi_index(lhs_multi_index, index_transformation);
+    for (size_t j = 0; j < rhs_spatial_spacetime_index_positions.size(); j++) {
+      gsl::at(result, gsl::at(rhs_spatial_spacetime_index_positions, j)) += 1;
+    }
+    return result;
+  }
+};
+
+/*!
+ * \ingroup TensorExpressionsGroup
+ * \brief Compile-time checks that the RHS expression `RhsExpression` can be
+ * assigned to a LHS tensor with data type `LhsDataType`, symmetry
+ * `LhsSymmetry`, indices `LhsIndexList` and generic indices `LhsTensorIndices`
+ */
+template <typename LhsDataType, typename LhsSymmetry, typename LhsIndexList,
+          typename RhsExpression, typename... LhsTensorIndices>
+constexpr void assert_valid_evaluation() {
+  using RhsDataType = typename RhsExpression::type;
+  using RhsIndexList = typename RhsExpression::index_list;
   using lhs_tensorindex_list = tmpl::list<LhsTensorIndices...>;
-  using rhs_tensorindex_list = tmpl::list<RhsTensorIndices...>;
-
-  using lhs_tensor_type = typename std::decay_t<decltype(*lhs_tensor)>;
+  using rhs_tensorindex_list = typename RhsExpression::args_list;
+  constexpr size_t num_lhs_indices = sizeof...(LhsTensorIndices);
 
   static_assert(is_supported_tensor_datatype_v<LhsDataType> and
                     is_supported_tensor_datatype_v<RhsDataType>,
@@ -447,15 +516,141 @@ void evaluate_impl(
       "e.g. evaluate<ti::a, ti::b>(L, R(ti::b, ti::a));, where R's first "
       "index has 2 spatial dimensions but L's second index has 3 spatial "
       "dimensions. Check RHS and LHS indices that use the same generic index.");
-  static_assert(Derived::height_relative_to_closest_tensor_leaf_in_subtree <
-                    std::numeric_limits<size_t>::max(),
-                "Either no Tensors were found in the RHS TensorExpression or "
-                "the depth of the tree exceeded the maximum size_t value (very "
-                "unlikely). If there is indeed a Tensor in the RHS expression "
-                "and assuming the tree's height is not actually the maximum "
-                "size_t value, then there is a flaw in the logic for computing "
-                "the derived TensorExpression types' member, "
-                "height_relative_to_closest_tensor_leaf_in_subtree.");
+  static_assert(
+      RhsExpression::height_relative_to_closest_tensor_leaf_in_subtree <
+          std::numeric_limits<size_t>::max(),
+      "Either no Tensors were found in the RHS TensorExpression or "
+      "the depth of the tree exceeded the maximum size_t value (very "
+      "unlikely). If there is indeed a Tensor in the RHS expression "
+      "and assuming the tree's height is not actually the maximum "
+      "size_t value, then there is a flaw in the logic for computing "
+      "the derived TensorExpression types' member, "
+      "height_relative_to_closest_tensor_leaf_in_subtree.");
+}
+
+/// The type of the tensor that `tenex::evaluate<LhsTensorIndices...>(rhs)`
+/// returns
+template <typename RhsExpression, typename... LhsTensorIndices>
+struct EvaluatedTensor {
+ private:
+  // Stores (potentially reordered) symmetry and indices needed for constructing
+  // the LHS tensor, with index order specified by LhsTensorIndices
+  using lhs_tensor_symm_and_indices = LhsTensorSymmAndIndices<
+      typename RhsExpression::args_list, tmpl::list<LhsTensorIndices...>,
+      typename RhsExpression::symmetry, typename RhsExpression::index_list>;
+
+ public:
+  using type =
+      Tensor<typename RhsExpression::type,
+             typename lhs_tensor_symm_and_indices::symmetry,
+             typename lhs_tensor_symm_and_indices::tensorindextype_list>;
+};
+
+/// Assigns values to the components of the LHS tensor of an evaluation with
+/// compile-time multi-indices (see `evaluate_components`)
+template <typename LhsTensorType>
+struct AssignToTensor {
+  LhsTensorType* tensor;
+
+  template <size_t StorageIndex, typename T>
+  SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION void assign(const T& value) const {
+    (*tensor)[StorageIndex] = value;
+  }
+};
+
+/// \cond
+template <typename ComponentMap, size_t StorageIndex, typename Assigner,
+          typename RhsExpression>
+SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION void evaluate_component(
+    const Assigner& assigner, const RhsExpression& rhs_expression) {
+  if constexpr (ComponentMap::is_evaluated(StorageIndex)) {
+    assigner.template assign<StorageIndex>(
+        rhs_expression
+            .template get<ComponentMap::rhs_multi_index(StorageIndex)>());
+  }
+}
+/// \endcond
+
+/*!
+ * \ingroup TensorExpressionsGroup
+ * \brief Evaluate the RHS expression for all evaluated LHS components, with
+ * multi-indices that are known at compile time
+ *
+ * \details This is the evaluation for device-capable data types (see
+ * `tt::is_device_capable`): all index computations happen at compile time
+ * (see `TensorExpression::get<MultiIndex>()`), so the generated code only
+ * contains the arithmetic of the expression. `assigner.template
+ * assign<StorageIndex>(value)` sets the LHS component with storage index
+ * `StorageIndex`, which lets the LHS be a `Tensor` or, for example, a point of
+ * a batch of tensors in device memory. The components are evaluated and
+ * assigned one after the other in storage order.
+ *
+ * This is for internal use only. See `tenex::evaluate` and use it, instead.
+ */
+template <typename ComponentMap, typename Assigner, typename RhsExpression,
+          size_t... StorageIndices>
+SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION void evaluate_components(
+    const Assigner& assigner, const RhsExpression& rhs_expression,
+    const std::index_sequence<StorageIndices...>& /*storage_indices*/) {
+  (evaluate_component<ComponentMap, StorageIndices>(assigner, rhs_expression),
+   ...);
+}
+
+/*!
+ * \ingroup TensorExpressionsGroup
+ * \brief Evaluate subtrees of the RHS expression or the RHS expression as a
+ * whole and assign the result to the LHS tensor
+ *
+ * \details This is for internal use only and should never be directly called.
+ * See `tenex::evaluate` and use it, instead.
+ *
+ * `EvaluateSubtrees` controls whether we wish to evaluate RHS subtrees or the
+ * entire RHS expression as one expression. See`TensorExpression` documentation
+ * on equation splitting for more details on what this means.
+ *
+ * If `EvaluateSubtrees == false`, then it's safe if the LHS tensor is used in
+ * the RHS expression, so long as the generic index orders are the same. This
+ * means that the callee of this function needs to first verify this is true
+ * before calling this function. Under these conditions, this is a safe
+ * operation because the implementation modifies each LHS component once and
+ * does not revisit and access any LHS components after they've been updated.
+ * For example, say we do `tenex::evaluate<ti_a, ti_b>(make_not_null(&L),
+ * 5.0 * L(ti_a, ti_b));`. This function will first compute the RHS for some
+ * concrete LHS, e.g. \f$L_{00}\f$. To compute this, it accesses \f$L_{00}\f$
+ * in the RHS tree, multiplies it by `5.0`, then updates \f$L_{00}\f$ to be the
+ * result of this multiplication. Next, it might compute \f$L_{01}\f$, where
+ * only \f$L_{01}\f$ is accessed, and which hasn't yet been modified. Then the
+ * next component is computed and updated, and so forth. These steps are
+ * performed once for each unique LHS index. Therefore, it is important to note
+ * that this kind of operation being safe to perform is
+ * implementation-dependent. Specifically, the safety of the operation depends
+ * on the order of LHS component access and assignment.
+ *
+ * \note `LhsTensorIndices` must be passed by reference because non-type
+ * template parameters cannot be class types until C++20.
+ *
+ * @tparam EvaluateSubtrees whether or not to evaluate subtrees of RHS
+ * expression
+ * @tparam LhsTensorIndices the `TensorIndex`s of the `Tensor` on the LHS of the
+ * tensor expression, e.g. `ti::a`, `ti::b`, `ti::c`
+ * @param lhs_tensor pointer to the resultant LHS `Tensor` to fill
+ * @param rhs_tensorexpression the RHS TensorExpression to be evaluated
+ */
+template <bool EvaluateSubtrees, typename... LhsTensorIndices,
+          typename LhsDataType, typename LhsSymmetry, typename LhsIndexList,
+          typename Derived, typename RhsDataType, typename RhsSymmetry,
+          typename RhsIndexList, typename... RhsTensorIndices>
+void evaluate_impl(
+    const gsl::not_null<Tensor<LhsDataType, LhsSymmetry, LhsIndexList>*>
+        lhs_tensor,
+    const TensorExpression<Derived, RhsDataType, RhsSymmetry, RhsIndexList,
+                           tmpl::list<RhsTensorIndices...>>&
+        rhs_tensorexpression) {
+  using lhs_tensor_type = typename std::decay_t<decltype(*lhs_tensor)>;
+  using rhs_expression_type =
+      typename std::decay_t<decltype(~rhs_tensorexpression)>;
+  assert_valid_evaluation<LhsDataType, LhsSymmetry, LhsIndexList,
+                          rhs_expression_type, LhsTensorIndices...>();
 
   if constexpr (EvaluateSubtrees) {
     // Make sure the LHS tensor doesn't also appear in the RHS tensor expression
@@ -473,54 +668,11 @@ void evaluate_impl(
     }
   }
 
-  constexpr std::array<std::int32_t, num_lhs_indices> lhs_symmetry = {
-      {tmpl::at_c<LhsSymmetry, LhsInts>::value...}};
-  constexpr std::array<size_t, num_lhs_indices> reordered_tensorindex_values =
-      get_reordered_tensorindex_values<LhsTensorIndices...>(lhs_symmetry);
-  using reordered_lhs_tensorindex_list =
-      tmpl::list<TensorIndex<reordered_tensorindex_values[LhsInts]>...>;
-
-  constexpr std::array<size_t, num_rhs_indices> index_transformation =
-      compute_tensorindex_transformation<num_lhs_indices, num_rhs_indices>(
-          reordered_tensorindex_values, {{RhsTensorIndices::value...}});
-
-  // positions of indices in LHS tensor where generic spatial indices are used
-  // for spacetime indices
-  constexpr auto lhs_spatial_spacetime_index_positions =
-      get_spatial_spacetime_index_positions<LhsIndexList,
-                                            reordered_lhs_tensorindex_list>();
-  // positions of indices in RHS tensor where generic spatial indices are used
-  // for spacetime indices
-  constexpr auto rhs_spatial_spacetime_index_positions =
-      get_spatial_spacetime_index_positions<RhsIndexList,
-                                            rhs_tensorindex_list>();
-
-  // positions of indices in LHS tensor where concrete time indices are used
-  constexpr auto lhs_time_index_positions =
-      get_time_index_positions<reordered_lhs_tensorindex_list>();
-
-  using rhs_expression_type =
-      typename std::decay_t<decltype(~rhs_tensorexpression)>;
-
+  using component_map = LhsComponentMap<lhs_tensor_type, rhs_expression_type,
+                                        LhsTensorIndices...>;
   for (size_t i = 0; i < lhs_tensor_type::size(); i++) {
-    auto lhs_multi_index =
-        lhs_tensor_type::structure::get_canonical_tensor_index(i);
-    if (is_evaluated_lhs_multi_index(lhs_multi_index,
-                                     lhs_spatial_spacetime_index_positions,
-                                     lhs_time_index_positions)) {
-      for (size_t j = 0; j < lhs_spatial_spacetime_index_positions.size();
-           j++) {
-        gsl::at(lhs_multi_index,
-                gsl::at(lhs_spatial_spacetime_index_positions, j)) -= 1;
-      }
-      auto rhs_multi_index =
-          transform_multi_index(lhs_multi_index, index_transformation);
-      for (size_t j = 0; j < rhs_spatial_spacetime_index_positions.size();
-           j++) {
-        gsl::at(rhs_multi_index,
-                gsl::at(rhs_spatial_spacetime_index_positions, j)) += 1;
-      }
-
+    if (component_map::is_evaluated(i)) {
+      const auto rhs_multi_index = component_map::rhs_multi_index(i);
       // The expression will either be evaluated as one whole expression
       // or it will be split up into subtrees that are evaluated one at a time.
       // See the section on splitting in the documentation for the
@@ -673,6 +825,12 @@ void evaluate_impl(
  *
  * \snippet Test_MixedOperations.cpp use_evaluate_with_result_as_arg
  *
+ * For device-capable data types (see `tt::is_device_capable`), such as
+ * `double`, the multi-indices of all components are computed at compile time
+ * (see `TensorExpression`) and this can be called in device code, e.g. in a
+ * Kokkos kernel. The LHS components are computed and assigned one after the
+ * other in storage order.
+ *
  * \note `LhsTensorIndices` must be passed by reference because non-type
  * template parameters cannot be class types until C++20.
  *
@@ -685,6 +843,7 @@ template <auto&... LhsTensorIndices, typename LhsDataType, typename LhsSymmetry,
           typename LhsIndexList, typename Derived, typename RhsDataType,
           typename RhsSymmetry, typename RhsIndexList,
           typename... RhsTensorIndices>
+  requires(not tt::is_device_capable_v<LhsDataType>)
 void evaluate(
     const gsl::not_null<Tensor<LhsDataType, LhsSymmetry, LhsIndexList>*>
         lhs_tensor,
@@ -697,9 +856,35 @@ void evaluate(
       rhs_expression_type::primary_subtree_contains_primary_start;
   detail::evaluate_impl<evaluate_subtrees,
                         std::decay_t<decltype(LhsTensorIndices)>...>(
-      lhs_tensor, rhs_tensorexpression,
-      std::make_index_sequence<sizeof...(LhsTensorIndices)>{});
+      lhs_tensor, rhs_tensorexpression);
 }
+
+/// \cond
+template <auto&... LhsTensorIndices, typename LhsDataType, typename LhsSymmetry,
+          typename LhsIndexList, typename Derived, typename RhsDataType,
+          typename RhsSymmetry, typename RhsIndexList,
+          typename... RhsTensorIndices>
+  requires tt::is_device_capable_v<LhsDataType>
+SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION void evaluate(
+    const gsl::not_null<Tensor<LhsDataType, LhsSymmetry, LhsIndexList>*>
+        lhs_tensor,
+    const TensorExpression<Derived, RhsDataType, RhsSymmetry, RhsIndexList,
+                           tmpl::list<RhsTensorIndices...>>&
+        rhs_tensorexpression) {
+  using lhs_tensor_type = Tensor<LhsDataType, LhsSymmetry, LhsIndexList>;
+  using rhs_expression_type =
+      typename std::decay_t<decltype(~rhs_tensorexpression)>;
+  detail::assert_valid_evaluation<
+      LhsDataType, LhsSymmetry, LhsIndexList, rhs_expression_type,
+      std::decay_t<decltype(LhsTensorIndices)>...>();
+  detail::evaluate_components<
+      detail::LhsComponentMap<lhs_tensor_type, rhs_expression_type,
+                              std::decay_t<decltype(LhsTensorIndices)>...>>(
+      detail::AssignToTensor<lhs_tensor_type>{&*lhs_tensor},
+      ~rhs_tensorexpression,
+      std::make_index_sequence<lhs_tensor_type::size()>{});
+}
+/// \endcond
 
 /// @{
 /*!
@@ -792,27 +977,28 @@ void evaluate(
  */
 template <auto&... LhsTensorIndices, typename RhsTE,
           Requires<std::is_base_of_v<Expression, RhsTE>> = nullptr>
+  requires(not tt::is_device_capable_v<typename RhsTE::type>)
 auto evaluate(const RhsTE& rhs_tensorexpression) {
-  using lhs_tensorindex_list =
-      tmpl::list<std::decay_t<decltype(LhsTensorIndices)>...>;
-  using rhs_tensorindex_list = typename RhsTE::args_list;
-  using rhs_symmetry = typename RhsTE::symmetry;
-  using rhs_tensorindextype_list = typename RhsTE::index_list;
-
-  // Stores (potentially reordered) symmetry and indices needed for constructing
-  // the LHS tensor, with index order specified by LhsTensorIndices
-  using lhs_tensor_symm_and_indices =
-      LhsTensorSymmAndIndices<rhs_tensorindex_list, lhs_tensorindex_list,
-                              rhs_symmetry, rhs_tensorindextype_list>;
-
-  Tensor<typename RhsTE::type, typename lhs_tensor_symm_and_indices::symmetry,
-         typename lhs_tensor_symm_and_indices::tensorindextype_list>
-      lhs_tensor{};
-
+  typename detail::EvaluatedTensor<
+      RhsTE, std::decay_t<decltype(LhsTensorIndices)>...>::type lhs_tensor{};
   evaluate<LhsTensorIndices...>(make_not_null(&lhs_tensor),
                                 rhs_tensorexpression);
   return lhs_tensor;
 }
+
+/// \cond
+template <auto&... LhsTensorIndices, typename RhsTE,
+          Requires<std::is_base_of_v<Expression, RhsTE>> = nullptr>
+  requires tt::is_device_capable_v<typename RhsTE::type>
+SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION auto evaluate(
+    const RhsTE& rhs_tensorexpression) {
+  typename detail::EvaluatedTensor<
+      RhsTE, std::decay_t<decltype(LhsTensorIndices)>...>::type lhs_tensor{};
+  evaluate<LhsTensorIndices...>(make_not_null(&lhs_tensor),
+                                rhs_tensorexpression);
+  return lhs_tensor;
+}
+/// \endcond
 
 /*!
  * \ingroup TensorExpressionsGroup
@@ -845,6 +1031,11 @@ auto evaluate(const RhsTE& rhs_tensorexpression) {
  *
  * \snippet Test_MixedOperations.cpp use_update
  *
+ * For device-capable data types (see `tt::is_device_capable`), such as
+ * `double`, this can be called in device code (see `tenex::evaluate`). The
+ * check that the LHS tensor uses the same generic index order where it appears
+ * in the RHS expression is only done on the host.
+ *
  * \note `LhsTensorIndices` must be passed by reference because non-type
  * template parameters cannot be class types until C++20.
  *
@@ -857,6 +1048,7 @@ template <auto&... LhsTensorIndices, typename LhsDataType, typename RhsDataType,
           typename LhsSymmetry, typename LhsIndexList, typename Derived,
           typename RhsSymmetry, typename RhsIndexList,
           typename... RhsTensorIndices>
+  requires(not tt::is_device_capable_v<LhsDataType>)
 void update(
     const gsl::not_null<Tensor<LhsDataType, LhsSymmetry, LhsIndexList>*>
         lhs_tensor,
@@ -872,7 +1064,31 @@ void update(
           lhs_tensor);
 
   detail::evaluate_impl<false, std::decay_t<decltype(LhsTensorIndices)>...>(
-      lhs_tensor, rhs_tensorexpression,
-      std::make_index_sequence<sizeof...(LhsTensorIndices)>{});
+      lhs_tensor, rhs_tensorexpression);
 }
+
+/// \cond
+template <auto&... LhsTensorIndices, typename LhsDataType, typename RhsDataType,
+          typename LhsSymmetry, typename LhsIndexList, typename Derived,
+          typename RhsSymmetry, typename RhsIndexList,
+          typename... RhsTensorIndices>
+  requires tt::is_device_capable_v<LhsDataType>
+SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION void update(
+    const gsl::not_null<Tensor<LhsDataType, LhsSymmetry, LhsIndexList>*>
+        lhs_tensor,
+    const TensorExpression<Derived, RhsDataType, RhsSymmetry, RhsIndexList,
+                           tmpl::list<RhsTensorIndices...>>&
+        rhs_tensorexpression) {
+  using lhs_tensorindex_list =
+      tmpl::list<std::decay_t<decltype(LhsTensorIndices)>...>;
+  // Assert that each instance of the LHS tensor in the RHS tensor expression
+  // uses the same generic index order that the LHS uses. Each LHS component is
+  // only read for computing itself, so the components can be assigned in turn.
+  KOKKOS_IF_ON_HOST(
+      ((~rhs_tensorexpression)
+           .template assert_lhs_tensorindices_same_in_rhs<lhs_tensorindex_list>(
+               lhs_tensor);))
+  evaluate<LhsTensorIndices...>(lhs_tensor, rhs_tensorexpression);
+}
+/// \endcond
 }  // namespace tenex

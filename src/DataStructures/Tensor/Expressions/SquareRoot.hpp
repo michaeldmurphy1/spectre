@@ -14,6 +14,7 @@
 #include "DataStructures/Tensor/Expressions/TensorExpression.hpp"
 #include "DataStructures/Tensor/Expressions/TimeIndex.hpp"
 #include "Utilities/ForceInline.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace tenex {
@@ -113,8 +114,7 @@ struct SquareRoot
   static constexpr bool primary_subtree_contains_primary_start =
       is_primary_start or primary_child_subtree_contains_primary_start;
 
-  SquareRoot(T t) : t_(std::move(t)) {}
-  ~SquareRoot() override = default;
+  constexpr SquareRoot(T t) : t_(std::move(t)) {}
 
   /// \brief Assert that the LHS tensor of the equation does not also appear in
   /// this expression's subtree
@@ -164,6 +164,17 @@ struct SquareRoot
   SPECTRE_ALWAYS_INLINE decltype(auto) get(
       const std::array<size_t, num_tensor_indices>& multi_index) const {
     return sqrt(t_.get(multi_index));
+  }
+
+  /// \brief Returns the value of the component at the compile-time
+  /// multi-index `MultiIndex`
+  ///
+  /// \details The multi-indices of the operands are computed at compile
+  /// time, so this is free of runtime index arithmetic. This is used for
+  /// device-capable data types (see `tenex::evaluate`).
+  template <std::array<size_t, num_tensor_indices> MultiIndex>
+  SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION decltype(auto) get() const {
+    return sqrt(t_.template get<MultiIndex>());
   }
 
   /// \brief Returns the square root of the component of the tensor evaluated
@@ -250,7 +261,7 @@ struct SquareRoot
 /// \param t the tensor expression of which to take the square root
 template <typename T, typename X, typename Symm, typename IndexList,
           typename... Args>
-SPECTRE_ALWAYS_INLINE auto sqrt(
+SPECTRE_ALWAYS_INLINE constexpr auto sqrt(
     const TensorExpression<T, X, Symm, IndexList, tmpl::list<Args...>>& t) {
   return tenex::SquareRoot<T, Args...>(~t);
 }

@@ -404,33 +404,20 @@ void reconstruct_fd_neighbor_work(
           }
         }
 
-        const auto& tensor_neighbor =
-            [&buffer, &neighbor_prims, reconstruct_density_times_temperature,
-             &rho_times_temperature_neighbor,
-             &subcell_volume_prims]() -> typename tag::type& {
-          if constexpr (std::is_same_v<tag,
-                                       hydro::Tags::Temperature<DataVector>>) {
-            if (reconstruct_density_times_temperature) {
-              get(rho_times_temperature_neighbor)
-                  .set_data_ref(
-                      &buffer[subcell_volume_prims.number_of_grid_points()],
-                      get(get<tag>(neighbor_prims)).size());
-              get(rho_times_temperature_neighbor) =
-                  get(get<hydro::Tags::RestMassDensity<DataVector>>(
-                      neighbor_prims)) *
-                  get(get<tag>(neighbor_prims));
-              return rho_times_temperature_neighbor;
-            } else {
-              (void)buffer, (void)reconstruct_density_times_temperature;
-              (void)rho_times_temperature_neighbor, (void)subcell_volume_prims;
-              return get<tag>(neighbor_prims);
-            }
-          } else {
-            (void)buffer, (void)reconstruct_density_times_temperature;
-            (void)rho_times_temperature_neighbor, (void)subcell_volume_prims;
-            return get<tag>(neighbor_prims);
+        const typename tag::type* tensor_neighbor_ptr =
+            &get<tag>(neighbor_prims);
+        if constexpr (std::is_same_v<tag, hydro::Tags::Temperature<DataVector>>) {
+          if (reconstruct_density_times_temperature) {
+            get(rho_times_temperature_neighbor)
+                .set_data_ref(&buffer[subcell_volume_prims.number_of_grid_points()],
+                              get(get<tag>(neighbor_prims)).size());
+            get(rho_times_temperature_neighbor) =
+                get(get<hydro::Tags::RestMassDensity<DataVector>>(neighbor_prims)) *
+                get(get<tag>(neighbor_prims));
+            tensor_neighbor_ptr = &rho_times_temperature_neighbor;
           }
-        }();
+        }
+        const auto& tensor_neighbor = *tensor_neighbor_ptr;
         auto& tensor_on_face = get<tag>(*vars_on_face);
         if (direction_to_reconstruct.side() == Side::Upper) {
           for (size_t tensor_index = 0; tensor_index < tensor_on_face.size();

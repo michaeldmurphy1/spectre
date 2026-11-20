@@ -1111,22 +1111,19 @@ struct ApplyBoundaryCorrections {
               // This cannot reuse an allocation because it is initialized
               // via move-assignment.  (If it is used at all.)
               DtVariables dt_boundary_correction_projected_onto_face{};
-              auto& dt_boundary_correction =
-                  [&dt_boundary_correction_on_mortar,
-                   &dt_boundary_correction_projected_onto_face, &face_mesh,
-                   &mortar_mesh, &mortar_size, &element,
-                   &direction]() -> DtVariables& {
-                if (element.neighbors().at(direction).are_conforming() and
-                    Spectral::needs_projection(face_mesh, mortar_mesh,
-                                               mortar_size)) {
-                  dt_boundary_correction_projected_onto_face =
-                      ::dg::project_from_mortar(
-                          dt_boundary_correction_on_mortar, face_mesh,
-                          mortar_mesh, mortar_size);
-                  return dt_boundary_correction_projected_onto_face;
-                }
-                return dt_boundary_correction_on_mortar;
-              }();
+              DtVariables* dt_boundary_correction_on_face =
+                  &dt_boundary_correction_on_mortar;
+              if (element.neighbors().at(direction).are_conforming() and
+                  Spectral::needs_projection(face_mesh, mortar_mesh,
+                                             mortar_size)) {
+                dt_boundary_correction_projected_onto_face =
+                    ::dg::project_from_mortar(dt_boundary_correction_on_mortar,
+                                              face_mesh, mortar_mesh,
+                                              mortar_size);
+                dt_boundary_correction_on_face =
+                    &dt_boundary_correction_projected_onto_face;
+              }
+              auto& dt_boundary_correction = *dt_boundary_correction_on_face;
               // The auxiliary boundary correction is not filtered currently
               if constexpr (not DenseOutput and not ComputeAuxiliary) {
                 // Filter the boundary correction on the mortar before it is

@@ -133,6 +133,23 @@ struct SquareRoot {
   }
 };
 
+// Like `SquareRoot`, but in place, and it overwrites the value also where it
+// fails
+struct SquareRootInPlace {
+  using return_tags = tmpl::list<Value>;
+  using argument_tags = tmpl::list<Value>;
+
+  KOKKOS_FUNCTION static PointwiseStatus apply(
+      const gsl::not_null<Scalar<double>*> root, const Scalar<double>& value) {
+    if (get(value) < 0.0) {
+      get(*root) = 0.0;
+      return {false, true};
+    }
+    get(*root) = std::sqrt(get(value));
+    return {false, false};
+  }
+};
+
 tnsr::I<DataVector, 3> make_vector(const size_t num_points) {
   tnsr::I<DataVector, 3> vector{num_points};
   for (size_t d = 0; d < 3; ++d) {
@@ -414,6 +431,32 @@ void test_deferred_status() {
   CHECK_FALSE(status.failed());
   CHECK_FALSE(status.summary().any_flag);
 }
+
+// The snapshot of a deferred status holds the value that failed also if the
+// function updates it in place and overwrites it where it fails
+void test_deferred_status_in_place() {
+  const Kokkos::DefaultExecutionSpace exec{};
+  BatchedVariables<tmpl::list<Value>, Kokkos::HostSpace> host_values{2, 1};
+  get(get<Tags::BatchView<Value, Kokkos::HostSpace>>(host_values))(0, 0) = 4.0;
+  get(get<Tags::BatchView<Value, Kokkos::HostSpace>>(host_values))(1, 0) = -3.0;
+  BatchedVariables<tmpl::list<Value>> values{exec, 2, 1};
+  deep_copy(exec, make_not_null(&values), host_values);
+  DeferredPointwiseStatus<tmpl::list<Value>> status{exec};
+  status.reset(exec);
+  apply_pointwise_on_device<SquareRootInPlace>(
+      exec, make_not_null(&values), make_not_null(&status),
+      SquareRootInPlace::return_tags{}, SquareRootInPlace::argument_tags{},
+      make_device_arguments<Value>(exec, get<Tags::BatchView<Value>>(values)));
+  status.copy_to_host(exec);
+  deep_copy(exec, make_not_null(&host_values), values);
+  exec.fence();
+  CHECK(status.summary().number_of_failures == 1);
+  CHECK(status.summary().first_failed_grid_point == 1);
+  CHECK(get(get<Tags::AtIndex<Value>>(status.snapshot())) == -3.0);
+  // The function overwrote the value
+  CHECK(get(get<Tags::BatchView<Value, Kokkos::HostSpace>>(host_values))(
+            1, 0) == 0.0);
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.DataStructures.ApplyPointwiseOnDevice",
@@ -424,4 +467,5 @@ SPECTRE_TEST_CASE("Unit.DataStructures.ApplyPointwiseOnDevice",
   test_batch();
   test_reduction();
   test_deferred_status();
+  test_deferred_status_in_place();
 }

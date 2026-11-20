@@ -104,6 +104,13 @@ struct PatchArray {
     patch_array.doneInserting();
   }
 
+  /// Whether the array has no patches, e.g. because no elements use FD, so
+  /// that `Parallel::Main` doesn't wait for its termination status
+  static bool is_empty(Parallel::GlobalCache<Metavariables>& cache) {
+    return Parallel::get<typename Metavariables::patch_table_tag>(cache)
+               .number_of_patches() == 0;
+  }
+
   static void execute_next_phase(
       const Parallel::Phase next_phase,
       Parallel::CProxy_GlobalCache<Metavariables>& global_cache,

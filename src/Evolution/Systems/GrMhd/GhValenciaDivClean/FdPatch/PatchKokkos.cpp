@@ -256,7 +256,6 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::prepare_send(
       "GhValenciaDivClean::fd_patch::Patch::prepare_send"};
   subcell::primitive_ghost_variables_on_device(
       exec, make_not_null(&ghost_variables_), primitives, evolved_variables);
-  patch_elements().fill_ghost_zones(exec, flat(ghost_variables_));
   if (patch_elements().has_external_faces()) {
     patch_elements().enqueue_boundary_data(exec, flat(ghost_variables_));
     ValenciaDivClean::subcell::enqueue_rdmp_tci_data_on_device(
@@ -274,6 +273,10 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::prepare_send(
   // The only wait for the device in a substep: the failures of the last
   // substep are reported before its state is sent
   check_last_step(exec);
+  // The ghost zones between the elements of the patch are filled after the
+  // wait, so that the data for the neighbors outside the patch is sent without
+  // waiting for them
+  patch_elements().fill_ghost_zones(exec, flat(ghost_variables_));
   if (not patch_elements().has_external_faces()) {
     return {};
   }

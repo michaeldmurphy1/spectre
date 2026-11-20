@@ -42,6 +42,7 @@
 #include "Parallel/Local.hpp"
 #include "Parallel/Reduction.hpp"
 #include "Parallel/TypeTraits.hpp"
+#include "ParallelAlgorithms/Events/NormStatistics.hpp"
 #include "ParallelAlgorithms/Events/ReductionScope.hpp"
 #include "ParallelAlgorithms/Events/Tags.hpp"
 #include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
@@ -342,6 +343,34 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
                   const ParallelComponent* const /*meta*/,
                   const ObservationValue& observation_value) const;
 
+  using array_section_id_tag = ArraySectionIdTag;
+
+  /// The names of the tensors to observe, as in the options
+  const std::vector<std::string>& tensor_names() const { return tensor_names_; }
+
+  /*!
+   * \brief Contribute the norms of the element `array_index` from the
+   * `NormStatistics` of the components of the observed tensors, which were
+   * computed elsewhere (e.g. on a device)
+   *
+   * \details This does what `operator()` does after evaluating the tensors in
+   * the DataBox of the element, so the observation is the same (up to roundoff
+   * from the order of the sums). `statistics` must hold all `tensor_names()`.
+   * `section_observation_key` is the key of the section of the element (see
+   * `observers::get_section_observation_key`), `number_of_points` the number
+   * of grid points of the element and `local_volume` its volume.
+   */
+  template <typename Metavariables, size_t VolumeDim,
+            typename ParallelComponent>
+  void contribute_statistics(
+      Parallel::GlobalCache<Metavariables>& cache,
+      const ElementId<VolumeDim>& array_index,
+      const ParallelComponent* const /*meta*/,
+      const ObservationValue& observation_value,
+      const std::optional<std::string>& section_observation_key,
+      const Domain<VolumeDim>& domain, size_t number_of_points,
+      double local_volume, const NormStatisticsOfTensors& statistics) const;
+
   using observation_registration_tags = tmpl::list<::Tags::DataBox>;
 
   template <typename DbTagsList>
@@ -384,6 +413,19 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
   std::optional<std::string> subfile_path_for_element(
       const std::optional<std::string>& section_observation_key,
       const Domain<Dim>& domain, const ElementId<Dim>& element_id) const;
+
+  // Send the norms of an element to the observer
+  template <typename Metavariables, size_t VolumeDim,
+            typename ParallelComponent>
+  void contribute(
+      Parallel::GlobalCache<Metavariables>& cache,
+      const ElementId<VolumeDim>& array_index,
+      const ObservationValue& observation_value,
+      const std::string& subfile_path_with_suffix, size_t number_of_points,
+      double local_volume,
+      std::unordered_map<
+          std::string, std::pair<std::vector<double>, std::vector<std::string>>>
+          norm_values_and_names) const;
 
   std::string subfile_path_;
   std::vector<std::string> tensor_names_{};
@@ -474,6 +516,16 @@ void fill_norm_values_and_names(
     const Mesh<Dim>& mesh, const DataVector& det_jacobian,
     const std::string& tensor_name, const std::string& tensor_norm_type,
     const std::string& tensor_component, size_t number_of_points);
+
+// As above, from the statistics of the components (see `NormStatistics`)
+void fill_norm_values_and_names(
+    gsl::not_null<std::unordered_map<
+        std::string, std::pair<std::vector<double>, std::vector<std::string>>>*>
+        norm_values_and_names,
+    const std::vector<std::string>& component_names,
+    const std::vector<NormStatistics>& component_statistics,
+    const std::string& tensor_name, const std::string& tensor_norm_type,
+    const std::string& tensor_component);
 
 // Expand complex data into real and imaginary parts, or just forward real data
 std::pair<std::vector<std::string>, std::vector<DataVector>>
@@ -605,6 +657,73 @@ operator()(const ObservationBox<ComputeTagsList, DataBoxType>& box,
        number_of_points),
    ...);
 
+  contribute<Metavariables, VolumeDim, ParallelComponent>(
+      cache, array_index, observation_value, subfile_path.value(),
+      number_of_points, local_volume, std::move(norm_values_and_names));
+}
+
+template <typename... ObservableTensorTags, typename... NonTensorComputeTags,
+          typename ArraySectionIdTag, typename OptionName>
+template <typename Metavariables, size_t VolumeDim, typename ParallelComponent>
+void ObserveNorms<tmpl::list<ObservableTensorTags...>,
+                  tmpl::list<NonTensorComputeTags...>, ArraySectionIdTag,
+                  OptionName>::
+    contribute_statistics(
+        Parallel::GlobalCache<Metavariables>& cache,
+        const ElementId<VolumeDim>& array_index,
+        const ParallelComponent* const /*meta*/,
+        const ObservationValue& observation_value,
+        const std::optional<std::string>& section_observation_key,
+        const Domain<VolumeDim>& domain, const size_t number_of_points,
+        const double local_volume,
+        const NormStatisticsOfTensors& statistics) const {
+  const std::optional<std::string> subfile_path =
+      subfile_path_for_element(section_observation_key, domain, array_index);
+  if (not subfile_path.has_value()) {
+    return;
+  }
+  std::unordered_map<std::string,
+                     std::pair<std::vector<double>, std::vector<std::string>>>
+      norm_values_and_names{};
+  // In the order of `ObservableTensorTags`, as `operator()`, which sets the
+  // order of the legend
+  const auto fill = [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+    const std::string tensor_name = db::tag_name<Tag>();
+    for (size_t i = 0; i < tensor_names_.size(); ++i) {
+      if (tensor_name == tensor_names_[i]) {
+        const auto tensor_statistics = statistics.find(tensor_name);
+        if (tensor_statistics == statistics.end()) {
+          ERROR("The norm statistics of the observed tensor '"
+                << tensor_name << "' are missing.");
+        }
+        ObserveNorms_impl::fill_norm_values_and_names(
+            make_not_null(&norm_values_and_names),
+            tensor_statistics->second.first, tensor_statistics->second.second,
+            tensor_name, tensor_norm_types_[i], tensor_components_[i]);
+      }
+    }
+  };
+  (fill(tmpl::type_<ObservableTensorTags>{}), ...);
+  contribute<Metavariables, VolumeDim, ParallelComponent>(
+      cache, array_index, observation_value, subfile_path.value(),
+      number_of_points, local_volume, std::move(norm_values_and_names));
+}
+
+template <typename... ObservableTensorTags, typename... NonTensorComputeTags,
+          typename ArraySectionIdTag, typename OptionName>
+template <typename Metavariables, size_t VolumeDim, typename ParallelComponent>
+void ObserveNorms<tmpl::list<ObservableTensorTags...>,
+                  tmpl::list<NonTensorComputeTags...>, ArraySectionIdTag,
+                  OptionName>::
+    contribute(
+        Parallel::GlobalCache<Metavariables>& cache,
+        const ElementId<VolumeDim>& array_index,
+        const ObservationValue& observation_value,
+        const std::string& subfile_path_with_suffix,
+        const size_t number_of_points, const double local_volume,
+        std::unordered_map<std::string, std::pair<std::vector<double>,
+                                                  std::vector<std::string>>>
+            norm_values_and_names) const {
   // Concatenate the legend info together.
   std::vector<std::string> legend{observation_value.name, "NumberOfPoints",
                                   "Volume"};
@@ -626,7 +745,6 @@ operator()(const ObservationBox<ComputeTagsList, DataBoxType>& box,
                 norm_values_and_names["VolumeIntegral"].second.begin(),
                 norm_values_and_names["VolumeIntegral"].second.end());
 
-  const std::string& subfile_path_with_suffix = subfile_path.value();
   // Send data to reduction observer
   auto& local_observer = *Parallel::local_branch(
       Parallel::get_parallel_component<

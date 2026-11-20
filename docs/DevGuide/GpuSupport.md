@@ -31,6 +31,7 @@ automatically and building it as part of SpECTRE with the CUDA backend:
 cmake -D SPECTRE_KOKKOS=ON \
       -D SPECTRE_FETCH_MISSING_DEPS=ON \
       -D Kokkos_ENABLE_CUDA=ON \
+      -D USE_XSIMD=OFF \
       ...
 ```
 
@@ -40,8 +41,12 @@ Here's an example for using an existing Kokkos installation:
 cmake -D SPECTRE_KOKKOS=ON \
       -D Kokkos_ROOT=path/to/kokkos/build \
       -D CMAKE_CXX_COMPILER=path/to/kokkos/bin/nvcc_wrapper \
+      -D USE_XSIMD=OFF \
       ...
 ```
+
+GPU backends need `-D USE_XSIMD=OFF`, since device code calls the scalar
+`simd` functions and xsimd doesn't compile with nvcc.
 
 When building Kokkos separately with the CUDA backend, you have to set the
 following configuration options:
@@ -322,12 +327,14 @@ share what they can:
 
 The generic actions call the system patch (`PatchTag` holds it) through these
 members: `state_tags`, `patch_elements()` (with `element_ids()`),
-`prepare_send()`, `received_all()`, `receive()`, `take_step()`,
+`prepare_send()`, `received_all()`, `receive()`, `compute_time_derivative()`
+and `update_variables()` (a substep, with dense output in between),
 `check_last_step()`, the self-start `save_initial_values()`,
 `restore_initial_values()` and `discard_initial_values()`, and for events
 `ElementVariables`, `element_variables()`,
 `element_variables_without_values()`, `prepare_element_boxes()` and
-`make_element_box()`.
+`make_element_box()`, and for dense events `dense_output()` and
+`dense_element_variables()`.
 
 ## Batching
 
@@ -477,6 +484,10 @@ version where the system computes the cell geometry, e.g.
 GhValenciaDivClean), and blocks whose cells line up across block boundaries
 (patches copy ghost data between blocks instead of interpolating).
 GhValenciaDivClean patches support the harmonic gauge and damping functions
-that are sums of Gaussians. Patches don't support external boundary
-conditions, local time stepping, step size control by error estimates,
-control systems or interpolation yet. Anything unsupported is an error.
+that are sums of Gaussians. Dense events are supported for `Completion`,
+`ObserveFields` and `ObserveNorms`. With control systems, patches wait for
+the functions of time and switch the grid rotation like the elements, but they
+don't contribute to the measurements yet, which is an error. Patches don't
+support external boundary conditions, local time stepping, step size control
+by error estimates, interpolation, numerical initial data or events at
+cleanup yet. Anything unsupported is an error.

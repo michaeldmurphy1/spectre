@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <string>
 #include <variant>
 #include <vector>
 
@@ -19,10 +20,12 @@
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Evolution/DgSubcell/FdPatch/BoundaryMessagesKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/PatchBaseKokkos.hpp"
+#include "Evolution/Patches/DeviceObservablesKokkos.hpp"
 #include "Evolution/Patches/SavedBatchesKokkos.hpp"
 #include "Evolution/Patches/TagsKokkos.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Initialize.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Tags.hpp"
+#include "Evolution/Systems/GrMhd/GhValenciaDivClean/FdPatch/ObservablesKokkos.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/Subcell/CouplingKokkos.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/Subcell/PrimitiveGhostData.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/Subcell/TimeDerivativeKokkos.hpp"
@@ -271,6 +274,26 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
       const EvolvedVariables& evolved_variables,
       const PrimitiveVariables& primitives, double time);
 
+  /// Whether `device_observables` can compute the observable tensor `name`
+  /// (see `fd_patch::is_device_observable`)
+  static bool is_device_observable(const std::string& name);
+
+  /*!
+   * \brief The observable tensors `tensor_names` of all elements, computed on
+   * the device at `time` (see `fd_patch::device_observables`)
+   *
+   * \details From the state (`evolved_variables` and `primitives`) or, with
+   * `dense_output`, from the last `dense_output()`, whose failures are reported
+   * as `dense_element_variables()` does. The result refers to memory of the
+   * patch that the next call overwrites.
+   */
+  const evolution::patches::DeviceObservables& device_observables(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const std::vector<std::string>& tensor_names,
+      const EvolvedVariables& evolved_variables,
+      const PrimitiveVariables& primitives, bool dense_output, double time,
+      const domain::FunctionsOfTimeMap& functions_of_time);
+
   /// Compute the ghost variables and fill the ghost zones between the
   /// elements of the patch, and return the boundary data for the neighbors
   /// outside the patch, valid until `next_time_step_id`. The
@@ -421,6 +444,10 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
       stepper_errors_{};
   // Buffers of the RDMP data, kept so they aren't allocated every substep
   ValenciaDivClean::subcell::RdmpTciDataBuffers rdmp_tci_data_buffers_{};
+  // The observables computed on the device and their buffers, kept so they
+  // aren't allocated every observation
+  evolution::patches::DeviceObservables device_observables_{};
+  DeviceObservablesBuffers device_observables_buffers_{};
 };
 }  // namespace grmhd::GhValenciaDivClean::fd_patch
 #endif  // SPECTRE_KOKKOS

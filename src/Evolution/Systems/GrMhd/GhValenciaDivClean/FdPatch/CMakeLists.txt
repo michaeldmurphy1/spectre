@@ -4,6 +4,7 @@
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  ObservablesKokkos.cpp
   PatchKokkos.cpp
   )
 
@@ -12,5 +13,6 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   InitializePatchKokkos.hpp
+  ObservablesKokkos.hpp
   PatchKokkos.hpp
   )

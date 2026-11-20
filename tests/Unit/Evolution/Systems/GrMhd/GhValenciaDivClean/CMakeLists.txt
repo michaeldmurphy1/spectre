@@ -36,6 +36,7 @@ set(LIBRARY_SOURCES
 
 if (SPECTRE_KOKKOS)
   list(APPEND LIBRARY_SOURCES
+    FdPatch/Test_ObservablesKokkos.cpp
     FiniteDifference/Test_SpacetimeOnFacesKokkos.cpp
     Subcell/Test_CouplingKokkos.cpp
     Subcell/Test_PrimitiveGhostDataKokkos.cpp
@@ -64,6 +65,7 @@ target_link_libraries(
   GhValenciaDivClean
   HydroHelpers
   M1Grey
+  Patches
   RadiationTransport
   ValenciaDivClean
   )

@@ -10,6 +10,7 @@
 #include "DataStructures/Tensor/Expressions/DataTypeSupport.hpp"
 #include "DataStructures/Tensor/Expressions/TensorExpression.hpp"
 #include "Utilities/ForceInline.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace tenex {
@@ -103,8 +104,7 @@ struct NumberAsExpression
   static constexpr bool primary_subtree_contains_primary_start =
       is_primary_start;
 
-  NumberAsExpression(const type& number) : number_(number) {}
-  ~NumberAsExpression() override = default;
+  constexpr NumberAsExpression(const type& number) : number_(number) {}
 
   // This expression does not represent a tensor, nor does it have any children,
   // so we should never need to assert that the LHS `Tensor` is not equal to the
@@ -127,6 +127,12 @@ struct NumberAsExpression
   /// \return the number represented by this expression
   SPECTRE_ALWAYS_INLINE type
   get(const std::array<size_t, num_tensor_indices>& /*multi_index*/) const {
+    return number_;
+  }
+
+  /// \brief Returns the number represented by the expression
+  template <std::array<size_t, num_tensor_indices> MultiIndex>
+  SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION type get() const {
     return number_;
   }
 

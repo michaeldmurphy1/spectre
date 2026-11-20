@@ -15,6 +15,7 @@
 #include "DataStructures/Tensor/Expressions/TensorExpression.hpp"
 #include "Utilities/ForceInline.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace tenex {
@@ -104,8 +105,7 @@ struct Negate
   static constexpr bool primary_subtree_contains_primary_start =
       is_primary_start or primary_child_subtree_contains_primary_start;
 
-  Negate(T t) : t_(std::move(t)) {}
-  ~Negate() override = default;
+  constexpr Negate(T t) : t_(std::move(t)) {}
 
   /// \brief Assert that the LHS tensor of the equation does not also appear in
   /// this expression's subtree
@@ -151,6 +151,17 @@ struct Negate
   SPECTRE_ALWAYS_INLINE decltype(auto) get(
       const std::array<size_t, num_tensor_indices>& multi_index) const {
     return -t_.get(multi_index);
+  }
+
+  /// \brief Returns the value of the component at the compile-time
+  /// multi-index `MultiIndex`
+  ///
+  /// \details The multi-indices of the operands are computed at compile
+  /// time, so this is free of runtime index arithmetic. This is used for
+  /// device-capable data types (see `tenex::evaluate`).
+  template <std::array<size_t, num_tensor_indices> MultiIndex>
+  SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION decltype(auto) get() const {
+    return -t_.template get<MultiIndex>();
   }
 
   /// \brief Return the value of the component of the negated tensor expression
@@ -224,7 +235,7 @@ struct Negate
 /// \param t the tensor expression
 /// \return the tensor expression representing the negation of `t`
 template <typename T>
-SPECTRE_ALWAYS_INLINE auto operator-(
+SPECTRE_ALWAYS_INLINE constexpr auto operator-(
     const TensorExpression<T, typename T::type, typename T::symmetry,
                            typename T::index_list, typename T::args_list>& t) {
   return tenex::Negate<T>(~t);

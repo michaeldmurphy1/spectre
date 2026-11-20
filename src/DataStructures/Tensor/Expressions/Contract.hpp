@@ -21,6 +21,7 @@
 #include "DataStructures/Tensor/Symmetry.hpp"
 #include "Utilities/ForceInline.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeArray.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -556,10 +557,9 @@ struct TensorContract
   /// involves many tensor operations.
   static constexpr bool evaluate_terms_separately = leg_length == 0;
 
-  explicit TensorContract(
+  constexpr explicit TensorContract(
       const TensorExpression<T, X, Symm, IndexList, ArgsList>& t)
       : t_(~t) {}
-  ~TensorContract() override = default;
 
   /// \brief Assert that the LHS tensor of the equation does not also appear in
   /// this expression's subtree
@@ -714,8 +714,8 @@ struct TensorContract
   /// of the uncontracted operand expression to sum
   /// \return the next highest multi-index between the components being summed
   /// in the contraction
-  SPECTRE_ALWAYS_INLINE static std::array<size_t,
-                                          num_uncontracted_tensor_indices>
+  SPECTRE_ALWAYS_INLINE static constexpr std::array<
+      size_t, num_uncontracted_tensor_indices>
   get_next_highest_multi_index_to_sum(
       const std::array<size_t, num_uncontracted_tensor_indices>&
           uncontracted_multi_index) {
@@ -904,6 +904,49 @@ struct TensorContract
         t_, get_highest_multi_index_to_sum(contracted_multi_index));
   }
 
+  /// \brief The uncontracted multi-indices of the terms that are summed to
+  /// get the component at the contracted multi-index `MultiIndex`, in the
+  /// order `compute_contraction` visits them
+  template <std::array<size_t, num_tensor_indices> MultiIndex>
+  static constexpr std::array<
+      std::array<size_t, num_uncontracted_tensor_indices>, num_terms_summed>
+  multi_indices_to_sum() {
+    std::array<std::array<size_t, num_uncontracted_tensor_indices>,
+               num_terms_summed>
+        result{};
+    result[0] = get_highest_multi_index_to_sum(MultiIndex);
+    for (size_t i = 1; i < num_terms_summed; ++i) {
+      result[i] = get_next_highest_multi_index_to_sum(result[i - 1]);
+    }
+    return result;
+  }
+
+  /// \brief Returns the value of the component at the compile-time
+  /// multi-index `MultiIndex`
+  ///
+  /// \details The multi-indices of the operands are computed at compile
+  /// time, so this is free of runtime index arithmetic. This is used for
+  /// device-capable data types (see `tenex::evaluate`).
+  ///
+  /// The terms are summed in the same order as in `compute_contraction`.
+  template <std::array<size_t, num_tensor_indices> MultiIndex>
+  SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION decltype(auto) get() const {
+    constexpr auto terms = multi_indices_to_sum<MultiIndex>();
+    return sum_terms<terms>(std::make_index_sequence<num_terms_summed>{});
+  }
+
+ private:
+  // (((t_{n-1} + t_{n-2}) + ...) + t_0) with t_k the k-th term to sum
+  template <std::array<std::array<size_t, num_uncontracted_tensor_indices>,
+                       num_terms_summed>
+                Terms,
+            size_t... Ks>
+  SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION decltype(auto) sum_terms(
+      std::index_sequence<Ks...> /*meta*/) const {
+    return (... + t_.template get<Terms[num_terms_summed - 1 - Ks]>());
+  }
+
+ public:
   /// \brief Computes the result of an internal leg of the contraction
   ///
   /// \details

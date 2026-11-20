@@ -20,6 +20,7 @@
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ForceInline.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/Requires.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -273,10 +274,9 @@ struct TensorAsExpression<Tensor<X, Symm<SymmValues...>, IndexList<Indices...>>,
       is_primary_start;
 
   /// Construct an expression from a Tensor
-  explicit TensorAsExpression(
+  constexpr explicit TensorAsExpression(
       const Tensor<X, Symm<SymmValues...>, IndexList<Indices...>>& t)
       : t_(&t) {}
-  ~TensorAsExpression() override = default;
 
   /// \brief Assert that the LHS tensor of the equation is not equal to the
   /// `Tensor` represented by this expression
@@ -323,6 +323,20 @@ struct TensorAsExpression<Tensor<X, Symm<SymmValues...>, IndexList<Indices...>>,
   SPECTRE_ALWAYS_INLINE decltype(auto) get(
       const std::array<size_t, num_tensor_indices>& multi_index) const {
     return t_->get(multi_index);
+  }
+
+  /// \brief Returns the value of the component at the compile-time
+  /// multi-index `MultiIndex`
+  ///
+  /// \details The multi-indices of the operands are computed at compile
+  /// time, so this is free of runtime index arithmetic. This is used for
+  /// device-capable data types (see `tenex::evaluate`).
+  template <std::array<size_t, num_tensor_indices> MultiIndex>
+  SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION decltype(auto) get() const {
+    constexpr size_t storage_index =
+        Tensor<X, Symm<SymmValues...>,
+               IndexList<Indices...>>::structure::get_storage_index(MultiIndex);
+    return (*t_)[storage_index];
   }
 
   /// \brief Returns the value of the contained tensor's multi-index

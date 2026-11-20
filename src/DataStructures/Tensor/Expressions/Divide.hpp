@@ -19,6 +19,7 @@
 #include "DataStructures/Tensor/Expressions/TimeIndex.hpp"
 #include "Utilities/ForceInline.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeArray.hpp"
 #include "Utilities/Requires.hpp"
 #include "Utilities/TMPL.hpp"
@@ -155,8 +156,7 @@ struct Divide
   static constexpr bool primary_subtree_contains_primary_start =
       is_primary_start or primary_child_subtree_contains_primary_start;
 
-  Divide(T1 t1, T2 t2) : t1_(std::move(t1)), t2_(std::move(t2)) {}
-  ~Divide() override = default;
+  constexpr Divide(T1 t1, T2 t2) : t1_(std::move(t1)), t2_(std::move(t2)) {}
 
   /// \brief Assert that the LHS tensor of the equation does not also appear in
   /// this expression's subtree
@@ -181,10 +181,12 @@ struct Divide
   SPECTRE_ALWAYS_INLINE void assert_lhs_tensorindices_same_in_rhs(
       const gsl::not_null<LhsTensor*> lhs_tensor) const {
     if constexpr (not std::is_base_of_v<MarkAsNumberAsExpression, T1>) {
-      t1_.assert_lhs_tensorindices_same_in_rhs(lhs_tensor);
+      t1_.template assert_lhs_tensorindices_same_in_rhs<LhsTensorIndices>(
+          lhs_tensor);
     }
     if constexpr (not std::is_base_of_v<MarkAsNumberAsExpression, T2>) {
-      t2_.assert_lhs_tensorindices_same_in_rhs(lhs_tensor);
+      t2_.template assert_lhs_tensorindices_same_in_rhs<LhsTensorIndices>(
+          lhs_tensor);
     }
   }
 
@@ -212,6 +214,17 @@ struct Divide
   SPECTRE_ALWAYS_INLINE decltype(auto) get(
       const std::array<size_t, num_tensor_indices>& result_multi_index) const {
     return t1_.get(result_multi_index) / t2_.get(op2_multi_index);
+  }
+
+  /// \brief Returns the value of the component at the compile-time
+  /// multi-index `MultiIndex`
+  ///
+  /// \details The multi-indices of the operands are computed at compile
+  /// time, so this is free of runtime index arithmetic. This is used for
+  /// device-capable data types (see `tenex::evaluate`).
+  template <std::array<size_t, num_tensor_indices> MultiIndex>
+  SPECTRE_ALWAYS_INLINE KOKKOS_FUNCTION decltype(auto) get() const {
+    return t1_.template get<MultiIndex>() / t2_.template get<op2_multi_index>();
   }
 
   /// \brief Return the value of the component of the quotient tensor at a given
@@ -345,7 +358,7 @@ struct Divide
 /// \param t1 the tensor expression numerator
 /// \param t2 the rank 0 tensor expression denominator
 template <typename T1, typename T2, typename... Args2>
-SPECTRE_ALWAYS_INLINE auto operator/(
+SPECTRE_ALWAYS_INLINE constexpr auto operator/(
     const TensorExpression<T1, typename T1::type, typename T1::symmetry,
                            typename T1::index_list, typename T1::args_list>& t1,
     const TensorExpression<T2, typename T2::type, typename T2::symmetry,
@@ -365,14 +378,14 @@ SPECTRE_ALWAYS_INLINE auto operator/(
 /// \return the tensor expression representing the quotient of the tensor
 /// expression over the number
 template <typename T, typename N, Requires<std::is_arithmetic_v<N>> = nullptr>
-SPECTRE_ALWAYS_INLINE auto operator/(
+SPECTRE_ALWAYS_INLINE constexpr auto operator/(
     const TensorExpression<T, typename T::type, typename T::symmetry,
                            typename T::index_list, typename T::args_list>& t,
     const N number) {
   return t * tenex::NumberAsExpression(1.0 / number);
 }
 template <typename T, typename N>
-SPECTRE_ALWAYS_INLINE auto operator/(
+SPECTRE_ALWAYS_INLINE constexpr auto operator/(
     const TensorExpression<T, typename T::type, typename T::symmetry,
                            typename T::index_list, typename T::args_list>& t,
     const std::complex<N>& number) {
@@ -390,14 +403,14 @@ SPECTRE_ALWAYS_INLINE auto operator/(
 /// \return the tensor expression representing the quotient of the number over
 /// the tensor expression
 template <typename T, typename N, Requires<std::is_arithmetic_v<N>> = nullptr>
-SPECTRE_ALWAYS_INLINE auto operator/(
+SPECTRE_ALWAYS_INLINE constexpr auto operator/(
     const N number,
     const TensorExpression<T, typename T::type, typename T::symmetry,
                            typename T::index_list, typename T::args_list>& t) {
   return tenex::NumberAsExpression(number) / t;
 }
 template <typename T, typename N>
-SPECTRE_ALWAYS_INLINE auto operator/(
+SPECTRE_ALWAYS_INLINE constexpr auto operator/(
     const std::complex<N>& number,
     const TensorExpression<T, typename T::type, typename T::symmetry,
                            typename T::index_list, typename T::args_list>& t) {

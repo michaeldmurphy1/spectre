@@ -132,6 +132,21 @@ class FdPatchElements : public evolution::patches::PatchElements {
       const Kokkos::DefaultExecutionSpace& exec, double time,
       const ::domain::FunctionsOfTimeMap& functions_of_time) const;
 
+  /*!
+   * \brief The inertial coordinates, the logical to inertial inverse Jacobian
+   * and its determinant at the cell centers at `time` on the device, e.g. for
+   * observations on the device.
+   *
+   * \details If the mesh moves, the geometry is evaluated with the maps at
+   * `time` (see `device_maps_at()`) on `exec`, into the device buffers of
+   * `prepare_host_inertial_cell_geometry()`, so the next call of either
+   * function overwrites the result. Otherwise it is the time-independent
+   * `cell_geometry()`, which needs `compute_cell_geometry`.
+   */
+  const BatchedVariables<cell_geometry_tags>& observation_cell_geometry(
+      const Kokkos::DefaultExecutionSpace& exec, double time,
+      const ::domain::FunctionsOfTimeMap& functions_of_time) const;
+
   /// The inertial coordinates, the logical to inertial inverse Jacobian and
   /// its determinant at the cell centers of the element in `slot` on the host,
   /// at the time of the last `prepare_host_inertial_cell_geometry()`,

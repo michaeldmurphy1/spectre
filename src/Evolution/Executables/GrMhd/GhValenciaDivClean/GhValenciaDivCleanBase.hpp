@@ -995,16 +995,35 @@ struct GhValenciaDivCleanTemplateBase<
       evolution::patches::Actions::UpdateVariables<fd_patch_tag>>;
   using fd_patch_component = evolution::patches::PatchArray<
       derived_metavars,
-      tmpl::list<
+      tmpl::flatten<tmpl::list<
           Parallel::PhaseActions<
               Parallel::Phase::Initialization,
-              tmpl::list<
+              tmpl::flatten<tmpl::list<
                   Initialization::Actions::InitializeItems<
                       Initialization::TimeStepping<derived_metavars,
                                                    TimeStepper, false, true>>,
                   grmhd::GhValenciaDivClean::fd_patch::Actions::InitializePatch<
                       ordered_list_of_primitive_recovery_schemes>,
-                  Parallel::Actions::TerminatePhase>>,
+                  // The functions of time, as in the DataBox of the DG
+                  // elements (see `evolution::dg::Initialization::Domain`),
+                  // e.g. for triggers
+                  Initialization::Actions::AddComputeTags<
+                      tmpl::list<Parallel::Tags::FromGlobalCache<
+                          tmpl::conditional_t<
+                              use_control_systems,
+                              ::control_system::Tags::FunctionsOfTimeInitialize,
+                              ::domain::Tags::FunctionsOfTimeInitialize>,
+                          derived_metavars>>>,
+                  // As the DG elements, so that the patches have the
+                  // measurements of the control systems among their dense
+                  // triggers (which they don't run yet, see
+                  // `evolution::patches::Actions::RunEventsAndDenseTriggers`)
+                  tmpl::conditional_t<
+                      use_control_systems,
+                      control_system::Actions::InitializeMeasurements<
+                          control_systems>,
+                      tmpl::list<>>,
+                  Parallel::Actions::TerminatePhase>>>,
           // The DG elements exchange the initial TCI data in this phase
           Parallel::PhaseActions<
               Parallel::Phase::InitializeInitialDataDependentQuantities,
@@ -1035,6 +1054,9 @@ struct GhValenciaDivCleanTemplateBase<
           Parallel::PhaseActions<
               Parallel::Phase::Evolve,
               tmpl::flatten<tmpl::list<
+                  // As the DG elements, before anything evaluates the
+                  // functions of time of the substep (e.g. the maps)
+                  ::domain::Actions::CheckFunctionsOfTimeAreReady<volume_dim>,
                   // As the DG elements at the start of each step
                   grmhd::GhValenciaDivClean::fd_patch::Actions::FixVariables<
                       ordered_list_of_primitive_recovery_schemes>,
@@ -1048,7 +1070,19 @@ struct GhValenciaDivCleanTemplateBase<
                       fd_patch_tag>,
                   // As for the DG elements, so that all elements halt for
                   // phase changes (e.g. checkpoints) at the same slab
-                  PhaseControl::Actions::ExecutePhaseChange>>>>>;
+                  PhaseControl::Actions::ExecutePhaseChange>>>,
+          // The zeroth element switches the rotation of the grid, also if it
+          // is in a patch
+          tmpl::conditional_t<
+              UseControlSystems,
+              Parallel::PhaseActions<
+                  Parallel::Phase::DisableRotationControl,
+                  tmpl::list<
+                      evolution::patches::Actions::RunOnZerothElement<
+                          control_system::Actions::SwitchGridRotationToSettle,
+                          fd_patch_tag>,
+                      Parallel::Actions::TerminatePhase>>,
+              tmpl::list<>>>>>;
 #endif  // SPECTRE_KOKKOS
 
   struct registration

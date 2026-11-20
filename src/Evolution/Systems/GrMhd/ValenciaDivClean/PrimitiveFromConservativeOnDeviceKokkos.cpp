@@ -289,7 +289,7 @@ PointwiseStatusSummary recover_impl(
               device_view, primitive_from_conservative_options,
               whole_grid_below_cutoff);
         }(typename Function::argument_tags{}, hydro::grmhd_tags<DataVector>{});
-    result = ApplyPointwiseOnDevice_detail::apply_with_status<Function>(
+    result = apply_pointwise_on_device_with_status<Function>(
         exec, primitives, status, typename Function::return_tags{},
         typename Function::argument_tags{}, arguments);
   });

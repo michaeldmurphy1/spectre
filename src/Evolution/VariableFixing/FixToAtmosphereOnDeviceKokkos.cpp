@@ -128,7 +128,7 @@ PointwiseStatusSummary fix_to_atmosphere_impl(
                   *primitives),
               spatial_metric, device_view, fix_to_atmosphere);
         }(return_tags{});
-        result = ApplyPointwiseOnDevice_detail::apply_with_status<Function>(
+        result = apply_pointwise_on_device_with_status<Function>(
             exec, primitives, status, return_tags{},
             typename Function::argument_tags{}, arguments);
       });

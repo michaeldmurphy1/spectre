@@ -55,7 +55,7 @@ PointwiseStatusSummary compute_conservatives_impl(
       // The variables are both arguments and results. This is safe because
       // the arguments at a grid point are read before the results there are
       // written.
-      status = ApplyPointwiseOnDevice_detail::apply_with_status<Function>(
+      status = apply_pointwise_on_device_with_status<Function>(
           exec, faces, deferred_status, typename Function::return_tags{},
           typename Function::argument_tags{},
           [&]<typename... ArgumentTags>(tmpl::list<ArgumentTags...> /*meta*/) {

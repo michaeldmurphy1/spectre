@@ -12,6 +12,12 @@
  * Return this from `Function::apply` instead of a `bool` if the function can
  * fail at a grid point. `apply_pointwise_on_device` reduces it over all grid
  * points to a `PointwiseStatusSummary`.
+ *
+ * Errors about a failed grid point read its arguments after the kernel ran,
+ * so a function that fails must leave results that are also arguments
+ * (updated in place) unchanged at that grid point. (A
+ * `DeferredPointwiseStatus` records the arguments before the results are
+ * stored, so it doesn't need this.)
  */
 struct PointwiseStatus {
   /// A property of the result, e.g. whether the function changed anything.

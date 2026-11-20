@@ -68,6 +68,12 @@ struct StatusReducer {
   result_view_type value_;
 };
 
+// The default of `Functor::apply_at`'s `before_storing`
+struct DoNothing {
+  template <typename T>
+  KOKKOS_FUNCTION void operator()(const T& /*status*/) const {}
+};
+
 // Kokkos functor that calls `Function::apply` at every grid point of every
 // element of a batch. The members are exactly the data that is copied to the
 // device.
@@ -77,10 +83,24 @@ struct Functor;
 template <typename Function, typename... ResultTags, typename... ArgsTags>
 struct Functor<Function, tmpl::list<ResultTags...>, tmpl::list<ArgsTags...>> {
   // Returns what `Function::apply` returns (`void`, `bool` or
-  // `PointwiseStatus`) at grid point `i` of element `e`
-  KOKKOS_FUNCTION auto apply_at(const size_t i, const size_t e) const {
-    // Results at this grid point, on the stack of this thread
+  // `PointwiseStatus`) at grid point `i` of element `e`. If it returns
+  // something, `before_storing` is called with it before the results are
+  // stored, while the arguments still hold the values the function got, also
+  // for results that are updated in place.
+  template <typename BeforeStoring = DoNothing>
+  KOKKOS_FUNCTION auto apply_at(
+      const size_t i, const size_t e,
+      const BeforeStoring& before_storing = BeforeStoring{}) const {
+    // Results at this grid point, on the stack of this thread. Results that
+    // the function doesn't set are NaN, as on the host.
     tuples::TaggedTuple<::Tags::AtIndex<ResultTags>...> results_i{};
+#ifdef SPECTRE_NAN_INIT
+    (..., [](auto& result) {
+      for (double& component : result) {
+        component = std::numeric_limits<double>::signaling_NaN();
+      }
+    }(get<::Tags::AtIndex<ResultTags>>(results_i)));
+#endif  // SPECTRE_NAN_INIT
     const auto set_results = [this, &results_i, i, e]() {
       (...,
        set_at_index(make_not_null(&get<::Tags::BatchView<ResultTags>>(results)),
@@ -95,6 +115,7 @@ struct Functor<Function, tmpl::list<ResultTags...>, tmpl::list<ArgsTags...>> {
       const return_type result = Function::apply(
           make_not_null(&get<::Tags::AtIndex<ResultTags>>(results_i))...,
           device_argument_at_index<ArgsTags>(args, i, e)...);
+      before_storing(result);
       set_results();
       return result;
     }
@@ -154,24 +175,31 @@ struct DeferredStatusFunctor<Functor, tmpl::list<SnapshotTags...>> {
   KOKKOS_FUNCTION void operator()(const size_t k) const {
     const size_t i = k % functor.number_of_grid_points;
     const size_t e = k / functor.number_of_grid_points;
-    const PointwiseStatus status = functor.apply_at(i, e);
+    // The snapshot of a failure is taken before the results are stored, so it
+    // holds the values that failed also if results are updated in place
+    const PointwiseStatus status =
+        functor.apply_at(i, e, [this, i, e](const PointwiseStatus& result) {
+          if (not result.failed or
+              Kokkos::atomic_compare_exchange(&record().claimed, 0, 1) != 0) {
+            return;
+          }
+          record().grid_point = i;
+          record().element = e;
+          size_t offset = 0;
+          const auto save = [this, &offset](const auto& tensor) {
+            for (size_t c = 0; c < tensor.size(); ++c) {
+              snapshot(offset + c) = tensor[c];
+            }
+            offset += tensor.size();
+          };
+          (save(device_argument_at_index<SnapshotTags>(functor.args, i, e)),
+           ...);
+        });
     if (status.flag) {
       Kokkos::atomic_store(&record().any_flag, 1);
     }
     if (status.failed) {
       Kokkos::atomic_inc(&record().number_of_failures);
-      if (Kokkos::atomic_compare_exchange(&record().claimed, 0, 1) == 0) {
-        record().grid_point = i;
-        record().element = e;
-        size_t offset = 0;
-        const auto save = [this, &offset](const auto& tensor) {
-          for (size_t c = 0; c < tensor.size(); ++c) {
-            snapshot(offset + c) = tensor[c];
-          }
-          offset += tensor.size();
-        };
-        (save(device_argument_at_index<SnapshotTags>(functor.args, i, e)), ...);
-      }
     }
   }
 
@@ -384,19 +412,22 @@ void apply_pointwise_on_device(
       args_tags, args, *status);
 }
 
-namespace ApplyPointwiseOnDevice_detail {
-// Calls `apply_pointwise_on_device` with a `PointwiseStatusSummary` result if
-// `status` is `nullptr`, and else records the status in `*status` (a
-// `DeferredPointwiseStatus`) and returns no failures. Lets functions share
-// their implementation between both kinds of status.
+/*!
+ * \brief Calls `apply_pointwise_on_device` with a `PointwiseStatusSummary`
+ * result if `status` is `nullptr`, and else records the status in `*status` (a
+ * `DeferredPointwiseStatus`).
+ *
+ * \details Lets functions share their implementation between both kinds of
+ * status. With a `DeferredPointwiseStatus` the returned summary has no
+ * failures, since they are only known after the kernel ran: callers that defer
+ * the status must not check it (e.g. offer a `void` overload for deferring).
+ */
 template <typename Function, typename ExecSpace, typename Results,
           typename StatusPointer, typename ResultTags, typename ArgsTags,
           typename Args>
-PointwiseStatusSummary apply_with_status(const ExecSpace& exec,
-                                         const Results results,
-                                         const StatusPointer status,
-                                         ResultTags result_tags,
-                                         ArgsTags args_tags, const Args& args) {
+PointwiseStatusSummary apply_pointwise_on_device_with_status(
+    const ExecSpace& exec, const Results results, const StatusPointer status,
+    ResultTags result_tags, ArgsTags args_tags, const Args& args) {
   if constexpr (std::is_null_pointer_v<StatusPointer>) {
     (void)status;
     return apply_pointwise_on_device<Function>(exec, results, result_tags,
@@ -407,7 +438,6 @@ PointwiseStatusSummary apply_with_status(const ExecSpace& exec,
     return {};
   }
 }
-}  // namespace ApplyPointwiseOnDevice_detail
 
 /// @{
 /*!

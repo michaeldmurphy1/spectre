@@ -70,7 +70,7 @@ PointwiseStatusSummary fix_conservatives_impl(
                                                per_element_scratch);
   // The variables are both arguments and results. This is safe because the
   // arguments at a grid point are read before the results there are written.
-  return ApplyPointwiseOnDevice_detail::apply_with_status<AtGridPointOfBatch>(
+  return apply_pointwise_on_device_with_status<AtGridPointOfBatch>(
       exec, conservatives, status, AtGridPointOfBatch::return_tags{},
       AtGridPointOfBatch::argument_tags{},
       [&]<typename... ArgumentTags>(tmpl::list<ArgumentTags...> /*meta*/) {

@@ -43,6 +43,7 @@
 #include "Evolution/DgSubcell/FdPatch/GeometryKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/PackagedDataFromDgKokkos.hpp"
 #include "Evolution/DgSubcell/Mesh.hpp"
+#include "Evolution/DgSubcell/Projection.hpp"
 #include "Evolution/DgSubcell/SliceData.hpp"
 #include "Evolution/DgSubcell/Tags/Coordinates.hpp"
 #include "Evolution/DgSubcell/Tags/GhostDataForReconstruction.hpp"
@@ -234,14 +235,18 @@ Variables<ghost_tags> ghost_variables(const Variables<prim_tags>& prims,
 }
 
 // The FD time derivative of one element of a perturbed TOV star on the device
-// is the same as on the host
+// is the same as on the host. With `div_per_cell`, the divergence of the mesh
+// velocity varies in the element and the device gets it at each cell, as the
+// host projects it.
 template <typename Reconstructor>
 void test(const gsl::not_null<std::mt19937*> generator,
           const Reconstructor& recons,
-          const std::optional<double>& expansion_velocity) {
+          const std::optional<double>& expansion_velocity,
+          const bool div_per_cell = false) {
   CAPTURE(pretty_type::short_name<Reconstructor>());
   CAPTURE(recons.ghost_zone_size());
   CAPTURE(expansion_velocity);
+  CAPTURE(div_per_cell);
   using Affine = domain::CoordinateMaps::Affine;
   using Affine3D =
       domain::CoordinateMaps::ProductOf3Maps<Affine, Affine, Affine>;
@@ -330,6 +335,9 @@ void test(const gsl::not_null<std::mt19937*> generator,
     }
     div_dg_mesh_velocity = Scalar<DataVector>{dg_mesh.number_of_grid_points(),
                                               3.0 * *expansion_velocity};
+    if (div_per_cell) {
+      get(*div_dg_mesh_velocity) += 0.2 * get<0>(dg_coords);
+    }
   }
 
   const auto damping_function = [](const double constant,
@@ -516,6 +524,8 @@ void test(const gsl::not_null<std::mt19937*> generator,
                                         make_not_null(&cell_geometry),
                                         logical_to_grid, maps);
   const Kokkos::View<double*> div_mesh_velocity{"div_mesh_velocity", 1};
+  BatchedVariables<tmpl::list<fd_patch::Tags::CellDivMeshVelocity>>
+      cell_div_mesh_velocity{exec, number_of_cells, 1};
   if (expansion_velocity.has_value()) {
     // The same mesh velocity on the faces as on the host
     BatchedVariables<fd_patch::inertial_face_tags, Kokkos::HostSpace>
@@ -541,6 +551,19 @@ void test(const gsl::not_null<std::mt19937*> generator,
     }
     deep_copy(exec, make_not_null(&face_geometry), host_face_geometry);
     Kokkos::deep_copy(exec, div_mesh_velocity, 3.0 * *expansion_velocity);
+    // At the cells, projected from the DG grid as on the host
+    BatchedVariables<tmpl::list<fd_patch::Tags::CellDivMeshVelocity>,
+                     Kokkos::HostSpace>
+        host_cell_div{number_of_cells, 1};
+    const DataVector projected_div = evolution::dg::subcell::fd::project(
+        get(*div_dg_mesh_velocity), dg_mesh, subcell_mesh.extents(),
+        Spectral::Parity::Even);
+    for (size_t i = 0; i < number_of_cells; ++i) {
+      get(get<::Tags::BatchView<fd_patch::Tags::CellDivMeshVelocity,
+                                Kokkos::HostSpace>>(host_cell_div))(i, 0) =
+          projected_div[i];
+    }
+    deep_copy(exec, make_not_null(&cell_div_mesh_velocity), host_cell_div);
   }
 
   const Kokkos::View<ConstraintDamping::GaussianSum<3>*> gaussian_sums{
@@ -580,7 +603,13 @@ void test(const gsl::not_null<std::mt19937*> generator,
       get<::Tags::BatchView<inverse_jacobian_tag>>(cell_geometry_batch),
       get<::Tags::BatchView<domain::Tags::Coordinates<3, Frame::Grid>>>(
           cell_geometry_batch),
-      mesh_velocity, face_geometry, cell_geometry, div_mesh_velocity,
+      mesh_velocity, face_geometry, cell_geometry,
+      div_per_cell
+          ? ValenciaDivClean::subcell::DivergenceOfMeshVelocity{get<
+                ::Tags::BatchView<fd_patch::Tags::CellDivMeshVelocity>>(
+                cell_div_mesh_velocity)}
+          : ValenciaDivClean::subcell::DivergenceOfMeshVelocity{Kokkos::View<
+                const double*>{div_mesh_velocity}},
       gaussian_sums, Hll{1.0e-30, 1.0e-8}, *eos,
       subcell::fix_reconstructed_states_to_atmosphere<TheSystem>(recons)
           ? &fixer
@@ -628,6 +657,9 @@ SPECTRE_TEST_CASE(
     test(make_not_null(&generator), monotonised_central, expansion_velocity);
     test(make_not_null(&generator), adaptive_order, expansion_velocity);
   }
+  // A divergence of the mesh velocity that varies in the element, e.g. for
+  // grid to inertial maps that aren't affine
+  test(make_not_null(&generator), monotonised_central, 0.5, true);
   // Fixing the reconstructed states to the atmosphere, as the BNS runs do, and
   // reconstructing T
   const fd::MonotonisedCentralPrim<TheSystem> fixed_monotonised_central{

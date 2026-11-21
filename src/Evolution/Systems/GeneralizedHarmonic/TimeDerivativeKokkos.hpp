@@ -7,8 +7,8 @@
 #include <optional>
 
 #include "DataStructures/DataBox/Prefixes.hpp"
+#include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataVector.hpp"
-#include "DataStructures/Tags/TempTensor.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ConstraintDampingTags.hpp"
@@ -32,18 +32,29 @@ namespace gh {
  * evolution loop adds after `gh::TimeDerivative` on the host (see `apply()`).
  *
  * A single kernel per grid point would hold hundreds of temporaries and spill
- * to local memory. Instead the time derivative is split into five kernels,
+ * to local memory. Instead the time derivative is split into three kernels,
  * which communicate through a cache in device memory that is allocated once:
- * 1. the lapse, shift and inverse spatial metric;
- * 2. the Christoffel symbols of the first kind with the last index raised,
- *    \f$\Gamma_{ab}{}^c\f$, and their trace, the gauge constraint
- *    \f$C_a = \Gamma_{ab}{}^b\f$ (for the harmonic gauge);
- * 3. \f$\partial_t g_{ab}\f$;
- * 4. \f$\partial_t \Pi_{ab}\f$, with one thread per grid point that computes
+ * 1. the lapse, shift and inverse spatial metric, \f$\partial_t g_{ab}\f$,
+ *    and from the Christoffel symbols of the first kind with the last index
+ *    raised, \f$\Gamma_{ab}{}^c\f$, only what \f$\partial_t \Pi_{ab}\f$
+ *    needs: their trace, the gauge constraint \f$C_a = \Gamma_{ab}{}^b\f$
+ *    (for the harmonic gauge), and the contraction
+ *    \f$\Gamma_{ac}{}^d \Gamma_{bd}{}^c\f$ (`ChristoffelContraction`, 10
+ *    components instead of the 64 of \f$\Gamma_{ab}{}^c\f$);
+ * 2. \f$\partial_t \Pi_{ab}\f$, with one thread per grid point that computes
  *    all ten components, recomputing the cheap contractions of \f$\Pi\f$
  *    and \f$\Phi\f$ with the inverse metrics where they are used instead of
  *    storing them;
- * 5. \f$\partial_t \Phi_{iab}\f$.
+ * 3. \f$\partial_t \Phi_{iab}\f$.
+ *
+ * The contraction of the Christoffel symbols is summed on its own and then
+ * subtracted, while the host subtracts each product from
+ * \f$\partial_t \Pi_{ab}\f$ in turn, so the results differ by roundoff. Storing
+ * the contraction instead of the Christoffel symbols saves writing and reading
+ * 54 values per grid point.
+ *
+ * The kernels are compiled separately for moving and static meshes, so that
+ * the static case doesn't reserve registers for the mesh velocity.
  *
  * All tensor indices are compile-time constants, so the compiler keeps the
  * values in registers. The grid points of a component are contiguous in
@@ -52,9 +63,13 @@ namespace gh {
  *
  * \par Performance
  * Measured on a GH200 (Release, 504 elements of \f$17^3\f$ cells, November
- * 2026), one evaluation takes 6.3 ms, 3.9 times a copy of the same number of
- * values (1.6 ms). Kernels 1, 2, 3 and 5 take 0.12, 0.83, 0.47 and 1.9 ms at
- * 65-90% of the memory bandwidth. \f$\partial_t \Pi_{ab}\f$ takes 3.4 ms
+ * 2026) with the earlier split into five kernels (the lapse, shift and
+ * inverse spatial metric; the Christoffel symbols; and
+ * \f$\partial_t g_{ab}\f$ in separate kernels, and the full
+ * \f$\Gamma_{ab}{}^c\f$ in the cache), one evaluation took 6.3 ms, 3.9 times a
+ * copy of the same number of values (1.6 ms). The kernels other than
+ * \f$\partial_t \Pi_{ab}\f$ took 0.12, 0.83, 0.47 and 1.9 ms at 65-90% of
+ * the memory bandwidth. \f$\partial_t \Pi_{ab}\f$ takes 3.4 ms
  * at 54% of the bandwidth: with 255 registers and 464 bytes of spills per
  * thread (12% occupancy) it moves 7.3 GB, while its inputs and outputs are
  * about 4.5 GB, so it could be up to ~2x faster. Splitting the components
@@ -94,11 +109,17 @@ class TimeDerivativeOnDevice {
 
   TimeDerivativeOnDevice() = default;
 
+  /// The contraction \f$\Gamma_{ac}{}^d \Gamma_{bd}{}^c\f$ of the Christoffel
+  /// symbols of the first kind with the last index raised
+  struct ChristoffelContraction : db::SimpleTag {
+    using type = tnsr::aa<DataVector, dim, Frame::Inertial>;
+  };
+
   /// The intermediate results in device memory
   using cache_tags =
       tmpl::list<gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, dim>,
                  gr::Tags::InverseSpatialMetric<DataVector, dim>,
-                 ::Tags::TempTensor<0, tnsr::abC<DataVector, dim>>,
+                 ChristoffelContraction,
                  Tags::GaugeConstraint<DataVector, dim, Frame::Inertial>>;
 
   /*!

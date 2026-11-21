@@ -358,14 +358,14 @@ void GhostZones<Dim>::add_external_face(
   } else {
     // The cells next to the face, in the order of the ghost zone of the
     // neighbor
-    const auto cells = cells_for_neighbor_ghost_zone(
+    const auto source_points = cells_for_neighbor_ghost_zone(
         subcell_extents_, ghost_width_, direction,
         element.neighbors().at(direction).orientation(neighbor_id));
     for (size_t part = 0; part < parts_.size(); ++part) {
       to_external_[part].add_copy(
           source_offset(part, slot), number_of_cells,
           face.send_offset + first_variables_[part] * number_of_ghost_points,
-          number_of_ghost_points, cells, sent_points);
+          number_of_ghost_points, source_points, sent_points);
     }
   }
   send_data_size_ += face.send_size;

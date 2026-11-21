@@ -445,7 +445,7 @@ void test_parts(const gsl::not_null<std::mt19937*> generator) {
       generator, make_not_null(&dist),
       DataVector(number_of_elements * 3 * number_of_cells));
   DataVector host_first(number_of_elements * 2 * number_of_cells);
-  DataVector host_second = make_with_random_values<DataVector>(
+  auto host_second = make_with_random_values<DataVector>(
       generator, make_not_null(&dist),
       DataVector(number_of_elements * 4 * number_of_cells));
   for (size_t e = 0; e < number_of_elements; ++e) {
@@ -483,8 +483,12 @@ void test_parts(const gsl::not_null<std::mt19937*> generator) {
   const auto padded_whole = padded(whole, device_whole);
   const auto padded_in_parts = padded(in_parts, device_parts);
   REQUIRE(padded_whole.span() == padded_in_parts.span());
-  for (size_t i = 0; i < padded_whole.span(); ++i) {
-    CHECK(padded_whole.data()[i] == padded_in_parts.data()[i]);
+  using Flat =
+      Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>;
+  const Flat flat_whole(padded_whole.data(), padded_whole.span());
+  const Flat flat_in_parts(padded_in_parts.data(), padded_in_parts.span());
+  for (size_t i = 0; i < flat_whole.size(); ++i) {
+    CHECK(flat_whole(i) == flat_in_parts(i));
   }
 
   const auto sent = [&](const GhostZones<1>& ghost_zones,

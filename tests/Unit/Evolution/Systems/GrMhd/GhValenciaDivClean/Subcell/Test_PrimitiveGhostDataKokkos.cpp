@@ -75,10 +75,11 @@ void test(const gsl::not_null<std::mt19937*> generator) {
     Variables<ghost_tags> element{};
     set_data_ref_to_element(make_not_null(&element), host_ghost_variables, e);
     REQUIRE(element.size() < expected.size());
-    for (size_t i = 0; i < element.size(); ++i) {
+    const DataVector element_data(element.data(), element.size());
+    for (size_t i = 0; i < element_data.size(); ++i) {
       CAPTURE(i);
       // Computed in the same way as on the host
-      CHECK(element.data()[i] == expected[i]);
+      CHECK(element_data[i] == expected[i]);
     }
   }
 }

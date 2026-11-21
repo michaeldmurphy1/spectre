@@ -126,10 +126,10 @@ struct SquareRoot {
       const gsl::not_null<Scalar<double>*> root, const Scalar<double>& value) {
     if (get(value) < 0.0) {
       get(*root) = 0.0;
-      return {false, true};
+      return {.flag = false, .failed = true};
     }
     get(*root) = std::sqrt(get(value));
-    return {get(value) == 1.0, false};
+    return {.flag = get(value) == 1.0, .failed = false};
   }
 };
 
@@ -337,7 +337,7 @@ void test_reduction() {
   // The first failure in a batch is in the element with the smallest index
   const size_t num_points = 3;
   const size_t num_elements = 4;
-  BatchedVariables<tmpl::list<Value>, Kokkos::HostSpace> host_values{
+  const BatchedVariables<tmpl::list<Value>, Kokkos::HostSpace> host_values{
       num_points, num_elements};
   for (size_t e = 0; e < num_elements; ++e) {
     for (size_t i = 0; i < num_points; ++i) {

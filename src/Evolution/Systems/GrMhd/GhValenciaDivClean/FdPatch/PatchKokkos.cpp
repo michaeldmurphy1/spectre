@@ -180,8 +180,6 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
       patch_elements().subcell_mesh().number_of_grid_points();
   ghost_variables_ =
       BatchedVariables<ghost_tags>{exec, number_of_cells, number_of_elements};
-  dt_variables_ = BatchedVariables<subcell::dt_tags_on_device>{
-      exec, number_of_cells, number_of_elements};
   fixing_metric_ = BatchedVariables<subcell::fixing_metric_tags>{
       exec, number_of_cells, number_of_elements};
   stepper_errors_.resize(number_of_elements);
@@ -241,6 +239,12 @@ auto Patch<OrderedListOfPrimitiveRecoverySchemes>::element_variables(
     const Kokkos::DefaultExecutionSpace& exec,
     const EvolvedVariables& evolved_variables,
     const PrimitiveVariables& primitives) -> std::vector<ElementVariables> {
+  if (dt_variables_.number_of_elements() == 0) {
+    // Before the first time derivative, uninitialized as on the host
+    dt_variables_ = BatchedVariables<subcell::dt_tags_on_device>{
+        exec, patch_elements().subcell_mesh().number_of_grid_points(),
+        patch_elements().number_of_elements()};
+  }
   return this->copy_element_variables(exec, evolved_variables, primitives,
                                       dt_variables_);
 }
@@ -388,10 +392,13 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::compute_time_derivative(
   const Kokkos::View<const ConstraintDamping::GaussianSum<3>*> damping =
       gaussian_sums_.device_array();
 
-  // Time derivative
+  // Time derivative, computed in place in the history
   std::optional<Kokkos::Profiling::ScopedRegion> region{};
   region.emplace("GhValenciaDivClean::fd_patch::Patch::time_derivative");
   const auto& elements = this->patch_elements();
+  const auto record = history->insert(exec, time_step_id, true);
+  dt_variables_ = TimeSteppers::derivative_batch<subcell::dt_tags_on_device>(
+      record, elements.subcell_mesh().number_of_grid_points());
   using MeshVelocity = gh::TimeDerivativeOnDevice::MeshVelocity;
   std::optional<typename ::Tags::BatchView<MeshVelocity>::type> mesh_velocity{};
   if (elements.mesh_is_moving()) {
@@ -425,8 +432,8 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::compute_time_derivative(
       },
       time_derivative_);
 
-  TimeSteppers::record_on_device(exec, history, time_step_id,
-                                 *evolved_variables, dt_variables_);
+  // After the time derivative, which filters the evolved variables
+  TimeSteppers::record_value_on_device(exec, record, *evolved_variables);
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>

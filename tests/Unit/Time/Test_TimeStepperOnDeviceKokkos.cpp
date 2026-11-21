@@ -130,6 +130,7 @@ void test_stepper(const TimeStepper& stepper,
       device_errors{};
 
   size_t dense_outputs = 0;
+  bool record_in_place = false;
   TimeStepId time_step_id(true, 0, slab.start());
   while (time_step_id.step_time() < slab.end()) {
     CAPTURE(time_step_id);
@@ -142,10 +143,21 @@ void test_stepper(const TimeStepper& stepper,
                                            time_step_id, vars[e], dt_vars[e]);
     }
     // The device variables are the host variables, so they are the same at
-    // the start of each step
-    to_device(make_not_null(&device_dt_vars), dt_vars);
-    TimeSteppers::record_on_device(exec, make_not_null(&device_history),
-                                   time_step_id, device_vars, device_dt_vars);
+    // the start of each step. Alternately recorded with copies and with the
+    // derivative written in place.
+    if (record_in_place) {
+      const auto record = device_history.insert(exec, time_step_id, true);
+      auto derivative =
+          TimeSteppers::derivative_batch<tmpl::list<::Tags::dt<Var>>>(
+              record, number_of_points);
+      to_device(make_not_null(&derivative), dt_vars);
+      TimeSteppers::record_value_on_device(exec, record, device_vars);
+    } else {
+      to_device(make_not_null(&device_dt_vars), dt_vars);
+      TimeSteppers::record_on_device(exec, make_not_null(&device_history),
+                                     time_step_id, device_vars, device_dt_vars);
+    }
+    record_in_place = not record_in_place;
 
     // Dense output in the current and the previous step.
     for (const double fraction : {0.5, -0.5}) {

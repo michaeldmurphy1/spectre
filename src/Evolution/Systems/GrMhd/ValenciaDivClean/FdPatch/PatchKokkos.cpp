@@ -155,8 +155,6 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
       patch_elements().subcell_mesh().number_of_grid_points();
   ghost_variables_ =
       BatchedVariables<ghost_tags>{exec, number_of_cells, number_of_elements};
-  dt_variables_ = BatchedVariables<subcell::dt_tags_on_device>{
-      exec, number_of_cells, number_of_elements};
   stepper_errors_.resize(number_of_elements);
 }
 
@@ -363,14 +361,18 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::compute_time_derivative(
   // `check_last_step()`, so nothing here waits for the device
   fixing_.reset_statuses(exec);
 
-  // Time derivative
+  // Time derivative, computed in place in the history
   std::optional<Kokkos::Profiling::ScopedRegion> region{};
   region.emplace("ValenciaDivClean::fd_patch::Patch::time_derivative");
+  const auto record = history->insert(exec, time_step_id, true);
+  auto dt_variables =
+      TimeSteppers::derivative_batch<subcell::dt_tags_on_device>(
+          record, patch_elements().subcell_mesh().number_of_grid_points());
   std::visit(
       [&]<typename Correction>(
           subcell::TimeDerivativeOnDevice<Correction>& time_derivative) {
         time_derivative.apply(
-            exec, make_not_null(&dt_variables_), fixing_.face_status(),
+            exec, make_not_null(&dt_variables), fixing_.face_status(),
             patch_elements().padded_ghost_variables(), *evolved_variables,
             *primitives, *cell_spacetime_variables,
             patch_elements().face_geometry(),
@@ -385,8 +387,7 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::compute_time_derivative(
       },
       time_derivative_);
 
-  TimeSteppers::record_on_device(exec, history, time_step_id,
-                                 *evolved_variables, dt_variables_);
+  TimeSteppers::record_value_on_device(exec, record, *evolved_variables);
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>

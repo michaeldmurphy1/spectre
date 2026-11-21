@@ -60,10 +60,11 @@ namespace evolution::dg::subcell::fd_patch {
  * \details System-specific FD patches (e.g.
  * `grmhd::ValenciaDivClean::fd_patch::Patch`) hold one and add the operations
  * of their system. In each substep they
- * 1. compute the ghost variables of all elements (a `BatchedVariables`, see
- *    `GhostZones`) and pass them to `fill_ghost_zones()`, and, if
- *    `has_external_faces()`, to `enqueue_boundary_data()`, and after
- *    fencing get the messages from `boundary_data_to_send()`,
+ * 1. compute the ghost variables of all elements (`BatchedVariables`, one for
+ *    each `GhostVariablesPart`, see `GhostZones`) and pass them to
+ *    `fill_ghost_zones()`, and, if `has_external_faces()`, to
+ *    `enqueue_boundary_data()`, and after fencing get the messages from
+ *    `boundary_data_to_send()`,
  * 2. pass the received messages to `receive()`, which fills the remaining
  *    ghost zones of `padded_ghost_variables()` and the
  *    `received_mortar_data()`, laid out as described by
@@ -85,7 +86,8 @@ class FdPatchElements : public evolution::patches::PatchElements {
    * This builds the elements and their maps (see
    * `evolution::patches::PatchElements`), checks that their cells line up with
    * those of their neighbors in other blocks, builds the tables for the ghost
-   * zones (of width `ghost_width`, for `number_of_ghost_variables` variables)
+   * zones (of width `ghost_width`, for the ghost variables read in
+   * `ghost_variables_parts`, see `GhostVariablesPart`)
    * and for the packaged data from DG neighbors, and computes the geometry at
    * the `time`. The packaged data on the faces has
    * `number_of_packaged_variables` independent components. DG neighbors send
@@ -103,7 +105,7 @@ class FdPatchElements : public evolution::patches::PatchElements {
       const evolution::patches::PatchTable<3>& patch_table, size_t patch,
       const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
       double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
-      size_t ghost_width, size_t number_of_ghost_variables,
+      size_t ghost_width, std::vector<GhostVariablesPart> ghost_variables_parts,
       size_t number_of_packaged_variables,
       size_t number_of_dg_packaged_variables,
       size_t dg_packaged_variables_offset, bool compute_cell_geometry = false);
@@ -199,9 +201,10 @@ class FdPatchElements : public evolution::patches::PatchElements {
 
   /// Fill the interior and the ghost zones between the elements of the patch
   /// of `padded_ghost_variables()` from the unpadded `ghost_variables` of the
-  /// elements (see `GhostZones::fill_from_patch()`)
-  void fill_ghost_zones(const Kokkos::DefaultExecutionSpace& exec,
-                        const Kokkos::View<const double*>& ghost_variables);
+  /// elements, one batch for each part (see `GhostZones::fill_from_patch()`)
+  void fill_ghost_zones(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const std::vector<Kokkos::View<const double*>>& ghost_variables);
 
   /// Whether any element of the patch has a neighbor outside the patch
   bool has_external_faces() const {
@@ -209,11 +212,12 @@ class FdPatchElements : public evolution::patches::PatchElements {
   }
 
   /// Enqueue computing the boundary data for the neighbors outside the patch
-  /// from the unpadded `ghost_variables` and copying it to the host. Read it
-  /// with `boundary_data_to_send()` after fencing `exec`.
+  /// from the unpadded `ghost_variables` (one batch for each part, see
+  /// `GhostZones`) and copying it to the host. Read it with
+  /// `boundary_data_to_send()` after fencing `exec`.
   void enqueue_boundary_data(
       const Kokkos::DefaultExecutionSpace& exec,
-      const Kokkos::View<const double*>& ghost_variables);
+      const std::vector<Kokkos::View<const double*>>& ghost_variables);
 
   /// The boundary data for the neighbors outside the patch, from the last
   /// `enqueue_boundary_data()` and the RDMP data of the elements, valid until

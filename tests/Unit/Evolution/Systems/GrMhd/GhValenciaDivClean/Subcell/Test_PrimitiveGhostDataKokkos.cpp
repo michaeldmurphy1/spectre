@@ -22,14 +22,15 @@
 #include "Utilities/Kokkos/KokkosCore.hpp"
 
 namespace {
-// The ghost variables of each element of a batch are the same as those that
-// `PrimitiveGhostVariables::apply` computes on the host
+// The hydro ghost variables of each element of a batch are the same as those
+// that `PrimitiveGhostVariables::apply` computes on the host, where they come
+// first
 void test(const gsl::not_null<std::mt19937*> generator) {
   using primitive_tags = hydro::grmhd_tags<DataVector>;
   using evolved_tags =
       grmhd::GhValenciaDivClean::subcell::evolved_tags_on_device;
-  using ghost_tags = grmhd::GhValenciaDivClean::subcell::
-      PrimitiveGhostVariables::ghost_variables_tag_list;
+  using ghost_tags =
+      grmhd::GhValenciaDivClean::Tags::primitive_grmhd_reconstruction_tags;
   constexpr size_t number_of_points = 27;
   constexpr size_t number_of_elements = 3;
   std::uniform_real_distribution<double> dist(0.1, 1.0);
@@ -55,13 +56,10 @@ void test(const gsl::not_null<std::mt19937*> generator) {
   BatchedVariables<primitive_tags> device_prims{exec, number_of_points,
                                                 number_of_elements};
   deep_copy(exec, make_not_null(&device_prims), host_prims);
-  BatchedVariables<evolved_tags> device_evolved{exec, number_of_points,
-                                                number_of_elements};
-  deep_copy(exec, make_not_null(&device_evolved), host_evolved);
   BatchedVariables<ghost_tags> ghost_variables{exec, number_of_points,
                                                number_of_elements};
   grmhd::GhValenciaDivClean::subcell::primitive_ghost_variables_on_device(
-      exec, make_not_null(&ghost_variables), device_prims, device_evolved);
+      exec, make_not_null(&ghost_variables), device_prims);
   BatchedVariables<ghost_tags, Kokkos::HostSpace> host_ghost_variables{
       number_of_points, number_of_elements};
   deep_copy(exec, make_not_null(&host_ghost_variables), ghost_variables);
@@ -76,8 +74,8 @@ void test(const gsl::not_null<std::mt19937*> generator) {
             get<gh::Tags::Pi<DataVector, 3>>(evolved[e]), 0);
     Variables<ghost_tags> element{};
     set_data_ref_to_element(make_not_null(&element), host_ghost_variables, e);
-    REQUIRE(element.size() == expected.size());
-    for (size_t i = 0; i < expected.size(); ++i) {
+    REQUIRE(element.size() < expected.size());
+    for (size_t i = 0; i < element.size(); ++i) {
       CAPTURE(i);
       // Computed in the same way as on the host
       CHECK(element.data()[i] == expected[i]);

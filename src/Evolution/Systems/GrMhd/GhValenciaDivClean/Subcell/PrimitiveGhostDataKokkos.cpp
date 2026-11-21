@@ -22,10 +22,11 @@
 
 namespace grmhd::GhValenciaDivClean::subcell {
 namespace {
-// The ghost variables at a grid point, computed like
+// The hydro ghost variables at a grid point, computed like
 // `PrimitiveGhostVariables::apply`
 struct GhostVariablesAtGridPoint {
-  using return_tags = PrimitiveGhostVariables::ghost_variables_tag_list;
+  using return_tags =
+      GhValenciaDivClean::Tags::primitive_grmhd_reconstruction_tags;
   using argument_tags =
       tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
                  hydro::Tags::ElectronFraction<DataVector>,
@@ -33,9 +34,7 @@ struct GhostVariablesAtGridPoint {
                  hydro::Tags::SpatialVelocity<DataVector, 3>,
                  hydro::Tags::LorentzFactor<DataVector>,
                  hydro::Tags::MagneticField<DataVector, 3>,
-                 hydro::Tags::DivergenceCleaningField<DataVector>,
-                 gr::Tags::SpacetimeMetric<DataVector, 3>,
-                 gh::Tags::Pi<DataVector, 3>, gh::Tags::Phi<DataVector, 3>>;
+                 hydro::Tags::DivergenceCleaningField<DataVector>>;
 
   KOKKOS_FUNCTION static void apply(
       const gsl::not_null<Scalar<double>*> ghost_rest_mass_density,
@@ -46,20 +45,13 @@ struct GhostVariablesAtGridPoint {
       const gsl::not_null<tnsr::I<double, 3, Frame::Inertial>*>
           ghost_magnetic_field,
       const gsl::not_null<Scalar<double>*> ghost_divergence_cleaning_field,
-      const gsl::not_null<tnsr::aa<double, 3, Frame::Inertial>*>
-          ghost_spacetime_metric,
-      const gsl::not_null<tnsr::aa<double, 3, Frame::Inertial>*> ghost_pi,
-      const gsl::not_null<tnsr::iaa<double, 3, Frame::Inertial>*> ghost_phi,
       const Scalar<double>& rest_mass_density,
       const Scalar<double>& electron_fraction,
       const Scalar<double>& temperature,
       const tnsr::I<double, 3, Frame::Inertial>& spatial_velocity,
       const Scalar<double>& lorentz_factor,
       const tnsr::I<double, 3, Frame::Inertial>& magnetic_field,
-      const Scalar<double>& divergence_cleaning_field,
-      const tnsr::aa<double, 3, Frame::Inertial>& spacetime_metric,
-      const tnsr::aa<double, 3, Frame::Inertial>& pi,
-      const tnsr::iaa<double, 3, Frame::Inertial>& phi) {
+      const Scalar<double>& divergence_cleaning_field) {
     *ghost_rest_mass_density = rest_mass_density;
     *ghost_electron_fraction = electron_fraction;
     *ghost_temperature = temperature;
@@ -69,34 +61,22 @@ struct GhostVariablesAtGridPoint {
     }
     *ghost_magnetic_field = magnetic_field;
     *ghost_divergence_cleaning_field = divergence_cleaning_field;
-    *ghost_spacetime_metric = spacetime_metric;
-    *ghost_pi = pi;
-    *ghost_phi = phi;
   }
 };
 }  // namespace
 
 void primitive_ghost_variables_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    const gsl::not_null<
-        BatchedVariables<PrimitiveGhostVariables::ghost_variables_tag_list>*>
+    const gsl::not_null<BatchedVariables<
+        GhValenciaDivClean::Tags::primitive_grmhd_reconstruction_tags>*>
         ghost_variables,
-    const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,
-    const BatchedVariables<evolved_tags_on_device>& evolved_variables) {
-  const auto argument = [&primitives, &evolved_variables]<typename Tag>(
-                            tmpl::type_<Tag> /*meta*/) {
-    if constexpr (tmpl::list_contains_v<hydro::grmhd_tags<DataVector>, Tag>) {
-      return get<::Tags::BatchView<Tag>>(primitives);
-    } else {
-      return get<::Tags::BatchView<Tag>>(evolved_variables);
-    }
-  };
+    const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives) {
   apply_pointwise_on_device<GhostVariablesAtGridPoint>(
       exec, ghost_variables, GhostVariablesAtGridPoint::return_tags{},
       GhostVariablesAtGridPoint::argument_tags{},
       [&]<typename... ArgumentTags>(tmpl::list<ArgumentTags...> /*meta*/) {
         return make_device_arguments<ArgumentTags...>(
-            exec, argument(tmpl::type_<ArgumentTags>{})...);
+            exec, get<::Tags::BatchView<ArgumentTags>>(primitives)...);
       }(GhostVariablesAtGridPoint::argument_tags{}));
 }
 }  // namespace grmhd::GhValenciaDivClean::subcell

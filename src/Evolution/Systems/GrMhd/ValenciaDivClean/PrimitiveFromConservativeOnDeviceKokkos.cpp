@@ -220,7 +220,7 @@ struct PrimitiveFromConservativeAtGridPoint {
       *lorentz_factor = previous_lorentz_factor;
       *pressure = initial_pressure;
       *temperature = previous_temperature;
-      return {false, true};
+      return {.flag = false, .failed = true};
     }
 
     if constexpr (is_barotropic) {
@@ -232,7 +232,7 @@ struct PrimitiveFromConservativeAtGridPoint {
     }
     *temperature = eos.temperature_from_density_and_energy(
         *rest_mass_density, *specific_internal_energy, *electron_fraction);
-    return {false, false};
+    return {.flag = false, .failed = false};
   }
 };
 

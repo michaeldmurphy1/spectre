@@ -287,6 +287,7 @@ void check_against_host(const gsl::not_null<std::mt19937*> generator,
                         const std::optional<Fixer>& fixer) {
   CAPTURE(fixer.has_value());
   std::vector<Variables<face_tags>> faces{};
+  faces.reserve(num_face_sets);
   for (size_t e = 0; e < num_face_sets; ++e) {
     faces.push_back(random_face(generator));
   }

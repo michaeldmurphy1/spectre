@@ -130,9 +130,9 @@ AffineGridToInertial affine_grid_to_inertial(
         }
       }
       if (not(std::abs(all_mapped.get(i)[p] - expected_mapped) <=
-                  tolerance * matrix_scale * point_scale and
-              std::abs(all_velocities.get(i)[p] - expected_velocity) <=
-                  tolerance * velocity_scale * point_scale)) {
+              tolerance * matrix_scale * point_scale) or
+          not(std::abs(all_velocities.get(i)[p] - expected_velocity) <=
+              tolerance * velocity_scale * point_scale)) {
         tnsr::I<double, 3, Frame::Inertial> mapped{};
         tnsr::I<double, 3, Frame::Inertial> velocity{};
         for (size_t d = 0; d < 3; ++d) {

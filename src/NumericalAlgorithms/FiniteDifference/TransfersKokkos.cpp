@@ -175,31 +175,31 @@ void Transfers::apply(const Kokkos::DefaultExecutionSpace& exec,
         const Transfers_detail::Transfer transfer =
             transfers(point_transfer(point));
         const size_t point_in_source = point_source(point);
-        const double* source_data =
-            source.data() + transfer.source_offset +
+        // Where variable 0 is read and written
+        size_t source_index =
+            transfer.source_offset +
             (transfer.matrix_columns == 0 ? point_in_source : 0);
-        double* destination_data = destination.data() +
-                                   transfer.destination_offset +
-                                   point_destination(point);
+        size_t destination_index =
+            transfer.destination_offset + point_destination(point);
         if (transfer.matrix_columns == 0) {
           for (size_t var = 0; var < number_of_variables; ++var) {
-            *destination_data = *source_data;
-            source_data += transfer.source_variable_stride;
-            destination_data += transfer.destination_variable_stride;
+            destination(destination_index) = source(source_index);
+            source_index += transfer.source_variable_stride;
+            destination_index += transfer.destination_variable_stride;
           }
         } else {
-          const double* matrix_row =
-              matrix_values.data() + transfer.matrix_offset + point_in_source;
+          const size_t matrix_row = transfer.matrix_offset + point_in_source;
           for (size_t var = 0; var < number_of_variables; ++var) {
             double value = 0.0;
             for (size_t column = 0; column < transfer.matrix_columns;
                  ++column) {
-              value += matrix_row[column * transfer.matrix_rows] *
-                       source_data[column];
+              value +=
+                  matrix_values(matrix_row + column * transfer.matrix_rows) *
+                  source(source_index + column);
             }
-            *destination_data = value;
-            source_data += transfer.source_variable_stride;
-            destination_data += transfer.destination_variable_stride;
+            destination(destination_index) = value;
+            source_index += transfer.source_variable_stride;
+            destination_index += transfer.destination_variable_stride;
           }
         }
       });

@@ -80,6 +80,63 @@ void record_on_device(const Kokkos::DefaultExecutionSpace& exec,
 
 /*!
  * \ingroup TimeSteppersGroup
+ * \brief The derivative of a `record` of a `DeviceHistory` (see
+ * `DeviceHistory::insert`) as a batch of the variables `DtVarsTags`, so that
+ * the time derivative can be computed in place.
+ *
+ * \details This avoids the copy of the derivative in `record_on_device`: insert
+ * the record, compute the time derivative into the returned batch and copy the
+ * value with `record_value_on_device`. The batch refers to the storage of the
+ * history without owning it. It is valid until the history next grows, i.e.
+ * at most until the next `DeviceHistory::insert`.
+ */
+template <typename DtVarsTags>
+BatchedVariables<DtVarsTags> derivative_batch(
+    const DeviceHistory<>::RecordView& record,
+    const size_t number_of_grid_points) {
+  constexpr size_t number_of_components =
+      BatchedVariables<DtVarsTags>::number_of_independent_components;
+  const auto& derivative = record.derivative;
+  ASSERT(derivative.extent(0) == number_of_grid_points * number_of_components,
+         "The record holds " << derivative.extent(0)
+                             << " values per element, but the batch has "
+                             << number_of_grid_points * number_of_components);
+  // The data of the elements are contiguous, as in a batch
+  ASSERT(derivative.stride(0) == 1 and
+             derivative.stride(1) == derivative.extent(0),
+         "The derivative of the record isn't contiguous");
+  return BatchedVariables<DtVarsTags>{
+      typename BatchedVariables<DtVarsTags>::storage_type{
+          derivative.data(), number_of_grid_points, number_of_components,
+          derivative.extent(1)}};
+}
+
+/*!
+ * \ingroup TimeSteppersGroup
+ * \brief Copies the variables `vars` of a batch of elements into the value of
+ * a `record` of a `DeviceHistory` (see `DeviceHistory::insert`),
+ * asynchronously in `exec`.
+ *
+ * \details With `derivative_batch`, this records the data like
+ * `record_on_device` with the time derivative computed in place.
+ */
+template <typename VarsTags>
+void record_value_on_device(const Kokkos::DefaultExecutionSpace& exec,
+                            const DeviceHistory<>::RecordView& record,
+                            const BatchedVariables<VarsTags>& vars) {
+  const auto value = TimeStepperOnDevice_detail::as_history_batch(vars);
+  ASSERT(record.value.extent(0) == value.extent(0) and
+             record.value.extent(1) == value.extent(1),
+         "The record holds "
+             << record.value.extent(0) << " values of "
+             << record.value.extent(1) << " elements, but the batch has "
+             << value.extent(0) << " values of " << value.extent(1)
+             << " elements.");
+  Kokkos::deep_copy(exec, record.value, value);
+}
+
+/*!
+ * \ingroup TimeSteppersGroup
  * \brief Updates the variables `vars` of a batch of elements with the time
  * stepper history, like `UpdateU` does for each element.
  *

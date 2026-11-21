@@ -252,7 +252,7 @@ void check_package_data_from_reconstruction(
         CHECK(host_use_hydro_speeds(1));
         CHECK_FALSE(host_use_hydro_speeds(2));
       } else {
-        CHECK(use_hydro_speeds.size() == 0);
+        CHECK_FALSE(use_hydro_speeds.is_allocated());
       }
       const auto to_host_vars =
           [](const BatchedVariables<packaged_tags>& batch) {

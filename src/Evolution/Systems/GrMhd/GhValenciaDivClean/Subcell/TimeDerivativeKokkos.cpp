@@ -370,33 +370,6 @@ void TimeDerivativeOnDevice<Correction>::apply(
             get<::Tags::BatchView<gh::Tags::ConstraintGamma1>>(gammas_),
             get<::Tags::BatchView<gh::Tags::ConstraintGamma2>>(gammas_),
             mesh_velocity);
-  if (mesh_velocity.has_value()) {
-    // As the host: d_t u += v^j d_j u, adding the directions in order
-    const auto dt_storage = dt_vars->view();
-    const auto derivative_storage = derivatives_.view();
-    const Kokkos::Array<Kokkos::View<double**, Kokkos::LayoutStride>, dim>
-        velocity{get<0>(*mesh_velocity), get<1>(*mesh_velocity),
-                 get<2>(*mesh_velocity)};
-    Kokkos::parallel_for(
-        "GhValenciaDivClean::subcell::TimeDerivativeOnDevice::mesh_velocity",
-        Kokkos::MDRangePolicy<Kokkos::DefaultExecutionSpace, Kokkos::Rank<2>,
-                              Kokkos::IndexType<size_t>>(
-            exec, {0, 0}, {subcell_extents_.product(), number_of_elements_}),
-        KOKKOS_LAMBDA(const size_t point, const size_t element) {
-          const double v_x = velocity[0](point, element);
-          const double v_y = velocity[1](point, element);
-          const double v_z = velocity[2](point, element);
-          for (size_t component = 0; component < number_of_gh_variables;
-               ++component) {
-            double& dt_var = dt_storage(point, component, element);
-            dt_var += v_x * derivative_storage(point, dim * component, element);
-            dt_var +=
-                v_y * derivative_storage(point, dim * component + 1, element);
-            dt_var +=
-                v_z * derivative_storage(point, dim * component + 2, element);
-          }
-        });
-  }
 
   // 5. The spacetime variables at the cell centers for the GRMHD sources
   const auto& gh_cache = gh_.cache();

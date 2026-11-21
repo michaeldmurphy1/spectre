@@ -105,7 +105,11 @@ class TimeDerivativeOnDevice {
    * \brief Enqueue computing the time derivatives of the batch on `exec`.
    *
    * \details All arguments are batches with the same number of grid points and
-   * elements. Without a `mesh_velocity` the mesh doesn't move.
+   * elements. Without a `mesh_velocity` the mesh doesn't move. With a
+   * `mesh_velocity` \f$v^i\f$, the time derivatives include the advection
+   * term \f$v^i \partial_i u\f$ that the host adds after
+   * `gh::TimeDerivative` (in the evolution loop), so that the moving mesh
+   * needs no extra pass over the derivatives.
    */
   void apply(const Kokkos::DefaultExecutionSpace& exec,
              const Batch<::Tags::dt<spacetime_metric_tag>>& dt_spacetime_metric,

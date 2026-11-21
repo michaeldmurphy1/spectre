@@ -143,9 +143,10 @@ void fluxes_and_package_data_on_device(
     Kokkos::View<bool*>* use_hydro_speeds_scratch = nullptr);
 
 /*!
- * \brief Computes the packaged data of `Rusanov` on one side of the faces of a
- * batch of FD grids in device memory, starting from the reconstructed
- * primitive variables, in a single Kokkos kernel.
+ * \brief Computes the packaged data of the boundary correction `Correction`
+ * (`Rusanov` or `Hll`) on one side of the faces of a batch of FD grids in
+ * device memory, starting from the reconstructed primitive variables, in a
+ * single Kokkos kernel.
  *
  * \details At every grid point this computes, keeping all intermediate
  * results on the stack, the variables on the face as
@@ -165,36 +166,45 @@ void fluxes_and_package_data_on_device(
  * `VariableFixing::error_fixing_to_atmosphere_on_device`, on the `faces`
  * (which hold the reconstructed variables there) or the `status`.
  *
- * Only `Rusanov` is supported: `Hll` decides for each face set from the fixed
- * variables on all its faces whether to use the hydro characteristic speeds,
- * so it needs those variables first (see `fluxes_and_package_data_on_device`).
+ * `Hll` decides for each face set whether to use the hydro characteristic
+ * speeds (`Hll::use_hydro_speeds`) from the rest mass density and
+ * \f$\tilde{B}^i\f$ on all its faces. Neither needs the other face variables:
+ * \f$\tilde{B}^i = \sqrt{\gamma} B^i\f$, and the fix to the atmosphere only
+ * changes the density below its cutoff. So a first, small kernel decides this
+ * from the reconstructed variables, giving the same result as the host. As in
+ * `fluxes_and_package_data_on_device`, the decisions are kept in the
+ * `use_hydro_speeds_scratch` if it isn't `nullptr`.
  */
 /// @{
+template <typename Correction>
 PointwiseStatusSummary package_data_from_reconstruction_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
+    gsl::not_null<BatchedVariables<typename Correction::dg_package_field_tags>*>
         packaged_data,
     const BatchedVariables<fd::reconstruction_face_tags>& faces,
     const FaceCovectorBatch& conormal, double sign,
-    const FaceVectorBatch* mesh_velocity,
+    const FaceVectorBatch* mesh_velocity, const Correction& correction,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere,
     const FaceInverseMetricBatch* normalization_inverse_spatial_metric =
-        nullptr);
+        nullptr,
+    Kokkos::View<bool*>* use_hydro_speeds_scratch = nullptr);
 
+template <typename Correction>
 void package_data_from_reconstruction_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
+    gsl::not_null<BatchedVariables<typename Correction::dg_package_field_tags>*>
         packaged_data,
     gsl::not_null<DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>
         status,
     const BatchedVariables<fd::reconstruction_face_tags>& faces,
     const FaceCovectorBatch& conormal, double sign,
-    const FaceVectorBatch* mesh_velocity,
+    const FaceVectorBatch* mesh_velocity, const Correction& correction,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere,
     const FaceInverseMetricBatch* normalization_inverse_spatial_metric =
-        nullptr);
+        nullptr,
+    Kokkos::View<bool*>* use_hydro_speeds_scratch = nullptr);
 /// @}
 
 /*!

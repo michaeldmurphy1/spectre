@@ -335,35 +335,16 @@ void TimeDerivativeOnDevice<Correction>::apply(
   const auto normalization_inverse_spatial_metric =
       get<::Tags::BatchView<gr::Tags::InverseSpatialMetric<DataVector, 3>>>(
           upper_faces_);
-  if constexpr (std::is_same_v<Correction, BoundaryCorrections::Rusanov>) {
-    // In one kernel for each side
-    (void)correction;
-    for (size_t side = 0; side < 2; ++side) {
-      BoundaryCorrections::package_data_from_reconstruction_on_device(
-          exec,
-          make_not_null(side == 0 ? &lower_packaged_data_
-                                  : &upper_packaged_data_),
-          face_status, side == 0 ? lower_faces_ : upper_faces_, conormal,
-          gsl::at(signs, side), moving_mesh_velocity, equation_of_state,
-          fix_to_atmosphere, &normalization_inverse_spatial_metric);
-    }
-  } else {
-    // `Hll` needs the variables on all faces of a face set first
-    for (size_t side = 0; side < 2; ++side) {
-      fd::compute_conservatives_on_device(
-          exec, make_not_null(side == 0 ? &lower_faces_ : &upper_faces_),
-          face_status, equation_of_state, fix_to_atmosphere);
-    }
-    for (size_t side = 0; side < 2; ++side) {
-      BoundaryCorrections::fluxes_and_package_data_on_device(
-          exec,
-          make_not_null(side == 0 ? &lower_packaged_data_
-                                  : &upper_packaged_data_),
-          side == 0 ? lower_faces_ : upper_faces_, conormal,
-          gsl::at(signs, side), moving_mesh_velocity, correction,
-          equation_of_state, &normalization_inverse_spatial_metric,
-          &use_hydro_speeds_scratch_);
-    }
+  // In one kernel for each side (after a small one with `Hll`)
+  for (size_t side = 0; side < 2; ++side) {
+    BoundaryCorrections::package_data_from_reconstruction_on_device(
+        exec,
+        make_not_null(side == 0 ? &lower_packaged_data_
+                                : &upper_packaged_data_),
+        face_status, side == 0 ? lower_faces_ : upper_faces_, conormal,
+        gsl::at(signs, side), moving_mesh_velocity, correction,
+        equation_of_state, fix_to_atmosphere,
+        &normalization_inverse_spatial_metric, &use_hydro_speeds_scratch_);
   }
   packaged_data_from_dg.apply(
       exec,

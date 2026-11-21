@@ -476,31 +476,133 @@ struct FusedHllPackageData {
   }
 };
 
-// The variables on the face (`fd::FaceVariablesAtGridPoint`),
-// `face_fluxes_and_normal` and `Rusanov::dg_package_data_impl` at a grid point.
-// The arguments after the equation of state are the fix to the atmosphere (if
-// `FixAtmosphere`) and the mesh velocity (if `HasMeshVelocity`).
+// The variables on the face and their fluxes and normal at a grid point
+struct FaceState {
+  Scalar<double> rest_mass_density{};
+  Scalar<double> specific_internal_energy{};
+  tnsr::I<double, 3, Frame::Inertial> spatial_velocity{};
+  Scalar<double> lorentz_factor{};
+  Scalar<double> pressure{};
+  Scalar<double> temperature{};
+  tnsr::i<double, 3, Frame::Inertial> spatial_velocity_one_form{};
+  Scalar<double> tilde_d{};
+  Scalar<double> tilde_ye{};
+  Scalar<double> tilde_tau{};
+  tnsr::i<double, 3, Frame::Inertial> tilde_s{};
+  tnsr::I<double, 3, Frame::Inertial> tilde_b{};
+  Scalar<double> tilde_phi{};
+  FaceFluxesAndNormal fluxes_and_normal{};
+};
+
+// The arguments of the fused functions that start from the reconstructed
+// variables, up to the equation of state
+template <typename DeviceView>
+using from_reconstruction_tags =
+    tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
+               hydro::Tags::Temperature<DataVector>,
+               hydro::Tags::ElectronFraction<DataVector>,
+               hydro::Tags::LorentzFactorTimesSpatialVelocity<DataVector, 3>,
+               hydro::Tags::MagneticField<DataVector, 3>,
+               hydro::Tags::DivergenceCleaningField<DataVector>,
+               gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, 3>,
+               gr::Tags::SpatialMetric<DataVector, 3>,
+               gr::Tags::SqrtDetSpatialMetric<DataVector>,
+               gr::Tags::InverseSpatialMetric<DataVector, 3>, Conormal, Sign,
+               NormalizationInverseSpatialMetric,
+               EquationsOfState::Tags::DeviceView<DeviceView>>;
+// The optional arguments after them: the fix to the atmosphere (if
+// `FixAtmosphere`) and the mesh velocity (if `HasMeshVelocity`)
+template <bool FixAtmosphere, bool HasMeshVelocity>
+using from_reconstruction_extra_tags = tmpl::append<
+    tmpl::conditional_t<FixAtmosphere, tmpl::list<fd::FixToAtmosphereView>,
+                        tmpl::list<>>,
+    fused_mesh_velocity_tags<HasMeshVelocity>>;
+
+// The variables on the face (`fd::FaceVariablesAtGridPoint`) and
+// `face_fluxes_and_normal` at a grid point, from the reconstructed variables.
+// The `extra` arguments are the `from_reconstruction_extra_tags`. The fluxes
+// aren't computed if the status is `failed`.
+template <bool FixAtmosphere, bool HasMeshVelocity, typename DeviceView,
+          typename... Extra>
+KOKKOS_FORCEINLINE_FUNCTION PointwiseStatus face_state_from_reconstruction(
+    const gsl::not_null<FaceState*> state,
+    const Scalar<double>& reconstructed_rest_mass_density,
+    const Scalar<double>& reconstructed_temperature,
+    const Scalar<double>& electron_fraction,
+    const tnsr::I<double, 3, Frame::Inertial>&
+        lorentz_factor_times_spatial_velocity,
+    const tnsr::I<double, 3, Frame::Inertial>& magnetic_field,
+    const Scalar<double>& divergence_cleaning_field,
+    const Scalar<double>& lapse,
+    const tnsr::I<double, 3, Frame::Inertial>& shift,
+    const tnsr::ii<double, 3, Frame::Inertial>& spatial_metric,
+    const Scalar<double>& sqrt_det_spatial_metric,
+    const tnsr::II<double, 3, Frame::Inertial>& inv_spatial_metric,
+    const tnsr::i<double, 3, Frame::Inertial>& conormal, const double sign,
+    const tnsr::II<double, 3, Frame::Inertial>&
+        normalization_inv_spatial_metric,
+    const DeviceView& equation_of_state, const Extra&... extra) {
+  static_assert(sizeof...(Extra) == static_cast<size_t>(FixAtmosphere) +
+                                        static_cast<size_t>(HasMeshVelocity));
+  const auto extras = std::forward_as_tuple(extra...);
+  // 1. The variables on the face
+  // Only kept if the fix to the atmosphere fails, which is an error
+  const Scalar<double> no_previous_value{0.0};
+  const auto face_variables = [&](const auto&... fix_to_atmosphere) {
+    return fd::FaceVariablesAtGridPoint<DeviceView, FixAtmosphere>::apply(
+        make_not_null(&state->rest_mass_density),
+        make_not_null(&state->specific_internal_energy),
+        make_not_null(&state->spatial_velocity),
+        make_not_null(&state->lorentz_factor), make_not_null(&state->pressure),
+        make_not_null(&state->temperature),
+        make_not_null(&state->spatial_velocity_one_form),
+        make_not_null(&state->tilde_d), make_not_null(&state->tilde_ye),
+        make_not_null(&state->tilde_tau), make_not_null(&state->tilde_s),
+        make_not_null(&state->tilde_b), make_not_null(&state->tilde_phi),
+        reconstructed_rest_mass_density, no_previous_value, no_previous_value,
+        reconstructed_temperature, electron_fraction,
+        lorentz_factor_times_spatial_velocity, magnetic_field,
+        divergence_cleaning_field, spatial_metric, sqrt_det_spatial_metric,
+        equation_of_state, fix_to_atmosphere...);
+  };
+  PointwiseStatus status{};
+  if constexpr (FixAtmosphere) {
+    status = face_variables(std::get<0>(extras));
+  } else {
+    status = face_variables();
+  }
+  if (status.failed) {
+    return status;
+  }
+
+  // 2. The fluxes and the normal
+  const auto fluxes_and_normal = [&](const auto&... mesh_velocity) {
+    return face_fluxes_and_normal(
+        state->tilde_d, state->tilde_ye, state->tilde_tau, state->tilde_s,
+        state->tilde_b, state->tilde_phi, lapse, shift, sqrt_det_spatial_metric,
+        spatial_metric, inv_spatial_metric, state->pressure,
+        state->spatial_velocity, state->lorentz_factor, magnetic_field,
+        conormal, sign, normalization_inv_spatial_metric, mesh_velocity...);
+  };
+  if constexpr (HasMeshVelocity) {
+    state->fluxes_and_normal =
+        fluxes_and_normal(std::get<static_cast<size_t>(FixAtmosphere)>(extras));
+  } else {
+    state->fluxes_and_normal = fluxes_and_normal();
+  }
+  return status;
+}
+
+// `face_state_from_reconstruction` and `Rusanov::dg_package_data_impl` at a
+// grid point
 template <typename DeviceView, bool FixAtmosphere, bool HasMeshVelocity>
 struct RusanovPackageDataFromReconstruction {
   using return_tags = Rusanov::dg_package_field_tags;
   using argument_tags = tmpl::append<
-      tmpl::list<hydro::Tags::RestMassDensity<DataVector>,
-                 hydro::Tags::Temperature<DataVector>,
-                 hydro::Tags::ElectronFraction<DataVector>,
-                 hydro::Tags::LorentzFactorTimesSpatialVelocity<DataVector, 3>,
-                 hydro::Tags::MagneticField<DataVector, 3>,
-                 hydro::Tags::DivergenceCleaningField<DataVector>,
-                 gr::Tags::Lapse<DataVector>, gr::Tags::Shift<DataVector, 3>,
-                 gr::Tags::SpatialMetric<DataVector, 3>,
-                 gr::Tags::SqrtDetSpatialMetric<DataVector>,
-                 gr::Tags::InverseSpatialMetric<DataVector, 3>, Conormal, Sign,
-                 NormalizationInverseSpatialMetric,
-                 EquationsOfState::Tags::DeviceView<DeviceView>>,
-      tmpl::conditional_t<FixAtmosphere, tmpl::list<fd::FixToAtmosphereView>,
-                          tmpl::list<>>,
-      fused_mesh_velocity_tags<HasMeshVelocity>>;
+      from_reconstruction_tags<DeviceView>,
+      from_reconstruction_extra_tags<FixAtmosphere, HasMeshVelocity>>;
 
-  template <typename... Extra>
+  template <typename... Args>
   KOKKOS_FUNCTION static PointwiseStatus apply(
       const gsl::not_null<Scalar<double>*> packaged_tilde_d,
       const gsl::not_null<Scalar<double>*> packaged_tilde_ye,
@@ -527,6 +629,74 @@ struct RusanovPackageDataFromReconstruction {
       const tnsr::I<double, 3, Frame::Inertial>& magnetic_field,
       const Scalar<double>& divergence_cleaning_field,
       const Scalar<double>& lapse,
+      const tnsr::I<double, 3, Frame::Inertial>& shift, const Args&... args) {
+    FaceState state{};
+    const PointwiseStatus status =
+        face_state_from_reconstruction<FixAtmosphere, HasMeshVelocity>(
+            make_not_null(&state), reconstructed_rest_mass_density,
+            reconstructed_temperature, electron_fraction,
+            lorentz_factor_times_spatial_velocity, magnetic_field,
+            divergence_cleaning_field, lapse, shift, args...);
+    if (status.failed) {
+      return status;
+    }
+    const FaceFluxesAndNormal& face = state.fluxes_and_normal;
+    Rusanov::dg_package_data_impl(
+        packaged_tilde_d, packaged_tilde_ye, packaged_tilde_tau,
+        packaged_tilde_s, packaged_tilde_b, packaged_tilde_phi,
+        packaged_normal_dot_flux_tilde_d, packaged_normal_dot_flux_tilde_ye,
+        packaged_normal_dot_flux_tilde_tau, packaged_normal_dot_flux_tilde_s,
+        packaged_normal_dot_flux_tilde_b, packaged_normal_dot_flux_tilde_phi,
+        packaged_abs_char_speed, state.tilde_d, state.tilde_ye, state.tilde_tau,
+        state.tilde_s, state.tilde_b, state.tilde_phi, face.tilde_d_flux,
+        face.tilde_ye_flux, face.tilde_tau_flux, face.tilde_s_flux,
+        face.tilde_b_flux, face.tilde_phi_flux, lapse, shift,
+        face.normal_covector,
+        HasMeshVelocity ? &face.normal_dot_mesh_velocity : nullptr);
+    return status;
+  }
+};
+
+// `face_state_from_reconstruction` and `Hll::dg_package_data_impl` at a grid
+// point. Whether each face set uses the hydro speeds is decided before (see
+// `use_hydro_speeds_from_reconstruction_on_device`).
+template <typename DeviceView, bool FixAtmosphere, bool HasMeshVelocity>
+struct HllPackageDataFromReconstruction {
+  using return_tags = Hll::dg_package_field_tags;
+  using argument_tags = tmpl::append<
+      tmpl::list<::Tags::PerElement<UseHydroSpeeds>, LightSpeedDensityCutoff>,
+      from_reconstruction_tags<DeviceView>,
+      from_reconstruction_extra_tags<FixAtmosphere, HasMeshVelocity>>;
+
+  template <typename... Args>
+  KOKKOS_FUNCTION static PointwiseStatus apply(
+      const gsl::not_null<Scalar<double>*> packaged_tilde_d,
+      const gsl::not_null<Scalar<double>*> packaged_tilde_ye,
+      const gsl::not_null<Scalar<double>*> packaged_tilde_tau,
+      const gsl::not_null<tnsr::i<double, 3, Frame::Inertial>*>
+          packaged_tilde_s,
+      const gsl::not_null<tnsr::I<double, 3, Frame::Inertial>*>
+          packaged_tilde_b,
+      const gsl::not_null<Scalar<double>*> packaged_tilde_phi,
+      const gsl::not_null<Scalar<double>*> packaged_normal_dot_flux_tilde_d,
+      const gsl::not_null<Scalar<double>*> packaged_normal_dot_flux_tilde_ye,
+      const gsl::not_null<Scalar<double>*> packaged_normal_dot_flux_tilde_tau,
+      const gsl::not_null<tnsr::i<double, 3, Frame::Inertial>*>
+          packaged_normal_dot_flux_tilde_s,
+      const gsl::not_null<tnsr::I<double, 3, Frame::Inertial>*>
+          packaged_normal_dot_flux_tilde_b,
+      const gsl::not_null<Scalar<double>*> packaged_normal_dot_flux_tilde_phi,
+      const gsl::not_null<Scalar<double>*> packaged_largest_outgoing_char_speed,
+      const gsl::not_null<Scalar<double>*> packaged_largest_ingoing_char_speed,
+      const bool use_hydro_speeds, const double light_speed_density_cutoff,
+      const Scalar<double>& reconstructed_rest_mass_density,
+      const Scalar<double>& reconstructed_temperature,
+      const Scalar<double>& electron_fraction,
+      const tnsr::I<double, 3, Frame::Inertial>&
+          lorentz_factor_times_spatial_velocity,
+      const tnsr::I<double, 3, Frame::Inertial>& magnetic_field,
+      const Scalar<double>& divergence_cleaning_field,
+      const Scalar<double>& lapse,
       const tnsr::I<double, 3, Frame::Inertial>& shift,
       const tnsr::ii<double, 3, Frame::Inertial>& spatial_metric,
       const Scalar<double>& sqrt_det_spatial_metric,
@@ -534,79 +704,36 @@ struct RusanovPackageDataFromReconstruction {
       const tnsr::i<double, 3, Frame::Inertial>& conormal, const double sign,
       const tnsr::II<double, 3, Frame::Inertial>&
           normalization_inv_spatial_metric,
-      const DeviceView& equation_of_state, const Extra&... extra) {
-    static_assert(sizeof...(Extra) == static_cast<size_t>(FixAtmosphere) +
-                                          static_cast<size_t>(HasMeshVelocity));
-    const auto extras = std::forward_as_tuple(extra...);
-    // 1. The variables on the face
-    Scalar<double> rest_mass_density{};
-    Scalar<double> specific_internal_energy{};
-    tnsr::I<double, 3, Frame::Inertial> spatial_velocity{};
-    Scalar<double> lorentz_factor{};
-    Scalar<double> pressure{};
-    Scalar<double> temperature{};
-    tnsr::i<double, 3, Frame::Inertial> spatial_velocity_one_form{};
-    Scalar<double> tilde_d{};
-    Scalar<double> tilde_ye{};
-    Scalar<double> tilde_tau{};
-    tnsr::i<double, 3, Frame::Inertial> tilde_s{};
-    tnsr::I<double, 3, Frame::Inertial> tilde_b{};
-    Scalar<double> tilde_phi{};
-    // Only kept if the fix to the atmosphere fails, which is an error
-    const Scalar<double> no_previous_value{0.0};
-    const auto face_variables = [&](const auto&... fix_to_atmosphere) {
-      return fd::FaceVariablesAtGridPoint<DeviceView, FixAtmosphere>::apply(
-          make_not_null(&rest_mass_density),
-          make_not_null(&specific_internal_energy),
-          make_not_null(&spatial_velocity), make_not_null(&lorentz_factor),
-          make_not_null(&pressure), make_not_null(&temperature),
-          make_not_null(&spatial_velocity_one_form), make_not_null(&tilde_d),
-          make_not_null(&tilde_ye), make_not_null(&tilde_tau),
-          make_not_null(&tilde_s), make_not_null(&tilde_b),
-          make_not_null(&tilde_phi), reconstructed_rest_mass_density,
-          no_previous_value, no_previous_value, reconstructed_temperature,
-          electron_fraction, lorentz_factor_times_spatial_velocity,
-          magnetic_field, divergence_cleaning_field, spatial_metric,
-          sqrt_det_spatial_metric, equation_of_state, fix_to_atmosphere...);
-    };
-    PointwiseStatus status{};
-    if constexpr (FixAtmosphere) {
-      status = face_variables(std::get<0>(extras));
-    } else {
-      status = face_variables();
-    }
+      const DeviceView& equation_of_state, const Args&... extra) {
+    FaceState state{};
+    const PointwiseStatus status =
+        face_state_from_reconstruction<FixAtmosphere, HasMeshVelocity>(
+            make_not_null(&state), reconstructed_rest_mass_density,
+            reconstructed_temperature, electron_fraction,
+            lorentz_factor_times_spatial_velocity, magnetic_field,
+            divergence_cleaning_field, lapse, shift, spatial_metric,
+            sqrt_det_spatial_metric, inv_spatial_metric, conormal, sign,
+            normalization_inv_spatial_metric, equation_of_state, extra...);
     if (status.failed) {
       return status;
     }
-
-    // 2. The fluxes and the normal
-    const auto fluxes_and_normal = [&](const auto&... mesh_velocity) {
-      return face_fluxes_and_normal(
-          tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b, tilde_phi, lapse,
-          shift, sqrt_det_spatial_metric, spatial_metric, inv_spatial_metric,
-          pressure, spatial_velocity, lorentz_factor, magnetic_field, conormal,
-          sign, normalization_inv_spatial_metric, mesh_velocity...);
-    };
-    FaceFluxesAndNormal face{};
-    if constexpr (HasMeshVelocity) {
-      face = fluxes_and_normal(
-          std::get<static_cast<size_t>(FixAtmosphere)>(extras));
-    } else {
-      face = fluxes_and_normal();
-    }
-
-    // 3. The packaged data
-    Rusanov::dg_package_data_impl(
+    const FaceFluxesAndNormal& face = state.fluxes_and_normal;
+    Hll::dg_package_data_impl(
         packaged_tilde_d, packaged_tilde_ye, packaged_tilde_tau,
         packaged_tilde_s, packaged_tilde_b, packaged_tilde_phi,
         packaged_normal_dot_flux_tilde_d, packaged_normal_dot_flux_tilde_ye,
         packaged_normal_dot_flux_tilde_tau, packaged_normal_dot_flux_tilde_s,
         packaged_normal_dot_flux_tilde_b, packaged_normal_dot_flux_tilde_phi,
-        packaged_abs_char_speed, tilde_d, tilde_ye, tilde_tau, tilde_s, tilde_b,
-        tilde_phi, face.tilde_d_flux, face.tilde_ye_flux, face.tilde_tau_flux,
+        packaged_largest_outgoing_char_speed,
+        packaged_largest_ingoing_char_speed, state.tilde_d, state.tilde_ye,
+        state.tilde_tau, state.tilde_s, state.tilde_b, state.tilde_phi,
+        face.tilde_d_flux, face.tilde_ye_flux, face.tilde_tau_flux,
         face.tilde_s_flux, face.tilde_b_flux, face.tilde_phi_flux, lapse, shift,
+        state.spatial_velocity_one_form, state.rest_mass_density,
+        electron_fraction, state.temperature, state.spatial_velocity,
         face.normal_covector,
-        HasMeshVelocity ? &face.normal_dot_mesh_velocity : nullptr);
+        HasMeshVelocity ? &face.normal_dot_mesh_velocity : nullptr,
+        equation_of_state, use_hydro_speeds, light_speed_density_cutoff);
     return status;
   }
 };
@@ -678,6 +805,79 @@ Kokkos::View<const bool*> use_hydro_speeds_on_device(
             Kokkos::TeamThreadRange(team, number_of_grid_points),
             [&](const size_t i, double& local_max) {
               local_max = Kokkos::max(local_max, rest_mass_density(i, e));
+            },
+            Kokkos::Max<double>(max_rest_mass_density));
+        Kokkos::single(Kokkos::PerTeam(team), [&]() {
+          result(e) = not(max_magnitude_tilde_b > magnetic_field_cutoff) and
+                      max_rest_mass_density > density_cutoff;
+        });
+      });
+  return result;
+}
+
+// `use_hydro_speeds_on_device` from the reconstructed variables, for
+// `HllPackageDataFromReconstruction`. `Hll::use_hydro_speeds` only reads the
+// rest mass density and TildeB on the faces: TildeB is `sqrt(det(g)) B` (as
+// `ConservativeFromPrimitive`) and the fix to the atmosphere only changes the
+// density below its cutoff (`FixToAtmosphere::DeviceView::fix_at_point`), so
+// this decides exactly as the host without the other variables. (If the root
+// find of the fix fails, which is an error, the host keeps the reconstructed
+// density.)
+Kokkos::View<const bool*> use_hydro_speeds_from_reconstruction_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const BatchedVariables<fd::reconstruction_face_tags>& faces,
+    const VariableFixing::FixToAtmosphere<3>::DeviceView* const
+        fix_to_atmosphere,
+    const Hll& hll, Kokkos::View<bool*>* const scratch) {
+  const auto& rest_mass_density = get(
+      get<::Tags::BatchView<hydro::Tags::RestMassDensity<DataVector>>>(faces));
+  const auto& magnetic_field =
+      get<::Tags::BatchView<hydro::Tags::MagneticField<DataVector, 3>>>(faces);
+  const auto magnetic_field_x = get<0>(magnetic_field);
+  const auto magnetic_field_y = get<1>(magnetic_field);
+  const auto magnetic_field_z = get<2>(magnetic_field);
+  const auto& sqrt_det_spatial_metric =
+      get(get<::Tags::BatchView<gr::Tags::SqrtDetSpatialMetric<DataVector>>>(
+          faces));
+  const size_t number_of_grid_points = faces.number_of_grid_points();
+  const size_t number_of_elements = faces.number_of_elements();
+  const double magnetic_field_cutoff = hll.magnetic_field_magnitude_for_hydro();
+  const double density_cutoff = hll.light_speed_density_cutoff();
+  const bool fix_density = fix_to_atmosphere != nullptr;
+  const double atmosphere_density_cutoff =
+      fix_density ? fix_to_atmosphere->density_cutoff : 0.0;
+  const double density_of_atmosphere =
+      fix_density ? fix_to_atmosphere->density_of_atmosphere : 0.0;
+  const Kokkos::View<bool*> result =
+      scratch_view(exec, scratch, "UseHydroSpeeds", number_of_elements);
+  using TeamPolicy = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>;
+  Kokkos::parallel_for(
+      "UseHydroSpeedsFromReconstruction",
+      TeamPolicy(exec, static_cast<int>(number_of_elements), Kokkos::AUTO),
+      KOKKOS_LAMBDA(const TeamPolicy::member_type& team) {
+        const auto e = static_cast<size_t>(team.league_rank());
+        double max_magnitude_tilde_b = 0.0;
+        Kokkos::parallel_reduce(
+            Kokkos::TeamThreadRange(team, number_of_grid_points),
+            [&](const size_t i, double& local_max) {
+              const double sqrt_det = sqrt_det_spatial_metric(i, e);
+              const double tilde_b_x = sqrt_det * magnetic_field_x(i, e);
+              const double tilde_b_y = sqrt_det * magnetic_field_y(i, e);
+              const double tilde_b_z = sqrt_det * magnetic_field_z(i, e);
+              local_max = Kokkos::max(
+                  local_max, sqrt(square(tilde_b_x) + square(tilde_b_y) +
+                                  square(tilde_b_z)));
+            },
+            Kokkos::Max<double>(max_magnitude_tilde_b));
+        double max_rest_mass_density = 0.0;
+        Kokkos::parallel_reduce(
+            Kokkos::TeamThreadRange(team, number_of_grid_points),
+            [&](const size_t i, double& local_max) {
+              double density = rest_mass_density(i, e);
+              if (fix_density and density < atmosphere_density_cutoff) {
+                density = density_of_atmosphere;
+              }
+              local_max = Kokkos::max(local_max, density);
             },
             Kokkos::Max<double>(max_rest_mass_density));
         Kokkos::single(Kokkos::PerTeam(team), [&]() {
@@ -864,19 +1064,33 @@ void fluxes_and_package_data_on_device(
 namespace {
 // With a `PointwiseStatusSummary` result if `status` is `nullptr`, and else
 // recording the status in `*status`
-template <typename StatusPointer>
+template <typename Correction, typename StatusPointer>
 PointwiseStatusSummary package_data_from_reconstruction_impl(
     const Kokkos::DefaultExecutionSpace& exec,
-    const gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
+    const gsl::not_null<
+        BatchedVariables<typename Correction::dg_package_field_tags>*>
         packaged_data,
     const StatusPointer deferred_status,
     const BatchedVariables<fd::reconstruction_face_tags>& faces,
     const FaceCovectorBatch& conormal, const double sign,
-    const FaceVectorBatch* const mesh_velocity,
+    const FaceVectorBatch* const mesh_velocity, const Correction& correction,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* const
         fix_to_atmosphere,
-    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric) {
+    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric,
+    Kokkos::View<bool*>* const use_hydro_speeds_scratch) {
+  constexpr bool is_hll = std::is_same_v<Correction, Hll>;
+  static_assert(is_hll or std::is_same_v<Correction, Rusanov>);
+  Kokkos::View<const bool*> use_hydro_speeds{};
+  double light_speed_density_cutoff = 0.0;
+  if constexpr (is_hll) {
+    use_hydro_speeds = use_hydro_speeds_from_reconstruction_on_device(
+        exec, faces, fix_to_atmosphere, correction, use_hydro_speeds_scratch);
+    light_speed_density_cutoff = correction.light_speed_density_cutoff();
+  } else {
+    (void)correction;
+    (void)use_hydro_speeds_scratch;
+  }
   PointwiseStatusSummary status{};
   EquationsOfState::visit_device_view(
       equation_of_state, [&](const auto& device_view) {
@@ -901,6 +1115,11 @@ PointwiseStatusSummary package_data_from_reconstruction_impl(
               return *mesh_velocity;
             } else if constexpr (std::is_same_v<Tag, fd::FixToAtmosphereView>) {
               return *fix_to_atmosphere;
+            } else if constexpr (std::is_same_v<
+                                     Tag, ::Tags::PerElement<UseHydroSpeeds>>) {
+              return use_hydro_speeds;
+            } else if constexpr (std::is_same_v<Tag, LightSpeedDensityCutoff>) {
+              return light_speed_density_cutoff;
             } else {
               static_assert(
                   std::is_same_v<
@@ -908,14 +1127,18 @@ PointwiseStatusSummary package_data_from_reconstruction_impl(
               return device_view;
             }
           };
+          using Function = tmpl::conditional_t<
+              is_hll,
+              HllPackageDataFromReconstruction<DeviceView, FixAtmosphere,
+                                               HasMeshVelocity>,
+              RusanovPackageDataFromReconstruction<DeviceView, FixAtmosphere,
+                                                   HasMeshVelocity>>;
           if constexpr (std::is_null_pointer_v<StatusPointer>) {
-            status = apply_to_faces<RusanovPackageDataFromReconstruction<
-                DeviceView, FixAtmosphere, HasMeshVelocity>>(
-                exec, packaged_data, faces, special_argument);
+            status = apply_to_faces<Function>(exec, packaged_data, faces,
+                                              special_argument);
           } else {
-            apply_to_faces<RusanovPackageDataFromReconstruction<
-                DeviceView, FixAtmosphere, HasMeshVelocity>>(
-                exec, packaged_data, faces, special_argument, deferred_status);
+            apply_to_faces<Function>(exec, packaged_data, faces,
+                                     special_argument, deferred_status);
           }
         };
         const bool fix_atmosphere = fix_to_atmosphere != nullptr;
@@ -935,41 +1158,47 @@ PointwiseStatusSummary package_data_from_reconstruction_impl(
 
 }  // namespace
 
+template <typename Correction>
 PointwiseStatusSummary package_data_from_reconstruction_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    const gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
+    const gsl::not_null<
+        BatchedVariables<typename Correction::dg_package_field_tags>*>
         packaged_data,
     const BatchedVariables<fd::reconstruction_face_tags>& faces,
     const FaceCovectorBatch& conormal, const double sign,
-    const FaceVectorBatch* const mesh_velocity,
+    const FaceVectorBatch* const mesh_velocity, const Correction& correction,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* const
         fix_to_atmosphere,
-    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric) {
+    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric,
+    Kokkos::View<bool*>* const use_hydro_speeds_scratch) {
   return package_data_from_reconstruction_impl(
       exec, packaged_data, nullptr, faces, conormal, sign, mesh_velocity,
-      equation_of_state, fix_to_atmosphere,
-      normalization_inverse_spatial_metric);
+      correction, equation_of_state, fix_to_atmosphere,
+      normalization_inverse_spatial_metric, use_hydro_speeds_scratch);
 }
 
+template <typename Correction>
 void package_data_from_reconstruction_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    const gsl::not_null<BatchedVariables<Rusanov::dg_package_field_tags>*>
+    const gsl::not_null<
+        BatchedVariables<typename Correction::dg_package_field_tags>*>
         packaged_data,
     const gsl::not_null<
         DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>
         status,
     const BatchedVariables<fd::reconstruction_face_tags>& faces,
     const FaceCovectorBatch& conormal, const double sign,
-    const FaceVectorBatch* const mesh_velocity,
+    const FaceVectorBatch* const mesh_velocity, const Correction& correction,
     const EquationsOfState::EquationOfState<true, 3>& equation_of_state,
     const VariableFixing::FixToAtmosphere<3>::DeviceView* const
         fix_to_atmosphere,
-    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric) {
-  package_data_from_reconstruction_impl(exec, packaged_data, status.get(),
-                                        faces, conormal, sign, mesh_velocity,
-                                        equation_of_state, fix_to_atmosphere,
-                                        normalization_inverse_spatial_metric);
+    const FaceInverseMetricBatch* const normalization_inverse_spatial_metric,
+    Kokkos::View<bool*>* const use_hydro_speeds_scratch) {
+  package_data_from_reconstruction_impl(
+      exec, packaged_data, status.get(), faces, conormal, sign, mesh_velocity,
+      correction, equation_of_state, fix_to_atmosphere,
+      normalization_inverse_spatial_metric, use_hydro_speeds_scratch);
 }
 
 template <typename Correction>
@@ -1017,6 +1246,42 @@ void boundary_terms_on_device(
       const BatchedVariables<CORRECTION(data)::dg_package_field_tags>&     \
           exterior_packaged_data,                                          \
       dg::Formulation dg_formulation);
+
+GENERATE_INSTANTIATIONS(INSTANTIATION, (Rusanov, Hll))
+
+#undef INSTANTIATION
+
+#define INSTANTIATION(r, data)                                                 \
+  template PointwiseStatusSummary                                              \
+  package_data_from_reconstruction_on_device<CORRECTION(data)>(                \
+      const Kokkos::DefaultExecutionSpace& exec,                               \
+      gsl::not_null<                                                           \
+          BatchedVariables<CORRECTION(data)::dg_package_field_tags>*>          \
+          packaged_data,                                                       \
+      const BatchedVariables<fd::reconstruction_face_tags>& faces,             \
+      const FaceCovectorBatch& conormal, double sign,                          \
+      const FaceVectorBatch* mesh_velocity,                                    \
+      const CORRECTION(data) & correction,                                     \
+      const EquationsOfState::EquationOfState<true, 3>& equation_of_state,     \
+      const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere, \
+      const FaceInverseMetricBatch* normalization_inverse_spatial_metric,      \
+      Kokkos::View<bool*>* use_hydro_speeds_scratch);                          \
+  template void package_data_from_reconstruction_on_device<CORRECTION(data)>(  \
+      const Kokkos::DefaultExecutionSpace& exec,                               \
+      gsl::not_null<                                                           \
+          BatchedVariables<CORRECTION(data)::dg_package_field_tags>*>          \
+          packaged_data,                                                       \
+      gsl::not_null<                                                           \
+          DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>         \
+          status,                                                              \
+      const BatchedVariables<fd::reconstruction_face_tags>& faces,             \
+      const FaceCovectorBatch& conormal, double sign,                          \
+      const FaceVectorBatch* mesh_velocity,                                    \
+      const CORRECTION(data) & correction,                                     \
+      const EquationsOfState::EquationOfState<true, 3>& equation_of_state,     \
+      const VariableFixing::FixToAtmosphere<3>::DeviceView* fix_to_atmosphere, \
+      const FaceInverseMetricBatch* normalization_inverse_spatial_metric,      \
+      Kokkos::View<bool*>* use_hydro_speeds_scratch);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (Rusanov, Hll))
 

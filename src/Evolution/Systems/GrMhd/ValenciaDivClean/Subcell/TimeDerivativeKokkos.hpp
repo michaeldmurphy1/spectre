@@ -113,9 +113,11 @@ using cell_spacetime_tags =
  * the packaged data on both sides and the boundary corrections are allocated
  * once by the constructor.
  *
- * Steps 2 to 4 are one kernel for each side of the faces with `Rusanov`, and
- * two with `Hll` (see `face_tags`), and step 5 is one kernel, so that the
- * intermediate results stay on the stack instead of in memory.
+ * Steps 2 to 4 are one kernel for each side of the faces (with `Hll` after a
+ * small one that decides whether to use the hydro speeds, see
+ * `BoundaryCorrections::package_data_from_reconstruction_on_device`), and
+ * step 5 is one kernel, so that the intermediate results stay on the stack
+ * instead of in memory.
  */
 /// The divergence of the mesh velocity: one value per element (an element
 /// indexed view), which is enough for grid to inertial maps that are affine,
@@ -129,15 +131,10 @@ template <typename Correction>
 class TimeDerivativeOnDevice {
  public:
   using packaged_tags = typename Correction::dg_package_field_tags;
-  /// The variables on each side of the faces. With `Rusanov` these are only
-  /// the reconstructed and spacetime variables, from which one kernel computes
-  /// the packaged data (see
-  /// `BoundaryCorrections::package_data_from_reconstruction_on_device`).
-  /// `Hll` needs the variables on all faces of a face set before computing the
-  /// packaged data, so they are kept too (see `fd::device_face_tags`).
-  using face_tags = tmpl::conditional_t<
-      std::is_same_v<Correction, BoundaryCorrections::Rusanov>,
-      fd::reconstruction_face_tags, fd::device_face_tags>;
+  /// The variables on each side of the faces: the reconstructed and spacetime
+  /// variables, from which one kernel computes the packaged data (see
+  /// `BoundaryCorrections::package_data_from_reconstruction_on_device`)
+  using face_tags = fd::reconstruction_face_tags;
 
   TimeDerivativeOnDevice() = default;
 

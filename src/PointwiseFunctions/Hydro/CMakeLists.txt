@@ -28,6 +28,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   ComovingMagneticField.hpp
+  ComovingMagneticField.tpp
   InversePlasmaBeta.hpp
   LorentzFactor.hpp
   LowerSpatialFourVelocity.hpp
@@ -43,6 +44,7 @@ spectre_target_headers(
   TagsDeclarations.hpp
   Temperature.hpp
   TransportVelocity.hpp
+  TransportVelocity.tpp
   Units.hpp
   )
 

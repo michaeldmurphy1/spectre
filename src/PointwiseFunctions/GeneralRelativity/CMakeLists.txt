@@ -48,6 +48,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   Christoffel.hpp
+  Christoffel.tpp
   CubicCurvatureScalars.hpp
   DerivativeSpatialMetric.hpp
   DerivativesOfSpacetimeMetric.hpp

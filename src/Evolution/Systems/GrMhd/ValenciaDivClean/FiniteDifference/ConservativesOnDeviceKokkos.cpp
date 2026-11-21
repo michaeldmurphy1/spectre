@@ -15,7 +15,7 @@
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/DeviceArgumentsKokkos.hpp"
 #include "DataStructures/PointwiseStatus.hpp"
-#include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.hpp"
+#include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.tpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ConservativeFromPrimitive.tpp"

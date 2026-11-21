@@ -1,0 +1,102 @@
+// Distributed under the MIT License.
+// See LICENSE.txt for details.
+
+#pragma once
+
+#include "PointwiseFunctions/Hydro/ComovingMagneticField.hpp"
+
+#include <cstddef>
+
+#include "DataStructures/Tensor/Tensor.hpp"
+#include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
+
+namespace hydro {
+template <typename DataType>
+KOKKOS_FUNCTION void comoving_magnetic_field(
+    const gsl::not_null<tnsr::A<DataType, 3>*> result,
+    const tnsr::I<DataType, 3>& spatial_velocity,
+    const tnsr::I<DataType, 3>& magnetic_field,
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& lorentz_factor, const tnsr::I<DataType, 3>& shift,
+    const Scalar<DataType>& lapse) {
+  get<0>(*result) = get(lorentz_factor) *
+                    get(magnetic_field_dot_spatial_velocity) / get(lapse);
+
+  for (size_t i = 0; i < 3; ++i) {
+    result->get(i + 1) =
+        (magnetic_field.get(i) / get(lorentz_factor)) +
+        get<0>(*result) * (get(lapse) * spatial_velocity.get(i) - shift.get(i));
+  }
+}
+
+template <typename DataType>
+KOKKOS_FUNCTION tnsr::A<DataType, 3> comoving_magnetic_field(
+    const tnsr::I<DataType, 3>& spatial_velocity,
+    const tnsr::I<DataType, 3>& magnetic_field,
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& lorentz_factor, const tnsr::I<DataType, 3>& shift,
+    const Scalar<DataType>& lapse) {
+  tnsr::A<DataType, 3> result{};
+  comoving_magnetic_field(make_not_null(&result), spatial_velocity,
+                          magnetic_field, magnetic_field_dot_spatial_velocity,
+                          lorentz_factor, shift, lapse);
+  return result;
+}
+
+template <typename DataType>
+KOKKOS_FUNCTION void comoving_magnetic_field_one_form(
+    const gsl::not_null<tnsr::a<DataType, 3>*> result,
+    const tnsr::i<DataType, 3>& spatial_velocity_one_form,
+    const tnsr::i<DataType, 3>& magnetic_field_one_form,
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& lorentz_factor, const tnsr::I<DataType, 3>& shift,
+    const Scalar<DataType>& lapse) {
+  get<0>(*result) = -get(lapse) * get(lorentz_factor) *
+                    get(magnetic_field_dot_spatial_velocity);
+  for (size_t i = 0; i < 3; ++i) {
+    result->get(i + 1) = magnetic_field_one_form.get(i) / get(lorentz_factor) +
+                         get(lorentz_factor) *
+                             get(magnetic_field_dot_spatial_velocity) *
+                             spatial_velocity_one_form.get(i);
+    get<0>(*result) += shift.get(i) * result->get(i + 1);
+  }
+}
+
+template <typename DataType>
+KOKKOS_FUNCTION tnsr::a<DataType, 3> comoving_magnetic_field_one_form(
+    const tnsr::i<DataType, 3>& spatial_velocity_one_form,
+    const tnsr::i<DataType, 3>& magnetic_field_one_form,
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& lorentz_factor, const tnsr::I<DataType, 3>& shift,
+    const Scalar<DataType>& lapse) {
+  tnsr::a<DataType, 3> result{};
+  comoving_magnetic_field_one_form(
+      make_not_null(&result), spatial_velocity_one_form,
+      magnetic_field_one_form, magnetic_field_dot_spatial_velocity,
+      lorentz_factor, shift, lapse);
+  return result;
+}
+
+template <typename DataType>
+KOKKOS_FUNCTION void comoving_magnetic_field_squared(
+    const gsl::not_null<Scalar<DataType>*> result,
+    const Scalar<DataType>& magnetic_field_squared,
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& lorentz_factor) {
+  get(*result) = get(magnetic_field_squared) / square(get(lorentz_factor)) +
+                 square(get(magnetic_field_dot_spatial_velocity));
+}
+
+template <typename DataType>
+KOKKOS_FUNCTION Scalar<DataType> comoving_magnetic_field_squared(
+    const Scalar<DataType>& magnetic_field_squared,
+    const Scalar<DataType>& magnetic_field_dot_spatial_velocity,
+    const Scalar<DataType>& lorentz_factor) {
+  Scalar<DataType> result{};
+  comoving_magnetic_field_squared(
+      make_not_null(&result), magnetic_field_squared,
+      magnetic_field_dot_spatial_velocity, lorentz_factor);
+  return result;
+}
+}  // namespace hydro

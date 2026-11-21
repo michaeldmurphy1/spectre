@@ -13,7 +13,7 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/DgSubcell/Tags/Coordinates.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Tags.hpp"
-#include "Evolution/Systems/GrMhd/GhValenciaDivClean/StressEnergy.hpp"
+#include "Evolution/Systems/GrMhd/GhValenciaDivClean/StressEnergy.tpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/ThreePlusOneKokkos.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"

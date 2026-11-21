@@ -340,8 +340,13 @@ void check_atmosphere_failure(const gsl::not_null<std::mt19937*> generator) {
   auto fixer_view = Fixer{
       1.e-12, 3.e-12, std::nullopt,
       Fixer::KappaLimitingOptions{
-          3.e-12, 1.e-3, 3.e-11, 0.01, std::nullopt,
-          false}}.device_view();
+          .density_lower_bound = 3.e-12,
+          .eplison_kappa_minus = 1.e-3,
+          .density_upper_bound = 3.e-11,
+          .epsilon_kappa_max = 0.01,
+          .min_temperature = std::nullopt,
+          .limit_above_density_upper_bound =
+              false}}.device_view();
   fixer_view.kappa_limiting.min_temperature_from_eos = false;
   fixer_view.kappa_limiting.min_temperature = -1.0;
   const EoS::Equilibrium3D<EoS::IdealFluid<true>> eos{
@@ -434,10 +439,18 @@ SPECTRE_TEST_CASE(
       EoS::IdealFluid<true>{5.0 / 3.0}};
   const EoS::Barotropic3D<EoS::PolytropicFluid<true>> polytrope{
       EoS::PolytropicFluid<true>{100.0, 2.0}};
-  const Fixer fixer{1.e-12, 3.e-12,
-                    Fixer::VelocityLimitingOptions{0.0, 1.e-4, 3.e-12, 1.e-11},
-                    Fixer::KappaLimitingOptions{3.e-12, 1.e-3, 3.e-11, 0.01,
-                                                std::nullopt, false}};
+  const Fixer fixer{
+      1.e-12, 3.e-12,
+      Fixer::VelocityLimitingOptions{.atmosphere_max_velocity = 0.0,
+                                     .near_atmosphere_max_velocity = 1.e-4,
+                                     .atmosphere_density_cutoff = 3.e-12,
+                                     .transition_density_bound = 1.e-11},
+      Fixer::KappaLimitingOptions{.density_lower_bound = 3.e-12,
+                                  .eplison_kappa_minus = 1.e-3,
+                                  .density_upper_bound = 3.e-11,
+                                  .epsilon_kappa_max = 0.01,
+                                  .min_temperature = std::nullopt,
+                                  .limit_above_density_upper_bound = false}};
   for (const auto* const eos :
        {static_cast<const EoS::EquationOfState<true, 3>*>(&ideal_fluid),
         static_cast<const EoS::EquationOfState<true, 3>*>(&polytrope)}) {

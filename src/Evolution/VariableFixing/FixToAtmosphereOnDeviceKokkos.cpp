@@ -90,7 +90,7 @@ struct FixToAtmosphereAtGridPoint {
       *pressure = unfixed_pressure;
       *temperature = unfixed_temperature;
     }
-    return {false, root_find_failed};
+    return {.flag = false, .failed = root_find_failed};
   }
 };
 

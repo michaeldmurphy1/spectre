@@ -145,10 +145,22 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
   using ghost_tags = subcell::PrimitiveGhostVariables::ghost_variables_tag_list;
   this->set_patch_elements(
       patch_ns::FdPatchElements{
-          exec, domain, patch_table, patch, initial_refinement_levels, time,
-          functions_of_time, reconstructor_on_device.ghost_zone_size(),
-          Variables<ghost_tags>::number_of_independent_components,
-          number_of_packaged_variables, number_of_packaged_variables, 0},
+          exec,
+          domain,
+          patch_table,
+          patch,
+          initial_refinement_levels,
+          time,
+          functions_of_time,
+          reconstructor_on_device.ghost_zone_size(),
+          {patch_ns::GhostVariablesPart{
+              .number_of_variables =
+                  Variables<ghost_tags>::number_of_independent_components,
+              .variables_per_element =
+                  Variables<ghost_tags>::number_of_independent_components}},
+          number_of_packaged_variables,
+          number_of_packaged_variables,
+          0},
       number_of_rdmp_values);
 
   const size_t number_of_cells =
@@ -247,7 +259,7 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::prepare_send(
   subcell::primitive_ghost_variables_on_device(
       exec, make_not_null(&ghost_variables_), primitives);
   if (patch_elements().has_external_faces()) {
-    patch_elements().enqueue_boundary_data(exec, flat(ghost_variables_));
+    patch_elements().enqueue_boundary_data(exec, {flat(ghost_variables_)});
     subcell::enqueue_rdmp_tci_data_on_device(
         exec, get<::Tags::BatchView<Tags::TildeD>>(evolved_variables),
         get<::Tags::BatchView<Tags::TildeYe>>(evolved_variables),
@@ -261,7 +273,7 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::prepare_send(
   // The ghost zones between the elements of the patch are filled after the
   // wait, so that the data for the neighbors outside the patch is sent without
   // waiting for them
-  patch_elements().fill_ghost_zones(exec, flat(ghost_variables_));
+  patch_elements().fill_ghost_zones(exec, {flat(ghost_variables_)});
   if (not patch_elements().has_external_faces()) {
     return {};
   }

@@ -22,6 +22,14 @@
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosMacros.hpp"
 
+// Device kernels that call these functions inline the functions they call
+// too, so they need those definitions (see "Definitions that kernels call" in
+// the GPU guide). Builds without Kokkos call their instantiations instead.
+#ifdef SPECTRE_KOKKOS
+#include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.tpp"
+#include "PointwiseFunctions/Hydro/TransportVelocity.tpp"
+#endif  // SPECTRE_KOKKOS
+
 namespace grmhd::ValenciaDivClean {
 namespace detail {
 template <typename DataType>

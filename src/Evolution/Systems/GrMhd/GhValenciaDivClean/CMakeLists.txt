@@ -26,6 +26,7 @@ spectre_target_headers(
   System.hpp
   SystemM1.hpp
   StressEnergy.hpp
+  StressEnergy.tpp
   Tags.hpp
   TimeDerivativeTerms.hpp
   )

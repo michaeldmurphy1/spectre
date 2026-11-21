@@ -28,7 +28,9 @@ spectre_target_headers(
   OrthonormalOneform.hpp
   OuterProduct.hpp
   RaiseOrLowerIndex.hpp
+  RaiseOrLowerIndex.tpp
   Trace.hpp
+  Trace.tpp
   )
 
 add_subdirectory(Python)

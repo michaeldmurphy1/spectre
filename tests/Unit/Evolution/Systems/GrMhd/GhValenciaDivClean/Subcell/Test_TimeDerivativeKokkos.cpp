@@ -552,8 +552,8 @@ void test(const gsl::not_null<std::mt19937*> generator,
     deep_copy(exec, make_not_null(&face_geometry), host_face_geometry);
     Kokkos::deep_copy(exec, div_mesh_velocity, 3.0 * *expansion_velocity);
     // At the cells, projected from the DG grid as on the host
-    BatchedVariables<tmpl::list<fd_patch::Tags::CellDivMeshVelocity>,
-                     Kokkos::HostSpace>
+    const BatchedVariables<tmpl::list<fd_patch::Tags::CellDivMeshVelocity>,
+                           Kokkos::HostSpace>
         host_cell_div{number_of_cells, 1};
     const DataVector projected_div = evolution::dg::subcell::fd::project(
         get(*div_dg_mesh_velocity), dg_mesh, subcell_mesh.extents(),

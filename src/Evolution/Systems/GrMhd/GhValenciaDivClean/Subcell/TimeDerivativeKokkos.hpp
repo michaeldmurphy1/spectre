@@ -109,8 +109,8 @@ bool fix_reconstructed_states_to_atmosphere(
  *    variables;
  * 2. compute the derivatives of the GH variables with FD of order \f$2 g\f$;
  * 3. compute the constraint damping parameters from the damping functions;
- * 4. compute the GH time derivatives (`gh::TimeDerivativeOnDevice`) and, if
- *    the mesh moves, add the mesh velocity times the derivatives;
+ * 4. compute the GH time derivatives (`gh::TimeDerivativeOnDevice`, which
+ *    also adds the mesh velocity times the derivatives if the mesh moves);
  * 5. compute the spacetime variables at the cell centers that the GRMHD
  *    sources need (`grmhd_spacetime_on_device`);
  * 6. reconstruct the spacetime metric to both sides of the faces with

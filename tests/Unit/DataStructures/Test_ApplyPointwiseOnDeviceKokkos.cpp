@@ -143,10 +143,10 @@ struct SquareRootInPlace {
       const gsl::not_null<Scalar<double>*> root, const Scalar<double>& value) {
     if (get(value) < 0.0) {
       get(*root) = 0.0;
-      return {false, true};
+      return {.flag = false, .failed = true};
     }
     get(*root) = std::sqrt(get(value));
-    return {false, false};
+    return {.flag = false, .failed = false};
   }
 };
 

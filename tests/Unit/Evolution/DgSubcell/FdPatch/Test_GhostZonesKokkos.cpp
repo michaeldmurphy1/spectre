@@ -48,6 +48,7 @@
 #include "Utilities/MakeArray.hpp"
 
 namespace {
+using evolution::dg::subcell::fd_patch::GhostVariablesPart;
 using evolution::dg::subcell::fd_patch::GhostZones;
 template <size_t Dim>
 using Interpolants =
@@ -393,6 +394,118 @@ void test_external_faces(const gsl::not_null<std::mt19937*> generator) {
   check_slice_for_external(ghost_zones, interpolants, generator);
 }
 
+// Reading the ghost variables in parts (see `GhostVariablesPart`) gives the
+// same padded variables and sent data as reading them from one batch. Uses the
+// patch of `test_external_faces`, which has internal faces, external faces and
+// an interpolated face.
+void test_parts(const gsl::not_null<std::mt19937*> generator) {
+  const Kokkos::DefaultExecutionSpace exec{};
+  const auto domain = rectilinear_domain<1>(
+      Index<1>{3}, std::array<std::vector<double>, 1>{{{0.0, 1.0, 2.0, 3.0}}},
+      {}, {}, std::array{true});
+  const std::vector<std::array<size_t, 1>> refinement(3, {{1}});
+  const std::vector<std::array<size_t, 1>> extents(3, {{4}});
+  const auto patches = evolution::dg::subcell::fd_patch::patch_table<1>(
+      domain.blocks(), refinement, extents, Spectral::Quadrature::GaussLobatto,
+      {}, false, 2);
+  const auto elements = patch_elements(patches, 1, domain, refinement);
+  std::vector<Interpolants<1>> interpolants(2);
+  std::uniform_real_distribution<double> dist(-1.0, 1.0);
+  interpolants[0][DirectionalId<1>{Direction<1>::lower_xi(),
+                                   ElementId<1>{0, {{SegmentId{1, 1}}}}}] =
+      intrp::Irregular<1>{
+          evolution::dg::subcell::fd::mesh(patches.dg_mesh(1)),
+          tnsr::I<DataVector, 1, Frame::ElementLogical>{
+              make_with_random_values<DataVector>(
+                  generator, make_not_null(&dist), DataVector(2))}};
+  const size_t ghost_width = 2;
+  // 3 variables: the first two from a batch of 2 variables, the last one from
+  // the third variable of a batch of 4 variables
+  const GhostZones<1> whole{exec,        elements, interpolants, patches, 1,
+                            ghost_width, 3};
+  const GhostZones<1> in_parts{
+      exec,
+      elements,
+      interpolants,
+      patches,
+      1,
+      ghost_width,
+      {GhostVariablesPart{.number_of_variables = 2, .variables_per_element = 2},
+       GhostVariablesPart{.number_of_variables = 1,
+                          .variables_per_element = 4,
+                          .first_variable = 2}}};
+  CHECK(in_parts.number_of_variables() == 3);
+  CHECK(in_parts.parts().size() == 2);
+  CHECK(in_parts.send_data_size() == whole.send_data_size());
+  CHECK(in_parts.external_data_size() == whole.external_data_size());
+
+  const size_t number_of_cells = whole.subcell_extents().product();
+  const size_t number_of_elements = elements.size();
+  const auto host_whole = make_with_random_values<DataVector>(
+      generator, make_not_null(&dist),
+      DataVector(number_of_elements * 3 * number_of_cells));
+  DataVector host_first(number_of_elements * 2 * number_of_cells);
+  auto host_second = make_with_random_values<DataVector>(
+      generator, make_not_null(&dist),
+      DataVector(number_of_elements * 4 * number_of_cells));
+  for (size_t e = 0; e < number_of_elements; ++e) {
+    for (size_t i = 0; i < number_of_cells; ++i) {
+      for (size_t v = 0; v < 2; ++v) {
+        host_first[(e * 2 + v) * number_of_cells + i] =
+            host_whole[(e * 3 + v) * number_of_cells + i];
+      }
+      host_second[(e * 4 + 2) * number_of_cells + i] =
+          host_whole[(e * 3 + 2) * number_of_cells + i];
+    }
+  }
+  const auto to_device = [](const DataVector& data) {
+    return Kokkos::View<const double*>{Kokkos::create_mirror_view_and_copy(
+        Kokkos::DefaultExecutionSpace::memory_space{},
+        Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>(
+            data.data(), data.size()))};
+  };
+  const auto device_whole = to_device(host_whole);
+  const std::vector<Kokkos::View<const double*>> device_parts{
+      to_device(host_first), to_device(host_second)};
+
+  // The padded variables, with the same values in the ghost zones of the
+  // external faces
+  const auto padded = [&](const GhostZones<1>& ghost_zones,
+                          const auto& ghost_variables) {
+    const auto padded_vars =
+        ::fd::device::make_volume_view(exec, "padded", number_of_elements, 3,
+                                       whole.subcell_extents(), ghost_width);
+    Kokkos::deep_copy(exec, padded_vars, 0.5);
+    ghost_zones.fill_from_patch(exec, padded_vars, ghost_variables);
+    return Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},
+                                               padded_vars);
+  };
+  const auto padded_whole = padded(whole, device_whole);
+  const auto padded_in_parts = padded(in_parts, device_parts);
+  REQUIRE(padded_whole.span() == padded_in_parts.span());
+  using Flat =
+      Kokkos::View<const double*, Kokkos::HostSpace, Kokkos::MemoryUnmanaged>;
+  const Flat flat_whole(padded_whole.data(), padded_whole.span());
+  const Flat flat_in_parts(padded_in_parts.data(), padded_in_parts.span());
+  for (size_t i = 0; i < flat_whole.size(); ++i) {
+    CHECK(flat_whole(i) == flat_in_parts(i));
+  }
+
+  const auto sent = [&](const GhostZones<1>& ghost_zones,
+                        const auto& ghost_variables) {
+    const Kokkos::View<double*> send_data("send data",
+                                          ghost_zones.send_data_size());
+    ghost_zones.slice_for_external(exec, send_data, ghost_variables);
+    return Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, send_data);
+  };
+  const auto sent_whole = sent(whole, device_whole);
+  const auto sent_in_parts = sent(in_parts, device_parts);
+  REQUIRE(sent_whole.size() == sent_in_parts.size());
+  for (size_t i = 0; i < sent_whole.size(); ++i) {
+    CHECK(sent_whole(i) == sent_in_parts(i));
+  }
+}
+
 // 3x3 blocks with DG-only outer blocks and 4x4 elements per block, so the
 // 2x2 interior elements of the central block are FD and border DG elements of
 // the same block.
@@ -690,6 +803,7 @@ SPECTRE_TEST_CASE("Unit.Evolution.Subcell.FdPatch.GhostZonesKokkos",
   test_periodic_block<3>();
   MAKE_GENERATOR(generator);
   test_external_faces(make_not_null(&generator));
+  test_parts(make_not_null(&generator));
   test_dg_neighbors(make_not_null(&generator));
   test_cells_coincide_across_blocks();
   test_patch_across_blocks();

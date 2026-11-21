@@ -127,10 +127,39 @@ GhostZones<Dim>::GhostZones(
         fd_to_neighbor_fd_interpolants,
     const evolution::patches::PatchTable<Dim>& patch_table, const size_t patch,
     const size_t ghost_width, const size_t number_of_variables)
+    : GhostZones(
+          exec, elements, fd_to_neighbor_fd_interpolants, patch_table, patch,
+          ghost_width,
+          {GhostVariablesPart{.number_of_variables = number_of_variables,
+                              .variables_per_element = number_of_variables}}) {}
+
+template <size_t Dim>
+GhostZones<Dim>::GhostZones(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const std::vector<Element<Dim>>& elements,
+    const std::vector<
+        DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>>&
+        fd_to_neighbor_fd_interpolants,
+    const evolution::patches::PatchTable<Dim>& patch_table, const size_t patch,
+    const size_t ghost_width, std::vector<GhostVariablesPart> parts)
     : number_of_elements_(elements.size()),
       subcell_extents_(fd::mesh(patch_table.dg_mesh(patch)).extents()),
       ghost_width_(ghost_width),
-      number_of_variables_(number_of_variables) {
+      parts_(std::move(parts)),
+      from_patch_(parts_.size()),
+      to_external_(parts_.size()) {
+  for (const GhostVariablesPart& part : parts_) {
+    if (part.first_variable + part.number_of_variables >
+        part.variables_per_element) {
+      ERROR("A part of the ghost variables reads the variables "
+            << part.first_variable << " to "
+            << part.first_variable + part.number_of_variables
+            << " (exclusive) of a batch with " << part.variables_per_element
+            << " variables per element");
+    }
+    first_variables_.push_back(number_of_variables_);
+    number_of_variables_ += part.number_of_variables;
+  }
   const auto& element_ids = patch_table.element_ids(patch);
   const Mesh<Dim>& dg_mesh = patch_table.dg_mesh(patch);
   if (elements.size() != element_ids.size()) {
@@ -153,9 +182,8 @@ GhostZones<Dim>::GhostZones(
     }
     number_of_padded_cells *= subcell_extents_[d] + 2 * ghost_width;
   }
-  const size_t element_stride = number_of_variables * number_of_cells;
   const size_t padded_element_stride =
-      number_of_variables * number_of_padded_cells;
+      number_of_variables_ * number_of_padded_cells;
 
   std::vector<size_t> unpadded_points(number_of_cells);
   std::iota(unpadded_points.begin(), unpadded_points.end(), 0_st);
@@ -175,9 +203,13 @@ GhostZones<Dim>::GhostZones(
             << element.external_boundaries()
             << ". Only periodic boundaries are supported.");
     }
-    from_patch_.add_copy(slot * element_stride, number_of_cells,
-                         slot * padded_element_stride, number_of_padded_cells,
-                         unpadded_points, padded_points);
+    for (size_t part = 0; part < parts_.size(); ++part) {
+      from_patch_[part].add_copy(
+          source_offset(part, slot), number_of_cells,
+          slot * padded_element_stride +
+              first_variables_[part] * number_of_padded_cells,
+          number_of_padded_cells, unpadded_points, padded_points);
+    }
 
     for (const auto& direction : Direction<Dim>::all_directions()) {
       const auto& neighbors = element.neighbors().at(direction);
@@ -208,14 +240,51 @@ GhostZones<Dim>::GhostZones(
       const auto source_points = cells_for_neighbor_ghost_zone(
           subcell_extents_, ghost_width, orientation(direction.opposite()),
           orientation.inverse_map());
-      from_patch_.add_copy(location->slot * element_stride, number_of_cells,
-                           slot * padded_element_stride, number_of_padded_cells,
-                           source_points, ghost_zone_points);
+      for (size_t part = 0; part < parts_.size(); ++part) {
+        from_patch_[part].add_copy(
+            source_offset(part, location->slot), number_of_cells,
+            slot * padded_element_stride +
+                first_variables_[part] * number_of_padded_cells,
+            number_of_padded_cells, source_points, ghost_zone_points);
+      }
     }
   }
-  from_patch_.copy_to_device(exec);
+  for (size_t part = 0; part < parts_.size(); ++part) {
+    from_patch_[part].copy_to_device(exec);
+    to_external_[part].copy_to_device(exec);
+  }
   from_external_.copy_to_device(exec);
-  to_external_.copy_to_device(exec);
+}
+
+template <size_t Dim>
+size_t GhostZones<Dim>::source_offset(const size_t part,
+                                      const size_t slot) const {
+  const GhostVariablesPart& source = parts_[part];
+  return (slot * source.variables_per_element + source.first_variable) *
+         subcell_extents_.product();
+}
+
+template <size_t Dim>
+void GhostZones<Dim>::check_ghost_variables(
+    const std::vector<Kokkos::View<const double*>>& ghost_variables) const {
+  if (ghost_variables.size() != parts_.size()) {
+    ERROR("Got " << ghost_variables.size()
+                 << " batches of ghost variables, but the ghost variables are "
+                    "read in "
+                 << parts_.size() << " parts");
+  }
+#ifdef SPECTRE_DEBUG
+  for (size_t part = 0; part < parts_.size(); ++part) {
+    ASSERT(ghost_variables[part].extent(0) ==
+               number_of_elements_ * parts_[part].variables_per_element *
+                   subcell_extents_.product(),
+           "The ghost variables of part "
+               << part << " have " << ghost_variables[part].extent(0)
+               << " values but expected "
+               << number_of_elements_ * parts_[part].variables_per_element *
+                      subcell_extents_.product());
+  }
+#endif  // SPECTRE_DEBUG
 }
 
 template <size_t Dim>
@@ -273,27 +342,31 @@ void GhostZones<Dim>::add_external_face(
 
   // The ghost data to send, as in `slice_data`
   const size_t number_of_cells = subcell_extents_.product();
-  const size_t element_offset = slot * number_of_variables_ * number_of_cells;
   std::vector<size_t> sent_points(number_of_ghost_points);
   std::iota(sent_points.begin(), sent_points.end(), 0_st);
   if (const auto interpolant = fd_to_neighbor_fd_interpolants.find(
           DirectionalId<Dim>{direction, neighbor_id});
       interpolant != fd_to_neighbor_fd_interpolants.end()) {
     if (interpolant->second.has_value()) {
-      to_external_.add_matrix(element_offset, number_of_cells, face.send_offset,
-                              number_of_ghost_points,
-                              interpolant->second->matrix(), sent_points);
+      for (size_t part = 0; part < parts_.size(); ++part) {
+        to_external_[part].add_matrix(
+            source_offset(part, slot), number_of_cells,
+            face.send_offset + first_variables_[part] * number_of_ghost_points,
+            number_of_ghost_points, interpolant->second->matrix(), sent_points);
+      }
     }
   } else {
     // The cells next to the face, in the order of the ghost zone of the
     // neighbor
-    to_external_.add_copy(
-        element_offset, number_of_cells, face.send_offset,
-        number_of_ghost_points,
-        cells_for_neighbor_ghost_zone(
-            subcell_extents_, ghost_width_, direction,
-            element.neighbors().at(direction).orientation(neighbor_id)),
-        sent_points);
+    const auto source_points = cells_for_neighbor_ghost_zone(
+        subcell_extents_, ghost_width_, direction,
+        element.neighbors().at(direction).orientation(neighbor_id));
+    for (size_t part = 0; part < parts_.size(); ++part) {
+      to_external_[part].add_copy(
+          source_offset(part, slot), number_of_cells,
+          face.send_offset + first_variables_[part] * number_of_ghost_points,
+          number_of_ghost_points, source_points, sent_points);
+    }
   }
   send_data_size_ += face.send_size;
   external_faces_.push_back(std::move(face));
@@ -304,6 +377,15 @@ void GhostZones<Dim>::fill_from_patch(
     const Kokkos::DefaultExecutionSpace& exec,
     const ::fd::device::VolumeView& padded_vars,
     const Kokkos::View<const double*>& ghost_variables) const {
+  fill_from_patch(exec, padded_vars,
+                  std::vector<Kokkos::View<const double*>>{ghost_variables});
+}
+
+template <size_t Dim>
+void GhostZones<Dim>::fill_from_patch(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const ::fd::device::VolumeView& padded_vars,
+    const std::vector<Kokkos::View<const double*>>& ghost_variables) const {
   ASSERT(padded_vars.extent(0) == number_of_elements_ and
              padded_vars.extent(1) == number_of_variables_ and
              ::fd::device::detail::ghost_width(padded_vars, subcell_extents_) ==
@@ -313,16 +395,12 @@ void GhostZones<Dim>::fill_from_patch(
              << padded_vars.extent(1) << " variables but the patch has "
              << number_of_elements_ << " elements and " << number_of_variables_
              << " variables");
-  ASSERT(ghost_variables.extent(0) == number_of_elements_ *
-                                          number_of_variables_ *
-                                          subcell_extents_.product(),
-         "The ghost variables have "
-             << ghost_variables.extent(0) << " values but expected "
-             << number_of_elements_ * number_of_variables_ *
-                    subcell_extents_.product());
-  from_patch_.apply(
-      exec, Kokkos::View<double*>(padded_vars.data(), padded_vars.span()),
-      ghost_variables, number_of_variables_);
+  check_ghost_variables(ghost_variables);
+  for (size_t part = 0; part < parts_.size(); ++part) {
+    from_patch_[part].apply(
+        exec, Kokkos::View<double*>(padded_vars.data(), padded_vars.span()),
+        ghost_variables[part], parts_[part].number_of_variables);
+  }
 }
 
 template <size_t Dim>
@@ -353,17 +431,23 @@ void GhostZones<Dim>::slice_for_external(
     const Kokkos::DefaultExecutionSpace& exec,
     const Kokkos::View<double*>& send_data,
     const Kokkos::View<const double*>& ghost_variables) const {
+  slice_for_external(exec, send_data,
+                     std::vector<Kokkos::View<const double*>>{ghost_variables});
+}
+
+template <size_t Dim>
+void GhostZones<Dim>::slice_for_external(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const Kokkos::View<double*>& send_data,
+    const std::vector<Kokkos::View<const double*>>& ghost_variables) const {
   ASSERT(send_data.extent(0) == send_data_size_,
          "The send buffer has " << send_data.extent(0)
                                 << " values but expected " << send_data_size_);
-  ASSERT(ghost_variables.extent(0) == number_of_elements_ *
-                                          number_of_variables_ *
-                                          subcell_extents_.product(),
-         "The ghost variables have "
-             << ghost_variables.extent(0) << " values but expected "
-             << number_of_elements_ * number_of_variables_ *
-                    subcell_extents_.product());
-  to_external_.apply(exec, send_data, ghost_variables, number_of_variables_);
+  check_ghost_variables(ghost_variables);
+  for (size_t part = 0; part < parts_.size(); ++part) {
+    to_external_[part].apply(exec, send_data, ghost_variables[part],
+                             parts_[part].number_of_variables);
+  }
 }
 
 template <size_t Dim>

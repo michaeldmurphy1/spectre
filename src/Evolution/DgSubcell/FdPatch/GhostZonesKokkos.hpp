@@ -35,14 +35,33 @@ class PatchTable;
 
 namespace evolution::dg::subcell::fd_patch {
 /*!
+ * \brief Where `GhostZones` reads a range of the ghost variables of the
+ * elements from.
+ *
+ * \details The ghost variables are split into consecutive parts, each of which
+ * is read from its own unpadded batch (with the layout of a
+ * `BatchedVariables`): the `number_of_variables` variables of a part are the
+ * variables `first_variable, ...` of a batch with `variables_per_element`
+ * variables, so variable `v` of the part of element `e` starts at
+ * `(e * variables_per_element + first_variable + v) * number_of_cells`. E.g.
+ * ghost variables that are also evolved variables can be read from the
+ * evolved variables without copying them into a batch of the ghost variables
+ * first. In the padded view and in the ghost data sent to and received from
+ * the neighbors, the variables of the parts are in order.
+ */
+struct GhostVariablesPart {
+  size_t number_of_variables;
+  size_t variables_per_element;
+  size_t first_variable = 0;
+};
+
+/*!
  * \brief Fills the ghost zones of the padded volume data of a patch.
  *
- * \details The ghost variables of all elements of a patch are computed into an
- * unpadded batch (a `BatchedVariables`, so element `e` starts at
- * `e * number_of_variables * number_of_cells` and variable `v` of the element
- * at `v * number_of_cells` past that) and are then copied into a padded
+ * \details The ghost variables of all elements of a patch are computed into
+ * unpadded batches (see `GhostVariablesPart`) and are then copied into a padded
  * `fd::device::VolumeView` for the reconstruction. `fill_from_patch()` does, in
- * one kernel:
+ * one kernel for each part:
  * - copy the cells of each element into the interior of its padded element,
  * - for each face between two elements of the patch, including periodic faces,
  *   copy the `ghost_width` cells of the neighbor next to the face into the
@@ -79,7 +98,9 @@ namespace evolution::dg::subcell::fd_patch {
  *
  * \note The interior copy could be avoided by computing the ghost variables
  * directly into the interior of the padded view, which costs a strided batch
- * of the ghost variables instead of the `BatchedVariables`.
+ * of the ghost variables instead of the `BatchedVariables`. Reading parts of
+ * the ghost variables from where they already are (see `GhostVariablesPart`)
+ * avoids an extra copy of them.
  *
  * \note The ghost zones from inside the patch don't wait for any messages.
  * Another possible optimization is to overlap communication with computation:
@@ -116,9 +137,21 @@ class GhostZones {
 
   GhostZones() = default;
 
+  /// @{
   /// `elements` are the elements of the `patch` and
   /// `fd_to_neighbor_fd_interpolants` their interpolants, in slot order. The
-  /// transfers are copied to the device on `exec`.
+  /// ghost variables are read in `parts` (see `GhostVariablesPart`), or all
+  /// `number_of_variables` from one batch. The transfers are copied to the
+  /// device on `exec`.
+  GhostZones(const Kokkos::DefaultExecutionSpace& exec,
+             const std::vector<Element<Dim>>& elements,
+             const std::vector<
+                 DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>>&
+                 fd_to_neighbor_fd_interpolants,
+             const evolution::patches::PatchTable<Dim>& patch_table,
+             size_t patch, size_t ghost_width,
+             std::vector<GhostVariablesPart> parts);
+
   GhostZones(const Kokkos::DefaultExecutionSpace& exec,
              const std::vector<Element<Dim>>& elements,
              const std::vector<
@@ -126,6 +159,7 @@ class GhostZones {
                  fd_to_neighbor_fd_interpolants,
              const evolution::patches::PatchTable<Dim>& patch_table,
              size_t patch, size_t ghost_width, size_t number_of_variables);
+  /// @}
 
   /// The number of cells of each element in each dimension
   const Index<Dim>& subcell_extents() const { return subcell_extents_; }
@@ -134,17 +168,28 @@ class GhostZones {
 
   size_t number_of_variables() const { return number_of_variables_; }
 
+  const std::vector<GhostVariablesPart>& parts() const { return parts_; }
+
+  /// @{
   /// Copy the unpadded `ghost_variables` of all elements of the patch into
   /// `padded_vars`, and fill the ghost zones of the faces between elements of
   /// the patch. Enqueued on `exec`.
   ///
-  /// `padded_vars` must have been allocated with `fd::device::make_volume_view`
-  /// for the elements of the patch, `number_of_variables()` variables,
-  /// `subcell_extents()` and `ghost_width()`.
+  /// There is one batch of `ghost_variables` for each of the `parts()` (see
+  /// `GhostVariablesPart`). `padded_vars` must have been allocated with
+  /// `fd::device::make_volume_view` for the elements of the patch,
+  /// `number_of_variables()` variables, `subcell_extents()` and
+  /// `ghost_width()`.
+  void fill_from_patch(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const ::fd::device::VolumeView& padded_vars,
+      const std::vector<Kokkos::View<const double*>>& ghost_variables) const;
+
   void fill_from_patch(
       const Kokkos::DefaultExecutionSpace& exec,
       const ::fd::device::VolumeView& padded_vars,
       const Kokkos::View<const double*>& ghost_variables) const;
+  /// @}
 
   /// The faces whose neighbor isn't in the patch, ordered by slot and then
   /// direction.
@@ -168,13 +213,21 @@ class GhostZones {
   /// `external_faces()`.
   size_t send_data_size() const { return send_data_size_; }
 
+  /// @{
   /// Compute the ghost data to send for all `external_faces()` from the
-  /// unpadded `ghost_variables` of the patch into `send_data`, laid out as
-  /// described by `ExternalFace`. Enqueued on `exec`.
+  /// unpadded `ghost_variables` of the patch (one batch for each of the
+  /// `parts()`) into `send_data`, laid out as described by `ExternalFace`.
+  /// Enqueued on `exec`.
+  void slice_for_external(
+      const Kokkos::DefaultExecutionSpace& exec,
+      const Kokkos::View<double*>& send_data,
+      const std::vector<Kokkos::View<const double*>>& ghost_variables) const;
+
   void slice_for_external(
       const Kokkos::DefaultExecutionSpace& exec,
       const Kokkos::View<double*>& send_data,
       const Kokkos::View<const double*>& ghost_variables) const;
+  /// @}
 
  private:
   void add_external_face(
@@ -185,18 +238,31 @@ class GhostZones {
       const DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>&
           fd_to_neighbor_fd_interpolants);
 
+  // Where the variables of `part` of the element in `slot` start in the batch
+  // of the part
+  size_t source_offset(size_t part, size_t slot) const;
+
+  // Checks the sizes of the batches of the parts
+  void check_ghost_variables(
+      const std::vector<Kokkos::View<const double*>>& ghost_variables) const;
+
   size_t number_of_elements_ = 0;
   Index<Dim> subcell_extents_{};
   size_t ghost_width_ = 0;
+  std::vector<GhostVariablesPart> parts_{};
+  // The first variable of each part in the padded view and the ghost data
+  std::vector<size_t> first_variables_{};
   size_t number_of_variables_ = 0;
-  ::fd::device::Transfers from_patch_{};
+  // For each part
+  std::vector<::fd::device::Transfers> from_patch_{};
   std::vector<ExternalFace> external_faces_{};
   size_t external_data_size_ = 0;
   ::fd::device::Transfers from_external_{};
   // The matrix ids in `from_external_` of the projections from DG neighbors
   DirectionMap<Dim, size_t> dg_projections_{};
   size_t send_data_size_ = 0;
-  ::fd::device::Transfers to_external_{};
+  // For each part
+  std::vector<::fd::device::Transfers> to_external_{};
 };
 
 /*!

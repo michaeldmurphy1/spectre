@@ -126,6 +126,21 @@ KOKKOS_FORCEINLINE_FUNCTION ThreePlusOne read_three_plus_one(
   return result;
 }
 
+// The mesh velocity at a point, or zero if the mesh doesn't move
+KOKKOS_FORCEINLINE_FUNCTION tnsr::I<double, dim> read_mesh_velocity(
+    const bool has_mesh_velocity,
+    const Batch<TimeDerivativeOnDevice::MeshVelocity>& mesh_velocity,
+    const PointIndex& index) {
+  tnsr::I<double, dim> result{};
+  if (has_mesh_velocity) {
+    static_for<dim>([&](auto i_c) {
+      constexpr size_t i = decltype(i_c)::value;
+      get<i>(result) = at<i>(mesh_velocity, index);
+    });
+  }
+  return result;
+}
+
 // The spacetime normal vector, as `gr::spacetime_normal_vector`
 KOKKOS_FORCEINLINE_FUNCTION tnsr::A<double, dim> normal_vector(
     const double lapse, const tnsr::I<double, dim>& shift) {
@@ -170,6 +185,7 @@ struct DtPiPointValues {
   tnsr::a<double, dim> pi_one_normal;
   double half_pi_two_normals;
   double normal_dot_gauge_constraint;
+  tnsr::I<double, dim> mesh_velocity;
 };
 
 KOKKOS_FORCEINLINE_FUNCTION DtPiPointValues
@@ -187,6 +203,8 @@ dt_pi_point_values(const DtPiArguments& args, const PointIndex& index) {
     get<a>(values.gauge_constraint) = at<a>(args.gauge_constraint, index);
   });
   values.gamma0 = scalar_at(args.gamma0, index);
+  values.mesh_velocity =
+      read_mesh_velocity(args.has_mesh_velocity, args.mesh_velocity, index);
   values.gamma1gamma2 =
       scalar_at(args.gamma1, index) * scalar_at(args.gamma2, index);
 
@@ -327,12 +345,12 @@ KOKKOS_FORCEINLINE_FUNCTION void dt_pi_component(const DtPiArguments& args,
   result += values.gamma1gamma2 * shift_dot_constraint;
   if (args.has_mesh_velocity) {
     double mesh_velocity_dot_constraint =
-        at<0>(args.mesh_velocity, index) *
+        get<0>(values.mesh_velocity) *
         constraint(std::integral_constant<size_t, 0>{});
     static_for<dim - 1>([&](auto m_c) {
       constexpr size_t m = decltype(m_c)::value + 1;
       mesh_velocity_dot_constraint +=
-          at<m>(args.mesh_velocity, index) *
+          get<m>(values.mesh_velocity) *
           constraint(std::integral_constant<size_t, m>{});
     });
     result += values.gamma1gamma2 * mesh_velocity_dot_constraint;
@@ -341,6 +359,12 @@ KOKKOS_FORCEINLINE_FUNCTION void dt_pi_component(const DtPiArguments& args,
     constexpr size_t m = decltype(m_c)::value;
     result += get<m>(shift) * at<m, mu, nu>(args.d_pi, index);
   });
+  if (args.has_mesh_velocity) {
+    static_for<dim>([&](auto m_c) {
+      constexpr size_t m = decltype(m_c)::value;
+      result += get<m>(values.mesh_velocity) * at<m, mu, nu>(args.d_pi, index);
+    });
+  }
   at<mu, nu>(args.dt_pi, index) = result;
 }
 
@@ -547,6 +571,8 @@ void TimeDerivativeOnDevice::apply(
         });
         const double gamma1_value = scalar_at(gamma1, index);
         const double gamma1_plus_1 = 1.0 + gamma1_value;
+        const auto velocity =
+            read_mesh_velocity(has_mesh_velocity, mesh_velocity_batch, index);
         static_for<dim + 1>([&](auto mu_c) {
           constexpr size_t mu = decltype(mu_c)::value;
           static_for<dim + 1 - mu>([&](auto offset_c) {
@@ -572,15 +598,20 @@ void TimeDerivativeOnDevice::apply(
             result += gamma1_plus_1 * shift_dot_constraint;
             if (has_mesh_velocity) {
               double mesh_velocity_dot_constraint =
-                  at<0>(mesh_velocity_batch, index) *
+                  get<0>(velocity) *
                   constraint(std::integral_constant<size_t, 0>{});
               static_for<dim - 1>([&](auto m_c) {
                 constexpr size_t m = decltype(m_c)::value + 1;
                 mesh_velocity_dot_constraint +=
-                    at<m>(mesh_velocity_batch, index) *
+                    get<m>(velocity) *
                     constraint(std::integral_constant<size_t, m>{});
               });
               result += gamma1_value * mesh_velocity_dot_constraint;
+              static_for<dim>([&](auto m_c) {
+                constexpr size_t m = decltype(m_c)::value;
+                result +=
+                    get<m>(velocity) * at<m, mu, nu>(d_spacetime_metric, index);
+              });
             }
             at<mu, nu>(dt_spacetime_metric, index) = result;
           });
@@ -624,6 +655,8 @@ void TimeDerivativeOnDevice::apply(
             three_plus_one.inverse_spatial_metric;
         const auto normal = normal_vector(lapse, shift);
         const double gamma2_value = scalar_at(gamma2, index);
+        const auto velocity =
+            read_mesh_velocity(has_mesh_velocity, mesh_velocity_batch, index);
         static_for<dim>([&](auto i_c) {
           constexpr size_t i = decltype(i_c)::value;
           // n^a Phi_{i a b}
@@ -669,6 +702,12 @@ void TimeDerivativeOnDevice::apply(
                 constexpr size_t m = decltype(m_c)::value;
                 result += get<m>(shift) * at<m, i, mu, nu>(d_phi, index);
               });
+              if (has_mesh_velocity) {
+                static_for<dim>([&](auto m_c) {
+                  constexpr size_t m = decltype(m_c)::value;
+                  result += get<m>(velocity) * at<m, i, mu, nu>(d_phi, index);
+                });
+              }
               at<i, mu, nu>(dt_phi, index) = result;
             });
           });

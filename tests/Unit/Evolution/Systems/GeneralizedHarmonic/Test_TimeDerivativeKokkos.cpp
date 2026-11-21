@@ -24,6 +24,7 @@
 #include "Utilities/ErrorHandling/FloatingPointExceptions.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/StdArrayHelpers.hpp"
 #include "Utilities/TMPL.hpp"
 
 namespace {
@@ -93,6 +94,23 @@ Variables<return_tags> apply_on_host(const Variables<argument_tags>& args,
                 moving_mesh ? std::optional{get<Device::MeshVelocity>(args)}
                             : std::nullopt);
   }(Host::temporary_tags{});
+  if (moving_mesh) {
+    // The advection term that the evolution loop adds on the host
+    const auto& mesh_velocity = get<Device::MeshVelocity>(args);
+    tmpl::for_each<return_tags>([&](auto dt_tag_v) {
+      using DtTag = tmpl::type_from<decltype(dt_tag_v)>;
+      using deriv_tag = Device::deriv<typename DtTag::tag>;
+      auto& dt_var = get<DtTag>(result);
+      const auto& d_var = get<deriv_tag>(args);
+      for (size_t i = 0; i < dt_var.size(); ++i) {
+        const auto tensor_index = dt_var.get_tensor_index(i);
+        for (size_t j = 0; j < dim; ++j) {
+          dt_var[i] +=
+              mesh_velocity.get(j) * d_var.get(prepend(tensor_index, j));
+        }
+      }
+    });
+  }
   return result;
 }
 

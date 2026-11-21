@@ -19,6 +19,7 @@
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Variables.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hll.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/OnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Rusanov.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ConservativesOnDeviceKokkos.hpp"
@@ -155,14 +156,23 @@ struct MeshVelocity : db::SimpleTag {
 };
 
 // `package_data_from_reconstruction_on_device` must agree with computing the
-// variables on the faces first and then the packaged data, as the FD time
-// derivative does with `Hll`
+// variables on the faces first and then the packaged data.
+//
+// With `Hll`, the face sets are chosen so that each decision of
+// `Hll::use_hydro_speeds` is made: face set 0 has a weak magnetic field and
+// only densities below the atmosphere, so it uses the hydro speeds only after
+// the fix (which raises the density above the `Hll` cutoff), face set 1 has a
+// weak magnetic field and uses them, and face set 2 has a strong one and
+// doesn't.
+template <typename Correction>
 void check_package_data_from_reconstruction(
     const gsl::not_null<std::mt19937*> generator,
-    const EoS::EquationOfState<true, 3>& eos,
-    const std::optional<Fixer>& fixer) {
+    const EoS::EquationOfState<true, 3>& eos, const std::optional<Fixer>& fixer,
+    const Correction& correction) {
   namespace BoundaryCorrections = grmhd::ValenciaDivClean::BoundaryCorrections;
-  using packaged_tags = BoundaryCorrections::Rusanov::dg_package_field_tags;
+  using packaged_tags = typename Correction::dg_package_field_tags;
+  CAPTURE(pretty_type::get_name<Correction>());
+  CAPTURE(fixer.has_value());
   using geometry_tags = tmpl::list<Conormal, MeshVelocity>;
   const Approx custom_approx = Approx::custom().epsilon(1.e-14).scale(1.0);
   std::uniform_real_distribution<> dist(-1.0, 1.0);
@@ -194,6 +204,17 @@ void check_package_data_from_reconstruction(
     // Away from zero
     get<0>(get<Conormal>(face_geometry)) += 2.0;
   }
+  static_assert(num_face_sets == 3);
+  for (double& density :
+       get(get<hydro::Tags::RestMassDensity<DataVector>>(faces[0]))) {
+    density *= 5.e-13;
+  }
+  for (size_t e = 0; e < 2; ++e) {
+    for (auto& component :
+         get<hydro::Tags::MagneticField<DataVector, 3>>(faces[e])) {
+      component *= 0.1;
+    }
+  }
   const auto device_geometry = subset_to_device<geometry_tags>(geometry);
   const auto conormal = get<::Tags::BatchView<Conormal>>(device_geometry);
   const auto mesh_velocity =
@@ -213,16 +234,26 @@ void check_package_data_from_reconstruction(
       BatchedVariables<packaged_tags> expected{num_points, num_face_sets};
       BoundaryCorrections::fluxes_and_package_data_on_device(
           exec, make_not_null(&expected), all_variables, conormal, sign,
-          moving_mesh ? &mesh_velocity : nullptr,
-          BoundaryCorrections::Rusanov{}, eos);
+          moving_mesh ? &mesh_velocity : nullptr, correction, eos);
       // In one
       BatchedVariables<packaged_tags> packaged{num_points, num_face_sets};
+      Kokkos::View<bool*> use_hydro_speeds{};
       const PointwiseStatusSummary status =
           BoundaryCorrections::package_data_from_reconstruction_on_device(
               exec, make_not_null(&packaged), reconstruction, conormal, sign,
-              moving_mesh ? &mesh_velocity : nullptr, eos, fixer_pointer);
+              moving_mesh ? &mesh_velocity : nullptr, correction, eos,
+              fixer_pointer, nullptr, &use_hydro_speeds);
       CHECK(status.number_of_failures == expected_status.number_of_failures);
       CHECK(status.number_of_failures == 0);
+      if constexpr (std::is_same_v<Correction, BoundaryCorrections::Hll>) {
+        const auto host_use_hydro_speeds = Kokkos::create_mirror_view_and_copy(
+            Kokkos::HostSpace{}, use_hydro_speeds);
+        CHECK(host_use_hydro_speeds(0) == fixer.has_value());
+        CHECK(host_use_hydro_speeds(1));
+        CHECK_FALSE(host_use_hydro_speeds(2));
+      } else {
+        CHECK(use_hydro_speeds.size() == 0);
+      }
       const auto to_host_vars =
           [](const BatchedVariables<packaged_tags>& batch) {
             BatchedVariables<packaged_tags, Kokkos::HostSpace> host_batch{
@@ -412,10 +443,17 @@ SPECTRE_TEST_CASE(
         static_cast<const EoS::EquationOfState<true, 3>*>(&polytrope)}) {
     check_against_host(make_not_null(&generator), *eos, std::nullopt);
     check_against_host(make_not_null(&generator), *eos, fixer);
-    check_package_data_from_reconstruction(make_not_null(&generator), *eos,
-                                           std::nullopt);
-    check_package_data_from_reconstruction(make_not_null(&generator), *eos,
-                                           fixer);
+    // The magnetic field and density cutoffs of `Hll` are between those of
+    // the face sets (see `check_package_data_from_reconstruction`)
+    const grmhd::ValenciaDivClean::BoundaryCorrections::Hll hll{1.0, 7.e-13};
+    for (const auto& optional_fixer :
+         {std::optional<Fixer>{}, std::optional{fixer}}) {
+      check_package_data_from_reconstruction(
+          make_not_null(&generator), *eos, optional_fixer,
+          grmhd::ValenciaDivClean::BoundaryCorrections::Rusanov{});
+      check_package_data_from_reconstruction(make_not_null(&generator), *eos,
+                                             optional_fixer, hll);
+    }
   }
   check_atmosphere_failure(make_not_null(&generator));
   check_error_without_device_view(make_not_null(&generator));

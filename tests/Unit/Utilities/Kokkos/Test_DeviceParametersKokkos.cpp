@@ -30,7 +30,7 @@ Parameters read_on_device(const Kokkos::DefaultExecutionSpace& exec,
 void test_set() {
   const Kokkos::DefaultExecutionSpace exec{};
   DeviceParameters<Parameters> parameters{"Test"};
-  parameters.set(exec, Parameters{1.5, 2});
+  parameters.set(exec, Parameters{.a = 1.5, .b = 2});
   // The kernel sees the parameters, and the address doesn't change when they
   // are set again (after waiting for the device, as `set()` requires)
   const auto device = parameters.device();
@@ -38,14 +38,14 @@ void test_set() {
   CHECK(read.a == 1.5);
   CHECK(read.b == 2);
   exec.fence();
-  parameters.set(exec, Parameters{-3.0, 4});
+  parameters.set(exec, Parameters{.a = -3.0, .b = 4});
   CHECK(parameters.device().data() == device.data());
   read = read_on_device(exec, device);
   CHECK(read.a == -3.0);
   CHECK(read.b == 4);
 
   // Moving keeps the device buffer
-  DeviceParameters<Parameters> moved{std::move(parameters)};
+  const DeviceParameters<Parameters> moved{std::move(parameters)};
   CHECK(moved.device().data() == device.data());
   static_assert(not std::is_copy_constructible_v<DeviceParameters<Parameters>>);
   static_assert(not std::is_copy_assignable_v<DeviceParameters<Parameters>>);

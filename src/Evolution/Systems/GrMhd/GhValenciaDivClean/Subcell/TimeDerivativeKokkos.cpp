@@ -313,8 +313,6 @@ void TimeDerivativeOnDevice<Correction>::apply(
         {static_cast<int>(subcell_extents_[0]),
          static_cast<int>(subcell_extents_[1]),
          static_cast<int>(subcell_extents_[2])}};
-    const size_t padded_stride = padded_gh_variables.stride(1);
-    const size_t evolved_stride = evolved_gh_variables.stride(1);
     Kokkos::parallel_for(
         "GhValenciaDivClean::subcell::TimeDerivativeOnDevice::filtered_"
         "interior",
@@ -322,13 +320,10 @@ void TimeDerivativeOnDevice<Correction>::apply(
                             Kokkos::IndexType<int>>(exec, 0, points.size()),
         KOKKOS_LAMBDA(const int index) {
           const auto [element, cell] = points(index);
-          double* padded = &padded_gh_variables(
-              element, 0, cell[2] + ghost_width, cell[1] + ghost_width,
-              cell[0] + ghost_width);
-          const double* evolved =
-              &evolved_gh_variables(element, 0, cell[2], cell[1], cell[0]);
           for (size_t var = 0; var < number_of_gh_variables; ++var) {
-            padded[var * padded_stride] = evolved[var * evolved_stride];
+            padded_gh_variables(element, var, cell[2] + ghost_width,
+                                cell[1] + ghost_width, cell[0] + ghost_width) =
+                evolved_gh_variables(element, var, cell[2], cell[1], cell[0]);
           }
         });
   }

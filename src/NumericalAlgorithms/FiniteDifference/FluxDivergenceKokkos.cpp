@@ -54,11 +54,6 @@ void add_cartesian_flux_divergence(
   // One thread per cell, looping over the variables, so the determinant is
   // loaded once for all variables
   const size_t number_of_variables = dt_vars.extent(1);
-  const size_t dt_stride = dt_vars.stride(1);
-  Kokkos::Array<size_t, Dim> correction_strides{};
-  for (size_t d = 0; d < Dim; ++d) {
-    correction_strides[d] = corrections[d].stride(1);
-  }
   const detail::BatchPoints points{dt_vars.extent(0), extents};
   Kokkos::parallel_for(
       "fd::device::add_cartesian_flux_divergence",
@@ -68,25 +63,19 @@ void add_cartesian_flux_divergence(
         const auto [element, cell] = points(index);
         const double det_inv_jacobian =
             det_inverse_jacobian(element, 0, cell[2], cell[1], cell[0]);
-        double* dt_var = &dt_vars(element, 0, cell[2], cell[1], cell[0]);
-        Kokkos::Array<const double*, Dim> lower_corrections{};
-        Kokkos::Array<const double*, Dim> upper_corrections{};
+        Kokkos::Array<Kokkos::Array<int, 3>, Dim> upper_faces{};
         for (size_t d = 0; d < Dim; ++d) {
-          Kokkos::Array<int, 3> upper_face = cell;
-          ++upper_face[d];
-          lower_corrections[d] =
-              &corrections[d](element, 0, cell[2], cell[1], cell[0]);
-          upper_corrections[d] = &corrections[d](element, 0, upper_face[2],
-                                                 upper_face[1], upper_face[0]);
+          upper_faces[d] = cell;
+          ++upper_faces[d][d];
         }
         for (size_t var = 0; var < number_of_variables; ++var) {
+          double& dt_var = dt_vars(element, var, cell[2], cell[1], cell[0]);
           for (size_t d = 0; d < Dim; ++d) {
-            const size_t offset = var * correction_strides[d];
-            *dt_var +=
-                inverse_spacings[d] * det_inv_jacobian *
-                (upper_corrections[d][offset] - lower_corrections[d][offset]);
+            dt_var += inverse_spacings[d] * det_inv_jacobian *
+                      (corrections[d](element, var, upper_faces[d][2],
+                                      upper_faces[d][1], upper_faces[d][0]) -
+                       corrections[d](element, var, cell[2], cell[1], cell[0]));
           }
-          dt_var += dt_stride;
         }
       });
 }

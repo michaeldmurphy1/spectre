@@ -56,8 +56,6 @@ void kreiss_oliger_filter_impl(const Kokkos::DefaultExecutionSpace& exec,
 
   // One thread per cell, looping over the variables
   const size_t number_of_variables = padded_volume_vars.extent(1);
-  const size_t variable_stride = padded_volume_vars.stride(1);
-  const size_t filtered_stride = filtered_vars.stride(1);
   const detail::BatchPoints points{padded_volume_vars.extent(0), extents};
   Kokkos::parallel_for(
       "fd::device::kreiss_oliger_filter",
@@ -65,21 +63,18 @@ void kreiss_oliger_filter_impl(const Kokkos::DefaultExecutionSpace& exec,
                           Kokkos::IndexType<int>>(exec, 0, points.size()),
       KOKKOS_LAMBDA(const int index) {
         const auto [element, cell] = points(index);
-        const double* q =
-            &padded_volume_vars(element, 0, cell[2] + offsets[2],
-                                cell[1] + offsets[1], cell[0] + offsets[0]);
-        double* filtered_var =
-            &filtered_vars(element, 0, cell[2], cell[1], cell[0]);
         for (size_t var = 0; var < number_of_variables; ++var) {
+          const double* q =
+              &padded_volume_vars(element, var, cell[2] + offsets[2],
+                                  cell[1] + offsets[1], cell[0] + offsets[0]);
           // As `fd::kreiss_oliger_filter`: the dissipation in each
           // direction, then the value of the cell
           double filtered = Stencil::pointwise(q, strides[0], epsilon);
           for (size_t d = 1; d < Dim; ++d) {
             filtered += Stencil::pointwise(q, strides[d], epsilon);
           }
-          *filtered_var = filtered + *q;
-          q += variable_stride;
-          filtered_var += filtered_stride;
+          filtered_vars(element, var, cell[2], cell[1], cell[0]) =
+              filtered + *q;
         }
       });
 }

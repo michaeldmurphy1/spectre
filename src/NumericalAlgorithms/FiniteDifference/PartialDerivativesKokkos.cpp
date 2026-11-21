@@ -154,8 +154,6 @@ void partial_derivatives_impl(const Kokkos::DefaultExecutionSpace& exec,
   // One thread per cell, looping over the variables, so the cell index and the
   // inverse Jacobian are computed and loaded once for all variables
   const size_t number_of_variables = padded_volume_vars.extent(1);
-  const size_t variable_stride = padded_volume_vars.stride(1);
-  const size_t derivative_stride = partial_derivatives.stride(1);
   const detail::BatchPoints points{padded_volume_vars.extent(0), extents};
   Kokkos::parallel_for(
       "fd::device::partial_derivatives",
@@ -169,12 +167,10 @@ void partial_derivatives_impl(const Kokkos::DefaultExecutionSpace& exec,
         for (size_t k = 0; k < Dim * Dim; ++k) {
           inverse_jacobian_at_point[k] = jacobian[k](point, element);
         }
-        const double* q =
-            &padded_volume_vars(element, 0, cell[2] + offsets[2],
-                                cell[1] + offsets[1], cell[0] + offsets[0]);
-        double* result =
-            &partial_derivatives(element, 0, cell[2], cell[1], cell[0]);
         for (size_t var = 0; var < number_of_variables; ++var) {
+          const double* q =
+              &padded_volume_vars(element, var, cell[2] + offsets[2],
+                                  cell[1] + offsets[1], cell[0] + offsets[0]);
           Kokkos::Array<double, Dim> logical_derivatives{};
           for (size_t d = 0; d < Dim; ++d) {
             logical_derivatives[d] =
@@ -187,10 +183,9 @@ void partial_derivatives_impl(const Kokkos::DefaultExecutionSpace& exec,
               derivative += inverse_jacobian_at_point[Dim * j + i] *
                             logical_derivatives[j];
             }
-            result[i * derivative_stride] = derivative;
+            partial_derivatives(element, Dim * var + i, cell[2], cell[1],
+                                cell[0]) = derivative;
           }
-          q += variable_stride;
-          result += Dim * derivative_stride;
         }
       });
 }

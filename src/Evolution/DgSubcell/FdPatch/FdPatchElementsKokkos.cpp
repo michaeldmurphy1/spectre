@@ -42,7 +42,8 @@ FdPatchElements::FdPatchElements(
     const evolution::patches::PatchTable<3>& patch_table, const size_t patch,
     const std::vector<std::array<size_t, 3>>& initial_refinement_levels,
     const double time, const ::domain::FunctionsOfTimeMap& functions_of_time,
-    const size_t ghost_width, const size_t number_of_ghost_variables,
+    const size_t ghost_width,
+    std::vector<GhostVariablesPart> ghost_variables_parts,
     const size_t number_of_packaged_variables,
     const size_t number_of_dg_packaged_variables,
     const size_t dg_packaged_variables_offset, const bool compute_cell_geometry)
@@ -63,10 +64,10 @@ FdPatchElements::FdPatchElements(
       patch_table,
       patch,
       ghost_width,
-      number_of_ghost_variables};
+      std::move(ghost_variables_parts)};
   padded_ghost_variables_ = ::fd::device::make_volume_view(
       exec, "FD patch ghost variables", number_of_elements,
-      number_of_ghost_variables, subcell_mesh_.extents(), ghost_width);
+      ghost_zones_.number_of_variables(), subcell_mesh_.extents(), ghost_width);
   received_ghost_data_ = Kokkos::View<double*>(
       Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
                          "FD patch received ghost data"),
@@ -258,13 +259,13 @@ void FdPatchElements::update_geometry(
 
 void FdPatchElements::fill_ghost_zones(
     const Kokkos::DefaultExecutionSpace& exec,
-    const Kokkos::View<const double*>& ghost_variables) {
+    const std::vector<Kokkos::View<const double*>>& ghost_variables) {
   ghost_zones_.fill_from_patch(exec, padded_ghost_variables_, ghost_variables);
 }
 
 void FdPatchElements::enqueue_boundary_data(
     const Kokkos::DefaultExecutionSpace& exec,
-    const Kokkos::View<const double*>& ghost_variables) {
+    const std::vector<Kokkos::View<const double*>>& ghost_variables) {
   const Kokkos::Profiling::ScopedRegion region{
       "fd_patch::FdPatchElements::enqueue_boundary_data"};
   ghost_zones_.slice_for_external(exec, send_data_, ghost_variables);

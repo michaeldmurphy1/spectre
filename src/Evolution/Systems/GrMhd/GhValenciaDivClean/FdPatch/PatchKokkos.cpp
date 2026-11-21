@@ -164,22 +164,48 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
         << pretty_type::get_runtime_type_name(boundary_correction));
   }
 
-  using ghost_tags = subcell::PrimitiveGhostVariables::ghost_variables_tag_list;
+  // The ghost variables are those of `PrimitiveGhostVariables`: the hydro
+  // variables to reconstruct, which are computed into `ghost_variables_`, and
+  // the GH variables, which are read from the evolved variables (where they
+  // come first)
+  constexpr size_t number_of_hydro_ghost_variables =
+      Variables<hydro_ghost_tags>::number_of_independent_components;
+  constexpr size_t number_of_gh_variables =
+      Variables<subcell::gh_tags_on_device>::number_of_independent_components;
+  static_assert(std::is_same_v<
+                subcell::PrimitiveGhostVariables::ghost_variables_tag_list,
+                tmpl::append<hydro_ghost_tags, subcell::gh_tags_on_device>>);
+  static_assert(std::is_same_v<tmpl::front<subcell::evolved_tags_on_device>,
+                               tmpl::front<subcell::gh_tags_on_device>>);
   // The cell geometry includes the inverse Jacobian of the FD derivatives of
   // the GH variables and the grid coordinates of the damping functions
   this->set_patch_elements(
       patch_ns::FdPatchElements{
-          exec, domain, patch_table, patch, initial_refinement_levels, time,
-          functions_of_time, hydro_reconstructor.ghost_zone_size(),
-          Variables<ghost_tags>::number_of_independent_components,
-          number_of_packaged_variables, number_of_dg_packaged_variables,
-          dg_packaged_variables_offset, true},
+          exec,
+          domain,
+          patch_table,
+          patch,
+          initial_refinement_levels,
+          time,
+          functions_of_time,
+          hydro_reconstructor.ghost_zone_size(),
+          {patch_ns::GhostVariablesPart{
+               .number_of_variables = number_of_hydro_ghost_variables,
+               .variables_per_element = number_of_hydro_ghost_variables},
+           patch_ns::GhostVariablesPart{
+               .number_of_variables = number_of_gh_variables,
+               .variables_per_element =
+                   EvolvedVariables::number_of_independent_components}},
+          number_of_packaged_variables,
+          number_of_dg_packaged_variables,
+          dg_packaged_variables_offset,
+          true},
       number_of_rdmp_values);
 
   const size_t number_of_cells =
       patch_elements().subcell_mesh().number_of_grid_points();
-  ghost_variables_ =
-      BatchedVariables<ghost_tags>{exec, number_of_cells, number_of_elements};
+  ghost_variables_ = BatchedVariables<hydro_ghost_tags>{exec, number_of_cells,
+                                                        number_of_elements};
   fixing_metric_ = BatchedVariables<subcell::fixing_metric_tags>{
       exec, number_of_cells, number_of_elements};
   stepper_errors_.resize(number_of_elements);
@@ -259,9 +285,10 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::prepare_send(
   const Kokkos::Profiling::ScopedRegion region{
       "GhValenciaDivClean::fd_patch::Patch::prepare_send"};
   subcell::primitive_ghost_variables_on_device(
-      exec, make_not_null(&ghost_variables_), primitives, evolved_variables);
+      exec, make_not_null(&ghost_variables_), primitives);
   if (patch_elements().has_external_faces()) {
-    patch_elements().enqueue_boundary_data(exec, flat(ghost_variables_));
+    patch_elements().enqueue_boundary_data(
+        exec, {flat(ghost_variables_), flat(evolved_variables)});
     ValenciaDivClean::subcell::enqueue_rdmp_tci_data_on_device(
         exec,
         get<::Tags::BatchView<ValenciaDivClean::Tags::TildeD>>(
@@ -280,7 +307,8 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::prepare_send(
   // The ghost zones between the elements of the patch are filled after the
   // wait, so that the data for the neighbors outside the patch is sent without
   // waiting for them
-  patch_elements().fill_ghost_zones(exec, flat(ghost_variables_));
+  patch_elements().fill_ghost_zones(
+      exec, {flat(ghost_variables_), flat(evolved_variables)});
   if (not patch_elements().has_external_faces()) {
     return {};
   }

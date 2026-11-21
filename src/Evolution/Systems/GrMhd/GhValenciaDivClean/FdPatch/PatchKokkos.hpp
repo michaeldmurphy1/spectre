@@ -27,6 +27,7 @@
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/Subcell/PrimitiveGhostData.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/Subcell/TimeDerivativeKokkos.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/System.hpp"
+#include "Evolution/Systems/GrMhd/GhValenciaDivClean/Tags.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Hll.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Rusanov.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FdPatch/FixingAndRecoveryKokkos.hpp"
@@ -397,8 +398,11 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
       gaussian_sums_{"GhValenciaDivClean damping functions"};
 
   // Scratch data
-  BatchedVariables<subcell::PrimitiveGhostVariables::ghost_variables_tag_list>
-      ghost_variables_{};
+  // The hydro part of the ghost variables (the GH part is read from the
+  // evolved variables)
+  using hydro_ghost_tags =
+      GhValenciaDivClean::Tags::primitive_grmhd_reconstruction_tags;
+  BatchedVariables<hydro_ghost_tags> ghost_variables_{};
   // The time derivative in the latest record of the history (see
   // `TimeSteppers::derivative_batch`), for the element boxes
   BatchedVariables<subcell::dt_tags_on_device> dt_variables_{};

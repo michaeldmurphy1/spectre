@@ -369,7 +369,6 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
   // Scratch data
   BatchedVariables<subcell::PrimitiveGhostVariables::ghost_variables_tag_list>
       ghost_variables_{};
-  BatchedVariables<subcell::dt_tags_on_device> dt_variables_{};
   // The dense output and the failures of its fixing, allocated at the first
   // dense output
   EvolvedVariables dense_evolved_variables_{};

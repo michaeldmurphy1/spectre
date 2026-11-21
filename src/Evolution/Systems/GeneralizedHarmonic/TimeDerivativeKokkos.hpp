@@ -27,9 +27,9 @@ namespace gh {
  *
  * \details This is a GPU-specific implementation of the same equations (see
  * the policy on hot kernels in the GPU support guide), unit tested against
- * `gh::TimeDerivative`, with which it agrees to roundoff. As there, the
- * advection of the variables by the mesh velocity is left to the caller, and
- * the mesh velocity only enters the constraint damping terms.
+ * `gh::TimeDerivative`, with which it agrees to roundoff. With a mesh
+ * velocity, it also adds the advection term \f$v^i \partial_i u\f$, which the
+ * evolution loop adds after `gh::TimeDerivative` on the host (see `apply()`).
  *
  * A single kernel per grid point would hold hundreds of temporaries and spill
  * to local memory. Instead the time derivative is split into five kernels,

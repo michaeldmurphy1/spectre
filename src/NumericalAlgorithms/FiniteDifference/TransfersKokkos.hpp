@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "Utilities/Kokkos/KokkosCore.hpp"
@@ -109,10 +110,12 @@ class Transfers {
   // Host descriptions
   std::vector<Transfer> transfers_{};
   // For each destination point: its transfer, the source point (for a copy)
-  // or matrix row, and the destination point
+  // or matrix row, and the destination point. The points are indices within
+  // a transfer (relative to its offsets), so 32 bits are enough and halve the
+  // data the kernel reads.
   std::vector<int> point_transfer_{};
-  std::vector<size_t> point_source_{};
-  std::vector<size_t> point_destination_{};
+  std::vector<uint32_t> point_source_{};
+  std::vector<uint32_t> point_destination_{};
   std::vector<double> matrix_values_{};
   struct StoredMatrix {
     size_t offset;
@@ -123,8 +126,8 @@ class Transfers {
   // Device copies
   Kokkos::View<Transfer*> device_transfers_{};
   Kokkos::View<int*> device_point_transfer_{};
-  Kokkos::View<size_t*> device_point_source_{};
-  Kokkos::View<size_t*> device_point_destination_{};
+  Kokkos::View<uint32_t*> device_point_source_{};
+  Kokkos::View<uint32_t*> device_point_destination_{};
   Kokkos::View<double*> device_matrix_values_{};
   bool on_device_ = false;
 };

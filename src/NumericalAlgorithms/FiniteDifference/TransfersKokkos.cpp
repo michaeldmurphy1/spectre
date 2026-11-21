@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <vector>
@@ -57,10 +58,17 @@ void Transfers::add_transfer(const Transfer& transfer,
   }
   const int transfer_index = static_cast<int>(transfers_.size());
   transfers_.push_back(transfer);
+  const auto as_point = [](const size_t point) {
+    if (point > std::numeric_limits<uint32_t>::max()) {
+      ERROR("Point " << point << " of a transfer doesn't fit in 32 bits");
+    }
+    return static_cast<uint32_t>(point);
+  };
   for (size_t i = 0; i < destination_points.size(); ++i) {
     point_transfer_.push_back(transfer_index);
-    point_source_.push_back(source_points.empty() ? i : source_points[i]);
-    point_destination_.push_back(destination_points[i]);
+    point_source_.push_back(
+        as_point(source_points.empty() ? i : source_points[i]));
+    point_destination_.push_back(as_point(destination_points[i]));
   }
 }
 
@@ -157,31 +165,43 @@ void Transfers::apply(const Kokkos::DefaultExecutionSpace& exec,
   const auto point_source = device_point_source_;
   const auto point_destination = device_point_destination_;
   const auto matrix_values = device_matrix_values_;
-  // Consecutive threads handle consecutive points of the same variable
+  // One thread per destination point, which reads the description of its
+  // transfer once and loops over the variables. Consecutive threads handle
+  // consecutive points.
   Kokkos::parallel_for(
       "fd::device::Transfers::apply",
-      Kokkos::RangePolicy<>(exec, 0, number_of_points * number_of_variables),
-      KOKKOS_LAMBDA(const size_t index) {
-        const size_t point = index % number_of_points;
-        const size_t var = index / number_of_points;
-        const Transfers_detail::Transfer& transfer =
+      Kokkos::RangePolicy<>(exec, 0, number_of_points),
+      KOKKOS_LAMBDA(const size_t point) {
+        const Transfers_detail::Transfer transfer =
             transfers(point_transfer(point));
-        const size_t source_start =
-            transfer.source_offset + var * transfer.source_variable_stride;
-        double value = 0.0;
+        const size_t point_in_source = point_source(point);
+        // Where variable 0 is read and written
+        size_t source_index =
+            transfer.source_offset +
+            (transfer.matrix_columns == 0 ? point_in_source : 0);
+        size_t destination_index =
+            transfer.destination_offset + point_destination(point);
         if (transfer.matrix_columns == 0) {
-          value = source(source_start + point_source(point));
+          for (size_t var = 0; var < number_of_variables; ++var) {
+            destination(destination_index) = source(source_index);
+            source_index += transfer.source_variable_stride;
+            destination_index += transfer.destination_variable_stride;
+          }
         } else {
-          const size_t row = point_source(point);
-          for (size_t column = 0; column < transfer.matrix_columns; ++column) {
-            value += matrix_values(transfer.matrix_offset + row +
-                                   column * transfer.matrix_rows) *
-                     source(source_start + column);
+          const size_t matrix_row = transfer.matrix_offset + point_in_source;
+          for (size_t var = 0; var < number_of_variables; ++var) {
+            double value = 0.0;
+            for (size_t column = 0; column < transfer.matrix_columns;
+                 ++column) {
+              value +=
+                  matrix_values(matrix_row + column * transfer.matrix_rows) *
+                  source(source_index + column);
+            }
+            destination(destination_index) = value;
+            source_index += transfer.source_variable_stride;
+            destination_index += transfer.destination_variable_stride;
           }
         }
-        destination(transfer.destination_offset +
-                    var * transfer.destination_variable_stride +
-                    point_destination(point)) = value;
       });
 }
 

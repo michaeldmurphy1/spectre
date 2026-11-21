@@ -369,14 +369,15 @@ void test_deferred_status() {
   const size_t num_points = 3;
   const size_t num_elements = 4;
   const Kokkos::DefaultExecutionSpace exec{};
-  BatchedVariables<tmpl::list<Value>, Kokkos::HostSpace> host_values{
+  const BatchedVariables<tmpl::list<Value>, Kokkos::HostSpace> host_values{
       num_points, num_elements};
   const auto value_at = [](const size_t i, const size_t e) {
     // Negative at grid point 0 of element 3 and grid point 2 of element 1, and
     // 1 (flagged) at grid point 1 of element 2
-    return (e == 3 and i == 0) or (e == 1 and i == 2)
-               ? -1.0 - static_cast<double>(i + 10 * e)
-               : (e == 2 and i == 1 ? 1.0 : 4.0);
+    if ((e == 3 and i == 0) or (e == 1 and i == 2)) {
+      return -1.0 - static_cast<double>(i + 10 * e);
+    }
+    return e == 2 and i == 1 ? 1.0 : 4.0;
   };
   for (size_t e = 0; e < num_elements; ++e) {
     for (size_t i = 0; i < num_points; ++i) {

@@ -7,6 +7,7 @@
 
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 
 namespace gh {
 /// @{
@@ -29,7 +30,7 @@ namespace gh {
  *
  */
 template <typename DataType, size_t SpatialDim, typename Frame>
-void christoffel_second_kind(
+KOKKOS_FUNCTION void christoffel_second_kind(
     const gsl::not_null<tnsr::Ijj<DataType, SpatialDim, Frame>*> christoffel,
     const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
     const tnsr::II<DataType, SpatialDim, Frame>& inv_metric);
@@ -67,7 +68,7 @@ tnsr::a<DataType, SpatialDim, Frame> trace_christoffel(
     const tnsr::iaa<DataType, SpatialDim, Frame>& phi);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void trace_christoffel(
+KOKKOS_FUNCTION void trace_christoffel(
     gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> trace,
     const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
     const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,

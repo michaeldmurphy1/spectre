@@ -31,6 +31,7 @@ spectre_target_headers(
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
   Christoffel.hpp
+  Christoffel.tpp
   ConstraintDampingTags.hpp
   ConstraintGammas.hpp
   CovariantDerivOfExtrinsicCurvature.hpp

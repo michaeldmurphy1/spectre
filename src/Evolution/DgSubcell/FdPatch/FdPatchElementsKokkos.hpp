@@ -214,6 +214,16 @@ class FdPatchElements : public evolution::patches::PatchElements {
         logical_to_grid_.cell_points);
   }
 
+  /// The grid coordinates and the logical to grid inverse Jacobian at the cell
+  /// centers (see `cell_grid_coordinates()`)
+  const BatchedVariables<::domain::logical_to_grid_geometry_tags<3>>&
+  cell_logical_to_grid_geometry() const {
+    ASSERT(compute_cell_geometry_,
+           "The grid geometry at the cell centers of FD patch "
+               << patch() << " is only kept with compute_cell_geometry.");
+    return logical_to_grid_.cell_points;
+  }
+
   /// Fill the interior and the ghost zones between the elements of the patch
   /// of `padded_ghost_variables()` from the unpadded `ghost_variables` of the
   /// elements, one batch for each part (see `GhostZones::fill_from_patch()`)

@@ -63,6 +63,7 @@ target_link_libraries(
   GeneralizedHarmonic
   GhGrMhdSolutions
   GhValenciaDivClean
+  GhValenciaDivCleanHelpers
   HydroHelpers
   M1Grey
   Patches

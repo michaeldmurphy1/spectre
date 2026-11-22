@@ -96,6 +96,12 @@ if (SPECTRE_KOKKOS)
     PRIVATE
     USE_FD_PATCHES=true
     )
+  # The observables of the patches on the device, in their own file
+  target_sources(
+    EvolveGhValenciaDivCleanFdPatches
+    PRIVATE
+    DeviceObservablesKokkos.cpp
+    )
   add_ghmhd_executable(
     "BnsFdPatches"
     "true"
@@ -105,6 +111,11 @@ if (SPECTRE_KOKKOS)
     EvolveGhValenciaDivCleanBnsFdPatches
     PRIVATE
     USE_FD_PATCHES=true
+    )
+  target_sources(
+    EvolveGhValenciaDivCleanBnsFdPatches
+    PRIVATE
+    DeviceObservablesKokkos.cpp
     )
 endif()
 

@@ -15,8 +15,11 @@
 #include "Evolution/Systems/GeneralizedHarmonic/Tags.hpp"
 #include "NumericalAlgorithms/LinearOperators/PartialDerivatives.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ConstraintDampingTags.hpp"
+#include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/SetNumberOfGridPoints.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 /// \cond
 namespace gsl {
@@ -40,7 +43,7 @@ tnsr::iaa<DataType, SpatialDim, Frame> three_index_constraint(
     const tnsr::iaa<DataType, SpatialDim, Frame>& phi);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void three_index_constraint(
+KOKKOS_FUNCTION void three_index_constraint(
     gsl::not_null<tnsr::iaa<DataType, SpatialDim, Frame>*> constraint,
     const tnsr::iaa<DataType, SpatialDim, Frame>& d_spacetime_metric,
     const tnsr::iaa<DataType, SpatialDim, Frame>& phi);
@@ -75,7 +78,7 @@ tnsr::a<DataType, SpatialDim, Frame> gauge_constraint(
     const tnsr::iaa<DataType, SpatialDim, Frame>& phi);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void gauge_constraint(
+KOKKOS_FUNCTION void gauge_constraint(
     gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
     const tnsr::a<DataType, SpatialDim, Frame>& gauge_function,
     const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
@@ -136,7 +139,7 @@ tnsr::ia<DataType, SpatialDim, Frame> two_index_constraint(
     const tnsr::iaa<DataType, SpatialDim, Frame>& three_index_constraint);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void two_index_constraint(
+KOKKOS_FUNCTION void two_index_constraint(
     gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
     const tnsr::ab<DataType, SpatialDim, Frame>& spacetime_d_gauge_function,
     const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
@@ -182,7 +185,7 @@ tnsr::iaa<DataType, SpatialDim, Frame> four_index_constraint(
     const tnsr::ijaa<DataType, SpatialDim, Frame>& d_phi);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void four_index_constraint(
+KOKKOS_FUNCTION void four_index_constraint(
     gsl::not_null<tnsr::iaa<DataType, SpatialDim, Frame>*> constraint,
     const tnsr::ijaa<DataType, SpatialDim, Frame>& d_phi);
 /// @}
@@ -285,7 +288,7 @@ tnsr::a<DataType, SpatialDim, Frame> f_constraint(
     const tnsr::iaa<DataType, SpatialDim, Frame>& three_index_constraint);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void f_constraint(
+KOKKOS_FUNCTION void f_constraint(
     gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
     const tnsr::a<DataType, SpatialDim, Frame>& gauge_function,
     const tnsr::ab<DataType, SpatialDim, Frame>& spacetime_d_gauge_function,
@@ -317,7 +320,7 @@ tnsr::a<DataType, SpatialDim, Frame> f_constraint(
     const tnsr::aa<DataType, SpatialDim, Frame>& trace_reversed_stress_energy);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void f_constraint(
+KOKKOS_FUNCTION void f_constraint(
     gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
     const tnsr::a<DataType, SpatialDim, Frame>& gauge_function,
     const tnsr::ab<DataType, SpatialDim, Frame>& spacetime_d_gauge_function,
@@ -544,7 +547,7 @@ Scalar<DataType> constraint_energy(
     double four_index_constraint_multiplier = 1.0);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void constraint_energy(
+KOKKOS_FUNCTION void constraint_energy(
     gsl::not_null<Scalar<DataType>*> energy,
     const tnsr::a<DataType, SpatialDim, Frame>& gauge_constraint,
     const tnsr::a<DataType, SpatialDim, Frame>& f_constraint,
@@ -641,16 +644,22 @@ struct GaugeConstraintCompute : GaugeConstraint<DataVector, SpatialDim, Frame>,
 
   using return_type = tnsr::a<DataVector, SpatialDim, Frame>;
 
-  static constexpr auto function = static_cast<void (*)(
-      gsl::not_null<tnsr::a<DataVector, SpatialDim, Frame>*>,
-      const tnsr::a<DataVector, SpatialDim, Frame>&,
-      const tnsr::a<DataVector, SpatialDim, Frame>&,
-      const tnsr::A<DataVector, SpatialDim, Frame>&,
-      const tnsr::II<DataVector, SpatialDim, Frame>&,
-      const tnsr::AA<DataVector, SpatialDim, Frame>&,
-      const tnsr::aa<DataVector, SpatialDim, Frame>&,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>&)>(
-      &gauge_constraint<DataVector, SpatialDim, Frame>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<tnsr::a<DataTypeT, SpatialDim, Frame>*> result,
+      const tnsr::a<DataTypeT, SpatialDim, Frame>& gauge_h,
+      const tnsr::a<DataTypeT, SpatialDim, Frame>& spacetime_normal_one_form,
+      const tnsr::A<DataTypeT, SpatialDim, Frame>& spacetime_normal_vector,
+      const tnsr::II<DataTypeT, SpatialDim, Frame>& inverse_spatial_metric,
+      const tnsr::AA<DataTypeT, SpatialDim, Frame>& inverse_spacetime_metric,
+      const tnsr::aa<DataTypeT, SpatialDim, Frame>& pi,
+      const tnsr::iaa<DataTypeT, SpatialDim, Frame>& phi) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    gauge_constraint<DataTypeT, SpatialDim, Frame>(
+        result, gauge_h, spacetime_normal_one_form, spacetime_normal_vector,
+        inverse_spatial_metric, inverse_spacetime_metric, pi, phi);
+  }
 
   using base = GaugeConstraint<DataVector, SpatialDim, Frame>;
 };
@@ -686,21 +695,29 @@ struct FConstraintCompute : FConstraint<DataVector, SpatialDim, Frame>,
 
   using return_type = tnsr::a<DataVector, SpatialDim, Frame>;
 
-  static constexpr auto function = static_cast<void (*)(
-      gsl::not_null<tnsr::a<DataVector, SpatialDim, Frame>*>,
-      const tnsr::a<DataVector, SpatialDim, Frame>&,
-      const tnsr::ab<DataVector, SpatialDim, Frame>&,
-      const tnsr::a<DataVector, SpatialDim, Frame>&,
-      const tnsr::A<DataVector, SpatialDim, Frame>&,
-      const tnsr::II<DataVector, SpatialDim, Frame>&,
-      const tnsr::AA<DataVector, SpatialDim, Frame>&,
-      const tnsr::aa<DataVector, SpatialDim, Frame>&,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>&,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>&,
-      const tnsr::ijaa<DataVector, SpatialDim, Frame>&,
-      const Scalar<DataVector>&,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>&)>(
-      &f_constraint<DataVector, SpatialDim, Frame>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<tnsr::a<DataTypeT, SpatialDim, Frame>*> result,
+      const tnsr::a<DataTypeT, SpatialDim, Frame>& gauge_h,
+      const tnsr::ab<DataTypeT, SpatialDim, Frame>& spacetime_deriv_gauge_h,
+      const tnsr::a<DataTypeT, SpatialDim, Frame>& spacetime_normal_one_form,
+      const tnsr::A<DataTypeT, SpatialDim, Frame>& spacetime_normal_vector,
+      const tnsr::II<DataTypeT, SpatialDim, Frame>& inverse_spatial_metric,
+      const tnsr::AA<DataTypeT, SpatialDim, Frame>& inverse_spacetime_metric,
+      const tnsr::aa<DataTypeT, SpatialDim, Frame>& pi,
+      const tnsr::iaa<DataTypeT, SpatialDim, Frame>& phi,
+      const tnsr::iaa<DataTypeT, SpatialDim, Frame>& d_pi,
+      const tnsr::ijaa<DataTypeT, SpatialDim, Frame>& d_phi,
+      const Scalar<DataTypeT>& constraint_gamma2,
+      const tnsr::iaa<DataTypeT, SpatialDim, Frame>& three_index_constraint) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    f_constraint<DataTypeT, SpatialDim, Frame>(
+        result, gauge_h, spacetime_deriv_gauge_h, spacetime_normal_one_form,
+        spacetime_normal_vector, inverse_spatial_metric,
+        inverse_spacetime_metric, pi, phi, d_pi, d_phi, constraint_gamma2,
+        three_index_constraint);
+  }
 
   using base = FConstraint<DataVector, SpatialDim, Frame>;
 };
@@ -732,20 +749,28 @@ struct TwoIndexConstraintCompute
 
   using return_type = tnsr::ia<DataVector, SpatialDim, Frame>;
 
-  static constexpr auto function = static_cast<void (*)(
-      gsl::not_null<tnsr::ia<DataVector, SpatialDim, Frame>*>,
-      const tnsr::ab<DataVector, SpatialDim, Frame>&,
-      const tnsr::a<DataVector, SpatialDim, Frame>&,
-      const tnsr::A<DataVector, SpatialDim, Frame>&,
-      const tnsr::II<DataVector, SpatialDim, Frame>&,
-      const tnsr::AA<DataVector, SpatialDim, Frame>&,
-      const tnsr::aa<DataVector, SpatialDim, Frame>&,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>&,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>&,
-      const tnsr::ijaa<DataVector, SpatialDim, Frame>&,
-      const Scalar<DataVector>&,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>&)>(
-      &two_index_constraint<DataVector, SpatialDim, Frame>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<tnsr::ia<DataTypeT, SpatialDim, Frame>*> result,
+      const tnsr::ab<DataTypeT, SpatialDim, Frame>& spacetime_deriv_gauge_h,
+      const tnsr::a<DataTypeT, SpatialDim, Frame>& spacetime_normal_one_form,
+      const tnsr::A<DataTypeT, SpatialDim, Frame>& spacetime_normal_vector,
+      const tnsr::II<DataTypeT, SpatialDim, Frame>& inverse_spatial_metric,
+      const tnsr::AA<DataTypeT, SpatialDim, Frame>& inverse_spacetime_metric,
+      const tnsr::aa<DataTypeT, SpatialDim, Frame>& pi,
+      const tnsr::iaa<DataTypeT, SpatialDim, Frame>& phi,
+      const tnsr::iaa<DataTypeT, SpatialDim, Frame>& d_pi,
+      const tnsr::ijaa<DataTypeT, SpatialDim, Frame>& d_phi,
+      const Scalar<DataTypeT>& constraint_gamma2,
+      const tnsr::iaa<DataTypeT, SpatialDim, Frame>& three_index_constraint) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    two_index_constraint<DataTypeT, SpatialDim, Frame>(
+        result, spacetime_deriv_gauge_h, spacetime_normal_one_form,
+        spacetime_normal_vector, inverse_spatial_metric,
+        inverse_spacetime_metric, pi, phi, d_pi, d_phi, constraint_gamma2,
+        three_index_constraint);
+  }
 
   using base = TwoIndexConstraint<DataVector, SpatialDim, Frame>;
 };
@@ -768,11 +793,16 @@ struct ThreeIndexConstraintCompute
 
   using return_type = tnsr::iaa<DataVector, SpatialDim, Frame>;
 
-  static constexpr auto function = static_cast<void (*)(
-      gsl::not_null<tnsr::iaa<DataVector, SpatialDim, Frame>*>,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>&,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>&)>(
-      &three_index_constraint<DataVector, SpatialDim, Frame>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<tnsr::iaa<DataTypeT, SpatialDim, Frame>*> result,
+      const tnsr::iaa<DataTypeT, SpatialDim, Frame>& d_spacetime_metric,
+      const tnsr::iaa<DataTypeT, SpatialDim, Frame>& phi) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    three_index_constraint<DataTypeT, SpatialDim, Frame>(
+        result, d_spacetime_metric, phi);
+  }
 
   using base = ThreeIndexConstraint<DataVector, SpatialDim, Frame>;
 };
@@ -794,10 +824,14 @@ struct FourIndexConstraintCompute
 
   using return_type = tnsr::iaa<DataVector, SpatialDim, Frame>;
 
-  static constexpr auto function = static_cast<void (*)(
-      gsl::not_null<tnsr::iaa<DataVector, SpatialDim, Frame>*>,
-      const tnsr::ijaa<DataVector, SpatialDim, Frame>&)>(
-      &four_index_constraint<DataVector, SpatialDim, Frame>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<tnsr::iaa<DataTypeT, SpatialDim, Frame>*> result,
+      const tnsr::ijaa<DataTypeT, SpatialDim, Frame>& d_phi) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    four_index_constraint<DataTypeT, SpatialDim, Frame>(result, d_phi);
+  }
 
   using base = FourIndexConstraint<DataVector, SpatialDim, Frame>;
 };
@@ -824,17 +858,20 @@ struct ConstraintEnergyCompute
 
   using return_type = Scalar<DataVector>;
 
-  static constexpr auto function(
-      const gsl::not_null<Scalar<DataVector>*> energy,
-      const tnsr::a<DataVector, SpatialDim, Frame>& gauge_constraint,
-      const tnsr::a<DataVector, SpatialDim, Frame>& f_constraint,
-      const tnsr::ia<DataVector, SpatialDim, Frame>& two_index_constraint,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>& three_index_constraint,
-      const tnsr::iaa<DataVector, SpatialDim, Frame>& four_index_constraint,
-      const tnsr::II<DataVector, SpatialDim, Frame>& inverse_spatial_metric,
-      const Scalar<DataVector>& spatial_metric_determinant) {
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataType>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<Scalar<DataType>*> energy,
+      const tnsr::a<DataType, SpatialDim, Frame>& gauge_constraint,
+      const tnsr::a<DataType, SpatialDim, Frame>& f_constraint,
+      const tnsr::ia<DataType, SpatialDim, Frame>& two_index_constraint,
+      const tnsr::iaa<DataType, SpatialDim, Frame>& three_index_constraint,
+      const tnsr::iaa<DataType, SpatialDim, Frame>& four_index_constraint,
+      const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
+      const Scalar<DataType>& spatial_metric_determinant) {
+    ASSERT_DEVICE_CAPABLE(DataType);
     set_number_of_grid_points(energy, spatial_metric_determinant);
-    constraint_energy<DataVector, SpatialDim, Frame>(
+    constraint_energy<DataType, SpatialDim, Frame>(
         energy, gauge_constraint, f_constraint, two_index_constraint,
         three_index_constraint, four_index_constraint, inverse_spatial_metric,
         spatial_metric_determinant);

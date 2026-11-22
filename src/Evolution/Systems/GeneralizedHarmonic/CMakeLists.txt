@@ -29,6 +29,7 @@ spectre_target_headers(
   Characteristics.hpp
   ConstraintGammasKokkos.hpp
   Constraints.hpp
+  Constraints.tpp
   DuDtTempTags.hpp
   Equations.hpp
   FilledSpherePowerMonitor.hpp

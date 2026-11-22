@@ -35,10 +35,12 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PalenzuelaEtAl.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/RdmpTciDataKokkos.hpp"
 #include "Evolution/VariableFixing/LimitLorentzFactorOnDeviceKokkos.hpp"
+#include "NumericalAlgorithms/Spectral/QuadratureWeights.hpp"
 #include "Time/StepperErrorTolerances.hpp"
 #include "Time/TimeStepId.hpp"
 #include "Time/TimeStepperOnDeviceKokkos.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
+#include "Utilities/Algorithm.hpp"
 #include "Utilities/CallWithDynamicType.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
@@ -396,34 +398,53 @@ auto Patch<OrderedListOfPrimitiveRecoverySchemes>::dense_element_variables(
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>
-bool Patch<OrderedListOfPrimitiveRecoverySchemes>::is_device_observable(
-    const std::string& name) {
-  return fd_patch::is_device_observable<typename PrimitiveVariables::tags_list>(
-      name);
-}
-
-template <typename OrderedListOfPrimitiveRecoverySchemes>
-const evolution::patches::DeviceObservables&
-Patch<OrderedListOfPrimitiveRecoverySchemes>::device_observables(
+auto Patch<OrderedListOfPrimitiveRecoverySchemes>::observable_sources(
     const Kokkos::DefaultExecutionSpace& exec,
-    const std::vector<std::string>& tensor_names,
     const EvolvedVariables& evolved_variables,
     const PrimitiveVariables& primitives, const bool dense_output,
-    const double time, const domain::FunctionsOfTimeMap& functions_of_time) {
+    const double time, const domain::FunctionsOfTimeMap& functions_of_time)
+    -> device_observable_sources {
   if (dense_output) {
     dense_statuses_.check(
         exec, patch_elements(), number_of_face_points(),
         MakeString{} << "the dense output at time " << time << " of ");
   }
-  fd_patch::device_observables(
-      exec, make_not_null(&device_observables_),
-      make_not_null(&device_observables_buffers_), tensor_names,
-      dense_output ? dense_evolved_variables_ : evolved_variables,
-      dense_output ? dense_primitives_ : primitives,
-      dense_output ? dense_fixing_metric_ : fixing_metric_,
-      patch_elements().observation_cell_geometry(exec, time, functions_of_time),
-      patch_elements().subcell_mesh());
-  return device_observables_;
+  const Mesh<3>& mesh = patch_elements().subcell_mesh();
+  // The same weight at all cell centers of the FD mesh
+  double point_weight = 1.0;
+  for (size_t d = 0; d < 3; ++d) {
+    const DataVector& weights =
+        Spectral::quadrature_weights(mesh.slice_through(d));
+    if (not alg::all_of(
+            weights, [&weights](const double w) { return w == weights[0]; })) {
+      ERROR("The quadrature weights of the FD mesh "
+            << mesh << " must all be the same in dimension " << d
+            << ", but are " << weights);
+    }
+    point_weight *= weights[0];
+  }
+  // The damping functions at the time of the observation
+  std::array<ConstraintDamping::GaussianSum<3>, 3> gaussian_sums{};
+  for (size_t i = 0; i < 3; ++i) {
+    gsl::at(gaussian_sums, i) = gsl::at(damping_functions_, i)
+                                    ->as_gaussian_sum(time, functions_of_time);
+  }
+  observation_gaussian_sums_.set(exec, gaussian_sums);
+  const auto& grid_geometry = patch_elements().cell_logical_to_grid_geometry();
+  return device_observable_sources{
+      .evolved_variables =
+          dense_output ? &dense_evolved_variables_ : &evolved_variables,
+      .primitives = dense_output ? &dense_primitives_ : &primitives,
+      .fixing_metric = dense_output ? &dense_fixing_metric_ : &fixing_metric_,
+      .cell_geometry = &patch_elements().observation_cell_geometry(
+          exec, time, functions_of_time),
+      .grid_coordinates = ObservablesKokkos_detail::components<
+          ::domain::Tags::Coordinates<3, Frame::Grid>>(
+          grid_geometry, {0, grid_geometry.number_of_elements()}),
+      .damping_functions = observation_gaussian_sums_.device_array(),
+      .mesh = mesh,
+      .weight = point_weight,
+      .buffers = &device_observables_scratch_};
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>

@@ -71,7 +71,9 @@ following configuration options:
   `Utilities/Kokkos/KokkosCore.hpp` there. Wrap everything after the
   includes in `#ifdef SPECTRE_KOKKOS`, which is defined when building with
   Kokkos. Add Kokkos-only tests to the build only `if(SPECTRE_KOKKOS)`. Avoid
-  `#ifdef SPECTRE_KOKKOS` branches within files shared with host code.
+  `#ifdef SPECTRE_KOKKOS` branches within files shared with host code (except
+  for the includes of `.tpp` files, see
+  \ref gpu_kernel_definitions "Definitions that kernels call").
 - Specify the layout of multi-dimensional views explicitly, e.g.
   `Kokkos::View<double**, Kokkos::LayoutLeft>`. The default layout differs
   between backends, so code that relies on it can work on a GPU but fail on the
@@ -128,7 +130,8 @@ the device: by default the trivially copyable, non-polymorphic types such as
 Make `KOKKOS_FUNCTION` templates that can be instantiated for host-only types
 device-callable in one of these ways, in order of preference:
 
-1. Define the template in a `.cpp` file and explicitly instantiate it, listing
+1. Define the template in a `.cpp` file (or in a `.tpp` file that it includes,
+   if kernels call it, see below) and explicitly instantiate it, listing
    the device types in `SPECTRE_DEVICE_AND_HOST_TYPES`. The device pass then
    only compiles the device-capable instantiations, and nvcc checks them fully.
    \code
@@ -184,6 +187,70 @@ also compiles the host-only instantiations for the device. The
 `device_exec_check_assert` check in `tools/FileTestDefs.sh`, which runs in CI,
 rejects functions with a disabled exec check that don't call
 `ASSERT_DEVICE_CAPABLE`.
+
+## Definitions that kernels call {#gpu_kernel_definitions}
+
+SpECTRE compiles device code as relocatable device code (separate
+compilation). A kernel can then only inline the device functions whose
+definitions it sees; a call to a function defined in another `.cpp` file is a
+real call, which passes its tensors through the stack in local memory and
+can't be optimized together with the kernel. In kernels this is slow, so:
+
+- Define device-callable functions that kernels call in a `.tpp` file next to
+  the `.hpp`, e.g. `Lapse.tpp`. The `.cpp` file includes the `.tpp` and keeps
+  the explicit instantiations (see above), and the Kokkos files with the
+  kernels include it too. Headers don't include `.tpp` files.
+- A `.tpp` file that calls functions defined in other `.tpp` files includes
+  those only `#ifdef SPECTRE_KOKKOS` (and their `.hpp` files always), e.g.
+  `ValenciaDivClean/Sources.tpp`. Kernels then inline the whole chain, and
+  builds without Kokkos call the explicit instantiations as before.
+- A file that includes a `.tpp` and also calls the `DataVector` overloads makes
+  nvcc compile those for the device too, which floods the build with warnings
+  about calling host functions. Keep such host calls in another file, as
+  `Test_ObservablesKokkos.cpp` does with `ObservablesHostValues.cpp`.
+
+Builds without Kokkos compile the same code as before: the definitions only
+move from the `.cpp` file to a `.tpp` file that the same `.cpp` file includes.
+(With the nested `.tpp` files of `Fluxes.cpp`, `Sources.cpp`,
+`ConservativeFromPrimitive.cpp`, `StressEnergy.cpp` and `Constraints.cpp`
+included unconditionally, these took 3 s longer in total to compile in a Debug
+clang build, out of 34 s.) Kokkos builds pay for the inlining in the files with
+the kernels: the observables of the patch executable compile in 471 s with the
+`.tpp` files and in 90 s without them (Release, nvcc). So keep large sets of
+kernels in their own file, which compiles in parallel with the rest, as
+`DeviceObservablesKokkos.cpp` does.
+
+The alternative, device link-time optimization (nvcc `-dlto`), inlines across
+files at link time. It was measured on the 512-element TOV star in a single FD
+patch on a GH200 (Vista, Nov 2026, `EvolveGhValenciaDivCleanFdPatches`), and
+the `.tpp` files were kept:
+
+| Time per call (µs) | `.tpp` | call into another file | `-dlto` |
+| :----------------- | -----: | ---------------------: | ------: |
+| Gauge constraint   | 133    | 434                    | 122     |
+| Three-index constraint | 143 | 418                   | 147     |
+| Inverse spacetime metric | 31 | 63                   | 32      |
+| Lapse              | 12     | 38                     | 12      |
+
+- Calls into other files cost 2–3× per kernel. Before the `.tpp` files, the
+  HLL face kernel called hydro helpers defined in `.cpp` files: it used 648 B
+  of stack and took 3.4 ms per side, and 1.5 ms with no stack after moving
+  them into `.tpp` files (32.5 to 27.5 ms per time substep).
+- `-dlto` is as fast as the `.tpp` files, but not faster: the time substep is
+  27.5 ms with both. It also inlines the remaining calls into other files
+  (e.g. `FixConservatives::AtGridPoint::apply`, 323 to 105 µs), but compiles
+  some kernels worse (the GH `MetricKernel`, 969 to 1317 µs).
+- `-dlto` compiles all device code of the executable at the link: about
+  1000 s instead of 84 s for every link of the patch executable, with up to
+  44 GB of memory. nvcc_wrapper doesn't pass `-dlto` on, so it has to be given
+  to nvcc through `NVCC_APPEND_FLAGS`.
+
+`-dlto` is still useful to find calls into other files: compare the registers
+and stack of the kernels (`cuobjdump -res-usage`) of a `-dlto` build with a
+normal one. Kernels whose stack shrinks call functions in other files. For the
+observables of patches, `SPECTRE_DEVICE_OBSERVABLES=generic_out_of_line` calls
+the functions of the compute tags without inlining them, which costs the same
+as calls into other files (433 vs. 434 µs for the gauge constraint).
 
 ## Errors in device code
 
@@ -444,22 +511,40 @@ systems, are an error.
 With `Patches: ObserveOnDevice: true` in the input file, patches observe the
 events they support on the device instead
 (`evolution::patches::Actions::detail::observe_norms_on_device`): for an
-`Events::ObserveNorms` (without array sections) whose tensors the patch can all
-compute on the device (`Patch::is_device_observable`), the patch computes them
-for all elements on the device at the time of the observation, from the state
-or the dense output (`Patch::device_observables`). A kernel reduces each
-component of each element to the values all norms are computed from
-(`Events::NormStatistics`, see `evolution::patches::norm_statistics_on_device`),
-and only these are copied to the host. Each element then contributes them to
-the observer as the event would on its DataBox
-(`Events::ObserveNorms::contribute_statistics`), so the output and the observer
-registration are the same. Other events run on the DataBoxes of the elements as
-above; at registration patch 0 prints which `ObserveNorms` run on the device and
-which tensors keep the others on the host. Supporting a new observable means
-computing it from the batches of the patch in `Patch::device_observables`, e.g.
-with tensor expressions at the grid points (see
-`grmhd::GhValenciaDivClean::fd_patch::device_observables`), and testing it
-against the compute tag of the host.
+`Events::ObserveNorms` (without array sections) whose tensors can all be
+evaluated on the device, the patch evaluates them for all elements on the
+device at the time of the observation, from the state or the dense output. A
+kernel reduces each component of each element to the values all norms are
+computed from (`Events::NormStatistics`), and only these are copied to the
+host. Each element then contributes them to the observer as the event would on
+its DataBox (`Events::ObserveNorms::contribute_statistics`), so the output and
+the observer registration are the same. Other events run on the DataBoxes of
+the elements as above; at registration patch 0 prints which `ObserveNorms` run
+on the device and which tensors keep the others on the host.
+
+The tensors are evaluated generically from the compute tags that define them on
+the host, those of the DataBoxes of the elements and of the events (see
+`evolution::patches::device_compute`): a tensor is a batch that the patch
+holds (e.g. the evolved and primitive variables, see
+`grmhd::GhValenciaDivClean::fd_patch::DeviceObservableSources`), a spatial
+derivative of a tensor that can be evaluated, or the result of a compute tag
+whose `function` can be called with tensors of `double`s, i.e. is a function
+template over the data type marked `KOKKOS_FUNCTION`. One kernel evaluates each
+compute tag at all grid points, so supporting a new observable usually means
+only making the function of its compute tag device-callable. Hand-written
+kernels for observables aren't worth it: fused kernels for the gauge constraint
+(computing the 3+1 quantities in registers instead of one kernel per compute
+tag) and the three-index constraint (contracting the logical derivatives with
+the inverse Jacobian in the kernel) saved about 1 ms of a 10 ms observation of
+the norms of the BNS input on 512 elements (Nov 2026), so they were removed.
+The environment variable `SPECTRE_DEVICE_OBSERVABLES=generic_out_of_line`
+calls the functions of the compute tags without inlining them, for
+comparisons (see \ref gpu_kernel_definitions "Definitions that kernels call").
+The evaluation is instantiated
+in its own file for each executable (e.g.
+`Evolution/Executables/GrMhd/GhValenciaDivClean/DeviceObservablesKokkos.cpp`),
+which also includes the definitions (`.tpp` files) of the functions so that
+the kernels inline them.
 
 Since events and step choosers are compiled against this DataBox, it must
 provide every tag that any event or step chooser of the executable may read.

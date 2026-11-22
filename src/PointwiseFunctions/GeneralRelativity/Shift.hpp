@@ -9,7 +9,9 @@
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 /// \ingroup GeneralRelativityGroup
 /// Holds functions related to general relativity.
@@ -33,9 +35,10 @@ tnsr::I<DataType, SpatialDim, Frame> shift(
     const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void shift(gsl::not_null<tnsr::I<DataType, SpatialDim, Frame>*> shift,
-           const tnsr::aa<DataType, SpatialDim, Frame>& spacetime_metric,
-           const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric);
+KOKKOS_FUNCTION void shift(
+    gsl::not_null<tnsr::I<DataType, SpatialDim, Frame>*> shift,
+    const tnsr::aa<DataType, SpatialDim, Frame>& spacetime_metric,
+    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric);
 /// @}
 
 namespace Tags {
@@ -53,11 +56,16 @@ struct ShiftCompute : Shift<DataType, SpatialDim, Frame>, db::ComputeTag {
 
   using return_type = tnsr::I<DataType, SpatialDim, Frame>;
 
-  static constexpr auto function = static_cast<void (*)(
-      const gsl::not_null<tnsr::I<DataType, SpatialDim, Frame>*> shift,
-      const tnsr::aa<DataType, SpatialDim, Frame>&,
-      const tnsr::II<DataType, SpatialDim, Frame>&)>(
-      &shift<DataType, SpatialDim, Frame>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<tnsr::I<DataTypeT, SpatialDim, Frame>*> result,
+      const tnsr::aa<DataTypeT, SpatialDim, Frame>& spacetime_metric,
+      const tnsr::II<DataTypeT, SpatialDim, Frame>& inverse_spatial_metric) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    shift<DataTypeT, SpatialDim, Frame>(result, spacetime_metric,
+                                        inverse_spatial_metric);
+  }
 
   using base = Shift<DataType, SpatialDim, Frame>;
 };

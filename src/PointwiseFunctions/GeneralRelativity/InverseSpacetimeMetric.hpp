@@ -9,7 +9,9 @@
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 /// \ingroup GeneralRelativityGroup
 /// Holds functions related to general relativity.
@@ -30,7 +32,7 @@ namespace gr {
  * inverse spatial metric respectively
  */
 template <typename DataType, size_t SpatialDim, typename Frame>
-void inverse_spacetime_metric(
+KOKKOS_FUNCTION void inverse_spacetime_metric(
     gsl::not_null<tnsr::AA<DataType, SpatialDim, Frame>*>
         inverse_spacetime_metric,
     const Scalar<DataType>& lapse,
@@ -62,11 +64,17 @@ struct InverseSpacetimeMetricCompute
 
   using return_type = tnsr::AA<DataType, SpatialDim, Frame>;
 
-  static constexpr auto function = static_cast<void (*)(
-      gsl::not_null<tnsr::AA<DataType, SpatialDim, Frame>*>,
-      const Scalar<DataType>&, const tnsr::I<DataType, SpatialDim, Frame>&,
-      const tnsr::II<DataType, SpatialDim, Frame>&)>(
-      &inverse_spacetime_metric<DataType, SpatialDim, Frame>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<tnsr::AA<DataTypeT, SpatialDim, Frame>*> result,
+      const Scalar<DataTypeT>& lapse,
+      const tnsr::I<DataTypeT, SpatialDim, Frame>& shift,
+      const tnsr::II<DataTypeT, SpatialDim, Frame>& inverse_spatial_metric) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    inverse_spacetime_metric<DataTypeT, SpatialDim, Frame>(
+        result, lapse, shift, inverse_spatial_metric);
+  }
 
   using base = InverseSpacetimeMetric<DataType, SpatialDim, Frame>;
 };

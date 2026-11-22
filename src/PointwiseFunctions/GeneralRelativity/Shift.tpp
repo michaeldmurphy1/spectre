@@ -1,0 +1,42 @@
+// Distributed under the MIT License.
+// See LICENSE.txt for details.
+
+#pragma once
+
+#include "PointwiseFunctions/GeneralRelativity/Shift.hpp"
+
+#include <cmath>
+
+#include "DataStructures/Tensor/Tensor.hpp"
+#include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/ContainerHelpers.hpp"
+#include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
+#include "Utilities/MakeWithValue.hpp"
+
+namespace gr {
+template <typename DataType, size_t SpatialDim, typename Frame>
+tnsr::I<DataType, SpatialDim, Frame> shift(
+    const tnsr::aa<DataType, SpatialDim, Frame>& spacetime_metric,
+    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric) {
+  tnsr::I<DataType, SpatialDim, Frame> local_shift{
+      get_size(get<0, 0>(spacetime_metric))};
+  shift(make_not_null(&local_shift), spacetime_metric, inverse_spatial_metric);
+  return local_shift;
+}
+
+template <typename DataType, size_t SpatialDim, typename Frame>
+KOKKOS_FUNCTION void shift(
+    const gsl::not_null<tnsr::I<DataType, SpatialDim, Frame>*> shift,
+    const tnsr::aa<DataType, SpatialDim, Frame>& spacetime_metric,
+    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric) {
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    shift->get(i) =
+        inverse_spatial_metric.get(i, 0) * get<1, 0>(spacetime_metric);
+    for (size_t j = 1; j < SpatialDim; ++j) {
+      shift->get(i) +=
+          inverse_spatial_metric.get(i, j) * spacetime_metric.get(j + 1, 0);
+    }
+  }
+}
+}  // namespace gr

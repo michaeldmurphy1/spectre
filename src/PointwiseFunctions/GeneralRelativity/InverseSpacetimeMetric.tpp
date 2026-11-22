@@ -1,0 +1,51 @@
+// Distributed under the MIT License.
+// See LICENSE.txt for details.
+
+#pragma once
+
+#include "PointwiseFunctions/GeneralRelativity/InverseSpacetimeMetric.hpp"
+
+#include <cmath>
+
+#include "DataStructures/Tensor/Tensor.hpp"
+#include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/ContainerHelpers.hpp"
+#include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
+#include "Utilities/MakeWithValue.hpp"
+
+namespace gr {
+template <typename DataType, size_t Dim, typename Frame>
+tnsr::AA<DataType, Dim, Frame> inverse_spacetime_metric(
+    const Scalar<DataType>& lapse, const tnsr::I<DataType, Dim, Frame>& shift,
+    const tnsr::II<DataType, Dim, Frame>& inverse_spatial_metric) {
+  tnsr::AA<DataType, Dim, Frame> inv_spacetime_metric{};
+  inverse_spacetime_metric(make_not_null(&inv_spacetime_metric), lapse, shift,
+                           inverse_spatial_metric);
+  return inv_spacetime_metric;
+}
+
+template <typename DataType, size_t Dim, typename Frame>
+KOKKOS_FUNCTION void inverse_spacetime_metric(
+    const gsl::not_null<tnsr::AA<DataType, Dim, Frame>*>
+        inverse_spacetime_metric,
+    const Scalar<DataType>& lapse, const tnsr::I<DataType, Dim, Frame>& shift,
+    const tnsr::II<DataType, Dim, Frame>& inverse_spatial_metric) {
+  get<0, 0>(*inverse_spacetime_metric) = -1.0 / (get(lapse) * get(lapse));
+
+  const auto& minus_one_over_lapse_sqrd = get<0, 0>(*inverse_spacetime_metric);
+
+  for (size_t i = 0; i < Dim; ++i) {
+    inverse_spacetime_metric->get(0, i + 1) =
+        -shift.get(i) * minus_one_over_lapse_sqrd;
+  }
+
+  for (size_t i = 0; i < Dim; ++i) {
+    for (size_t j = i; j < Dim; ++j) {
+      inverse_spacetime_metric->get(i + 1, j + 1) =
+          inverse_spatial_metric.get(i, j) +
+          shift.get(i) * shift.get(j) * minus_one_over_lapse_sqrd;
+    }
+  }
+}
+}  // namespace gr

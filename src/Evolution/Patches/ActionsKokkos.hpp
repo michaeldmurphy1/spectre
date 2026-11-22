@@ -26,7 +26,7 @@
 #include "Domain/FunctionsOfTime/Tags.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Evolution/DiscontinuousGalerkin/InboxTags.hpp"
-#include "Evolution/Patches/DeviceObservablesKokkos.hpp"
+#include "Evolution/Patches/DeviceComputeTagsKokkos.hpp"
 #include "Evolution/Patches/InboxTags.hpp"
 #include "Evolution/Patches/PatchTable.hpp"
 #include "Evolution/Patches/SlabSize.hpp"
@@ -511,25 +511,11 @@ void for_each_element_box(const gsl::not_null<db::DataBox<DbTagsList>*> box_ptr,
   }
 }
 
-// Whether `T` is an `Events::ObserveNorms`
-template <typename T>
-struct IsObserveNorms : std::false_type {};
-template <typename Fields, typename NonTensorComputeTags,
-          typename ArraySectionIdTag, typename OptionName>
-struct IsObserveNorms<::Events::ObserveNorms<Fields, NonTensorComputeTags,
-                                             ArraySectionIdTag, OptionName>>
-    : std::true_type {};
-
-template <typename Metavariables>
-using observe_norms_events =
-    tmpl::filter<events_on_elements<Metavariables>, IsObserveNorms<tmpl::_1>>;
-
-// Whether patches of type `Patch` can compute observables on the device (see
-// `Patch::device_observables`)
+// Whether patches of type `Patch` can evaluate observables on the device (see
+// `evolution::patches::device_compute`)
 template <typename Patch>
-concept ComputesDeviceObservables = requires(const std::string& name) {
-  { Patch::is_device_observable(name) } -> std::same_as<bool>;
-};
+concept ComputesDeviceObservables =
+    requires { typename Patch::device_observable_sources; };
 
 // The tensors of the `ObserveNorms` `event` that patches of type `Patch` can't
 // compute on the device, or `std::nullopt` if `event` isn't an
@@ -542,7 +528,7 @@ std::optional<std::vector<std::string>> tensors_not_observable_on_device(
     return std::nullopt;
   } else {
     std::optional<std::vector<std::string>> result{};
-    tmpl::for_each<observe_norms_events<Metavariables>>(
+    tmpl::for_each<device_compute::observe_norms_events<Metavariables>>(
         [&]<typename EventType>(tmpl::type_<EventType> /*meta*/) {
           const auto* const derived_event =
               dynamic_cast<const EventType*>(&event);
@@ -551,7 +537,9 @@ std::optional<std::vector<std::string>> tensors_not_observable_on_device(
               std::is_same_v<typename EventType::array_section_id_tag, void>) {
             result = std::vector<std::string>{};
             for (const std::string& name : derived_event->tensor_names()) {
-              if (not Patch::is_device_observable(name)) {
+              if (not device_compute::is_device_observable<
+                      Metavariables, typename Patch::device_observable_sources>(
+                      name)) {
                 result->push_back(name);
               }
             }
@@ -572,7 +560,8 @@ bool observes_on_device(const Event& event) {
 
 // Runs the `ObserveNorms` `events` (see `observes_on_device`) on the device:
 // the patch computes the observed tensors of all its elements on the device,
-// they are reduced there (see `norm_statistics_on_device`) and only the
+// they are reduced there (see `device_compute::device_norm_statistics`) and
+// only the
 // results of each element are copied to the host and contributed to the
 // observer, as if the event had run on the DataBox of the element. With
 // `dense_output`, the tensors are computed from the last dense output of the
@@ -595,8 +584,9 @@ void observe_norms_on_device(const std::vector<const Event*>& events,
   std::vector<std::string> tensor_names{};
   const auto for_each_event = [&events](const auto& function) {
     for (const Event* const event : events) {
-      call_with_dynamic_type<void, observe_norms_events<Metavariables>>(
-          event, function);
+      call_with_dynamic_type<
+          void, device_compute::observe_norms_events<Metavariables>>(event,
+                                                                     function);
     }
   };
   for_each_event([&tensor_names](const auto* const derived_event) {
@@ -608,19 +598,20 @@ void observe_norms_on_device(const std::vector<const Event*>& events,
   });
 
   const double time = db::get<::Tags::Time>(*box);
-  // The observables are memory of the patch, valid until the next call
-  const evolution::patches::DeviceObservables& observables =
-      *with_state<PatchTag>(*box, [&](const auto&... state) {
-        return db::mutate<PatchTag>(
-            [&](const auto mutable_patch) {
-              return &mutable_patch->device_observables(
-                  exec, tensor_names, state..., dense_output, time,
-                  Parallel::get<::domain::Tags::FunctionsOfTime>(cache));
-            },
-            box);
-      });
-  const auto statistics =
-      evolution::patches::norm_statistics_on_device(exec, observables);
+  using Sources = typename PatchTag::type::device_observable_sources;
+  const Sources sources = with_state<PatchTag>(*box, [&](const auto&... state) {
+    return db::mutate<PatchTag>(
+        [&](const auto mutable_patch) {
+          return mutable_patch->observable_sources(
+              exec, state..., dense_output, time,
+              Parallel::get<::domain::Tags::FunctionsOfTime>(cache));
+        },
+        box);
+  });
+  const device_compute::DeviceNormStatistics observables =
+      device_compute::device_norm_statistics<Metavariables>(exec, sources,
+                                                            tensor_names);
+  const auto& statistics = observables.statistics;
 
   const Kokkos::Profiling::ScopedRegion contribute_region{
       "patches::observe_norms_on_device::contribute"};
@@ -738,7 +729,7 @@ void run_events_on_elements(const std::vector<const Event*>& events,
 template <typename Patch, typename Metavariables, typename DbTagsList>
 void report_device_observations(const db::DataBox<DbTagsList>& box) {
   const auto report = [](const Event& event) {
-    tmpl::for_each<observe_norms_events<Metavariables>>(
+    tmpl::for_each<device_compute::observe_norms_events<Metavariables>>(
         [&event]<typename EventType>(tmpl::type_<EventType> /*meta*/) {
           const auto* const derived_event =
               dynamic_cast<const EventType*>(&event);

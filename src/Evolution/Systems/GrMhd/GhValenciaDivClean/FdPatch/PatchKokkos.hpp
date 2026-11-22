@@ -20,7 +20,7 @@
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Evolution/DgSubcell/FdPatch/BoundaryMessagesKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/PatchBaseKokkos.hpp"
-#include "Evolution/Patches/DeviceObservablesKokkos.hpp"
+#include "Evolution/Patches/DeviceComputeTagsKokkos.hpp"
 #include "Evolution/Patches/SavedBatchesKokkos.hpp"
 #include "Evolution/Patches/TagsKokkos.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Initialize.hpp"
@@ -82,15 +82,6 @@ namespace grmhd::GhValenciaDivClean::fd_patch {
 /// The evolved system of the patches, without neutrinos
 using System =
     grmhd::GhValenciaDivClean::System<RadiationTransport::NoNeutrinos::System>;
-
-/// The compute tags of the DataBox of an element on the host that
-/// `EvolveGhValenciaDivClean` adds
-/// (`gh::Actions::InitializeGhAnd3Plus1Variables` and the square root of the
-/// determinant of the spatial metric), so that the DataBoxes of the elements of
-/// patches for events hold them too
-using element_box_compute_tags = tmpl::push_back<
-    typename gh::Actions::InitializeGhAnd3Plus1Variables<3>::compute_tags,
-    gr::Tags::SqrtDetSpatialMetricCompute<DataVector, 3, Frame::Inertial>>;
 
 /// The variables of the DataBox of an element on the host that the DataBoxes
 /// of the elements of patches for events hold (see
@@ -274,22 +265,22 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
       const EvolvedVariables& evolved_variables,
       const PrimitiveVariables& primitives, double time);
 
-  /// Whether `device_observables` can compute the observable tensor `name`
-  /// (see `fd_patch::is_device_observable`)
-  static bool is_device_observable(const std::string& name);
+  /// What the patch provides to evaluate observable tensors on the device
+  using device_observable_sources =
+      DeviceObservableSources<typename PrimitiveVariables::tags_list>;
 
   /*!
-   * \brief The observable tensors `tensor_names` of all elements, computed on
-   * the device at `time` (see `fd_patch::device_observables`)
+   * \brief What the patch provides to evaluate observable tensors of all its
+   * elements on the device at `time` (see
+   * `evolution::patches::device_compute`)
    *
    * \details From the state (`evolved_variables` and `primitives`) or, with
    * `dense_output`, from the last `dense_output()`, whose failures are reported
-   * as `dense_element_variables()` does. The result refers to memory of the
-   * patch that the next call overwrites.
+   * as `dense_element_variables()` does. The sources refer to memory of the
+   * patch, and the next call overwrites the geometry of a moving mesh.
    */
-  const evolution::patches::DeviceObservables& device_observables(
+  device_observable_sources observable_sources(
       const Kokkos::DefaultExecutionSpace& exec,
-      const std::vector<std::string>& tensor_names,
       const EvolvedVariables& evolved_variables,
       const PrimitiveVariables& primitives, bool dense_output, double time,
       const domain::FunctionsOfTimeMap& functions_of_time);
@@ -446,8 +437,11 @@ class Patch : public evolution::dg::subcell::fd_patch::PatchBase<
   ValenciaDivClean::subcell::RdmpTciDataBuffers rdmp_tci_data_buffers_{};
   // The observables computed on the device and their buffers, kept so they
   // aren't allocated every observation
-  evolution::patches::DeviceObservables device_observables_{};
-  DeviceObservablesBuffers device_observables_buffers_{};
+  evolution::patches::device_compute::Scratch device_observables_scratch_{};
+  // The damping functions at the time of the last observation
+  DeviceParameters<std::array<ConstraintDamping::GaussianSum<3>, 3>>
+      observation_gaussian_sums_{
+          "GhValenciaDivClean damping functions of observations"};
 };
 }  // namespace grmhd::GhValenciaDivClean::fd_patch
 #endif  // SPECTRE_KOKKOS

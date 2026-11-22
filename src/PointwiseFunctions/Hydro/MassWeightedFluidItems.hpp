@@ -10,7 +10,10 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/TagsDeclarations.hpp"
 #include "PointwiseFunctions/GeneralRelativity/TagsDeclarations.hpp"
 #include "PointwiseFunctions/Hydro/TagsDeclarations.hpp"
+#include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 /// \cond
 namespace gsl {
@@ -78,12 +81,12 @@ struct MassWeightedCoords : db::SimpleTag {
 /// @{
 /// Compute $u_t=$
 template <typename DataType, size_t Dim, typename Frame>
-void u_lower_t(gsl::not_null<Scalar<DataType>*> result,
-               const Scalar<DataType>& lorentz_factor,
-               const tnsr::I<DataType, Dim, Frame>& spatial_velocity,
-               const tnsr::ii<DataType, Dim, Frame>& spatial_metric,
-               const Scalar<DataType>& lapse,
-               const tnsr::I<DataType, Dim, Frame>& shift);
+KOKKOS_FUNCTION void u_lower_t(
+    gsl::not_null<Scalar<DataType>*> result,
+    const Scalar<DataType>& lorentz_factor,
+    const tnsr::I<DataType, Dim, Frame>& spatial_velocity,
+    const tnsr::ii<DataType, Dim, Frame>& spatial_metric,
+    const Scalar<DataType>& lapse, const tnsr::I<DataType, Dim, Frame>& shift);
 
 template <typename DataType, size_t Dim, typename Frame>
 Scalar<DataType> u_lower_t(
@@ -97,7 +100,7 @@ Scalar<DataType> u_lower_t(
 /// Compute tilde_d * specific_internal_energy
 /// Result of the calculation stored in result.
 template <typename DataType>
-void mass_weighted_internal_energy(
+KOKKOS_FUNCTION void mass_weighted_internal_energy(
     gsl::not_null<Scalar<DataType>*> result, const Scalar<DataType>& tilde_d,
     const Scalar<DataType>& specific_internal_energy);
 
@@ -111,9 +114,9 @@ Scalar<DataType> mass_weighted_internal_energy(
 /// Compute tilde_d * (lorentz_factor - 1.0)
 /// Result of the calculation stored in result.
 template <typename DataType>
-void mass_weighted_kinetic_energy(gsl::not_null<Scalar<DataType>*> result,
-                                  const Scalar<DataType>& tilde_d,
-                                  const Scalar<DataType>& lorentz_factor);
+KOKKOS_FUNCTION void mass_weighted_kinetic_energy(
+    gsl::not_null<Scalar<DataType>*> result, const Scalar<DataType>& tilde_d,
+    const Scalar<DataType>& lorentz_factor);
 template <typename DataType>
 Scalar<DataType> mass_weighted_kinetic_energy(
     const Scalar<DataType>& tilde_d, const Scalar<DataType>& lorentz_factor);
@@ -124,7 +127,7 @@ Scalar<DataType> mass_weighted_kinetic_energy(
 /// u_t > -1 (approximate criteria for unbound matter, theoretically
 /// valid for particles following geodesics of a time-independent metric).
 template <typename DataType, size_t Dim, typename Fr = Frame::Inertial>
-void tilde_d_unbound_ut_criterion(
+KOKKOS_FUNCTION void tilde_d_unbound_ut_criterion(
     gsl::not_null<Scalar<DataType>*> result, const Scalar<DataType>& tilde_d,
     const Scalar<DataType>& lorentz_factor,
     const tnsr::I<DataType, Dim, Fr>& spatial_velocity,
@@ -188,11 +191,16 @@ struct MassWeightedInternalEnergyCompute : MassWeightedInternalEnergy<DataType>,
 
   using base = MassWeightedInternalEnergy<DataType>;
 
-  static constexpr auto function =
-      static_cast<void (*)(const gsl::not_null<Scalar<DataType>*> result,
-                           const Scalar<DataType>& tilde_d,
-                           const Scalar<DataType>& specific_internal_energy)>(
-          &mass_weighted_internal_energy<DataType>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<Scalar<DataTypeT>*> result,
+      const Scalar<DataTypeT>& tilde_d,
+      const Scalar<DataTypeT>& specific_internal_energy) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    mass_weighted_internal_energy<DataTypeT>(result, tilde_d,
+                                             specific_internal_energy);
+  }
 };
 
 /// Compute item for mass-weighted internal energy
@@ -208,10 +216,15 @@ struct MassWeightedKineticEnergyCompute : MassWeightedKineticEnergy<DataType>,
 
   using base = MassWeightedKineticEnergy<DataType>;
 
-  static constexpr auto function = static_cast<void (*)(
-      const gsl::not_null<Scalar<DataType>*> result,
-      const Scalar<DataType>& tilde_d, const Scalar<DataType>& lorentz_factor)>(
-      &mass_weighted_kinetic_energy<DataType>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<Scalar<DataTypeT>*> result,
+      const Scalar<DataTypeT>& tilde_d,
+      const Scalar<DataTypeT>& lorentz_factor) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    mass_weighted_kinetic_energy<DataTypeT>(result, tilde_d, lorentz_factor);
+  }
 };
 
 /// Compute item for TildeD limited to unbound material (u_t<-1 criteria)
@@ -230,13 +243,20 @@ struct TildeDUnboundUtCriterionCompute : TildeDUnboundUtCriterion<DataType>,
 
   using base = TildeDUnboundUtCriterion<DataType>;
 
-  static constexpr auto function = static_cast<void (*)(
-      const gsl::not_null<Scalar<DataType>*> result,
-      const Scalar<DataType>& tilde_d, const Scalar<DataType>& lorentz_factor,
-      const tnsr::I<DataType, Dim, Fr>& spatial_velocity,
-      const tnsr::ii<DataType, Dim, Fr>& spacial_metric,
-      const Scalar<DataType>& lapse, const tnsr::I<DataType, Dim, Fr>& shift)>(
-      &tilde_d_unbound_ut_criterion<DataType, Dim, Fr>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<Scalar<DataTypeT>*> result,
+      const Scalar<DataTypeT>& tilde_d, const Scalar<DataTypeT>& lorentz_factor,
+      const tnsr::I<DataTypeT, Dim, Fr>& spatial_velocity,
+      const tnsr::ii<DataTypeT, Dim, Fr>& spatial_metric,
+      const Scalar<DataTypeT>& lapse,
+      const tnsr::I<DataTypeT, Dim, Fr>& shift) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    tilde_d_unbound_ut_criterion<DataTypeT, Dim, Fr>(
+        result, tilde_d, lorentz_factor, spatial_velocity, spatial_metric,
+        lapse, shift);
+  }
 };
 
 /// Compute tag for TildeD limited to the x>0 or x<0 half plane

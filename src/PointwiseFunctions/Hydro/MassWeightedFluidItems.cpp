@@ -1,7 +1,8 @@
 // Distributed under the MIT License.
 // See LICENSE.txt for details.
 
-#include "MassWeightedFluidItems.hpp"
+#include "PointwiseFunctions/Hydro/MassWeightedFluidItems.hpp"
+#include "PointwiseFunctions/Hydro/MassWeightedFluidItems.tpp"
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/EagerMath/DotProduct.hpp"
@@ -10,6 +11,7 @@
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeString.hpp"
 #include "Utilities/MakeWithValue.hpp"
 
@@ -33,17 +35,6 @@ std::string name(const HalfPlaneIntegralMask mask){
 }
 
 template <typename DataType, size_t Dim, typename Frame>
-void u_lower_t(const gsl::not_null<Scalar<DataType>*> result,
-               const Scalar<DataType>& lorentz_factor,
-               const tnsr::I<DataType, Dim, Frame>& spatial_velocity,
-               const tnsr::ii<DataType, Dim, Frame>& spatial_metric,
-               const Scalar<DataType>& lapse,
-               const tnsr::I<DataType, Dim, Frame>& shift) {
-  dot_product(result, spatial_velocity, shift, spatial_metric);
-  result->get() = get(lorentz_factor) * (get(lapse) * (-1.0) + result->get());
-}
-
-template <typename DataType, size_t Dim, typename Frame>
 Scalar<DataType> u_lower_t(
     const Scalar<DataType>& lorentz_factor,
     const tnsr::I<DataType, Dim, Frame>& spatial_velocity,
@@ -53,14 +44,6 @@ Scalar<DataType> u_lower_t(
   u_lower_t(make_not_null(&result), lorentz_factor, spatial_velocity,
             spatial_metric, lapse, shift);
   return result;
-}
-
-template <typename DataType>
-void mass_weighted_internal_energy(
-    const gsl::not_null<Scalar<DataType>*> result,
-    const Scalar<DataType>& tilde_d,
-    const Scalar<DataType>& specific_internal_energy) {
-  result->get() = get(tilde_d) * get(specific_internal_energy);
 }
 
 template <typename DataType>
@@ -74,30 +57,11 @@ Scalar<DataType> mass_weighted_internal_energy(
 }
 
 template <typename DataType>
-void mass_weighted_kinetic_energy(const gsl::not_null<Scalar<DataType>*> result,
-                                  const Scalar<DataType>& tilde_d,
-                                  const Scalar<DataType>& lorentz_factor) {
-  result->get() = get(tilde_d) * (get(lorentz_factor) - 1.0);
-}
-
-template <typename DataType>
 Scalar<DataType> mass_weighted_kinetic_energy(
     const Scalar<DataType>& tilde_d, const Scalar<DataType>& lorentz_factor) {
   auto result = make_with_value<Scalar<DataType>>(tilde_d, 0.0);
   mass_weighted_kinetic_energy(make_not_null(&result), tilde_d, lorentz_factor);
   return result;
-}
-
-template <typename DataType, size_t Dim, typename Fr>
-void tilde_d_unbound_ut_criterion(
-    const gsl::not_null<Scalar<DataType>*> result,
-    const Scalar<DataType>& tilde_d, const Scalar<DataType>& lorentz_factor,
-    const tnsr::I<DataType, Dim, Fr>& spatial_velocity,
-    const tnsr::ii<DataType, Dim, Fr>& spatial_metric,
-    const Scalar<DataType>& lapse, const tnsr::I<DataType, Dim, Fr>& shift) {
-  u_lower_t(result, lorentz_factor, spatial_velocity, spatial_metric, lapse,
-            shift);
-  result->get() = get(tilde_d) * step_function(-1.0 - result->get());
 }
 
 template <typename DataType, size_t Dim, typename Fr>
@@ -174,25 +138,14 @@ tnsr::I<DataType, Dim, Fr> mass_weighted_coords(
   return result;
 }
 
+// The functions that return their result on the host only, whose
+// instantiations would instantiate the device functions they call with
+// DataVectors in the device compilation
+#ifndef SPECTRE_KOKKOS_DEVICE_PASS
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
 
 #define INSTANTIATE(_, data)                                                   \
-  template void u_lower_t(                                                     \
-      const gsl::not_null<Scalar<DataVector>*> result,                         \
-      const Scalar<DataVector>& lorentz_factor,                                \
-      const tnsr::I<DataVector, DIM(data), Frame::Inertial>& spatial_velocity, \
-      const tnsr::ii<DataVector, DIM(data), Frame::Inertial>& spatial_metric,  \
-      const Scalar<DataVector>& lapse,                                         \
-      const tnsr::I<DataVector, DIM(data), Frame::Inertial>& shift);           \
   template Scalar<DataVector> u_lower_t(                                       \
-      const Scalar<DataVector>& lorentz_factor,                                \
-      const tnsr::I<DataVector, DIM(data), Frame::Inertial>& spatial_velocity, \
-      const tnsr::ii<DataVector, DIM(data), Frame::Inertial>& spatial_metric,  \
-      const Scalar<DataVector>& lapse,                                         \
-      const tnsr::I<DataVector, DIM(data), Frame::Inertial>& shift);           \
-  template void tilde_d_unbound_ut_criterion(                                  \
-      const gsl::not_null<Scalar<DataVector>*> result,                         \
-      const Scalar<DataVector>& tilde_d,                                       \
       const Scalar<DataVector>& lorentz_factor,                                \
       const tnsr::I<DataVector, DIM(data), Frame::Inertial>& spatial_velocity, \
       const tnsr::ii<DataVector, DIM(data), Frame::Inertial>& spatial_metric,  \
@@ -258,19 +211,57 @@ GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3),
 #undef OBJECT
 #undef INSTANTIATE
 
-template void mass_weighted_internal_energy(
-    const gsl::not_null<Scalar<DataVector>*> result,
-    const Scalar<DataVector>& tilde_d,
-    const Scalar<DataVector>& specific_internal_energy);
 template Scalar<DataVector> mass_weighted_internal_energy(
     const Scalar<DataVector>& tilde_d,
     const Scalar<DataVector>& specific_internal_energy);
-template void mass_weighted_kinetic_energy(
-    const gsl::not_null<Scalar<DataVector>*> result,
-    const Scalar<DataVector>& tilde_d,
-    const Scalar<DataVector>& lorentz_factor);
 template Scalar<DataVector> mass_weighted_kinetic_energy(
     const Scalar<DataVector>& tilde_d,
     const Scalar<DataVector>& lorentz_factor);
+#endif  // SPECTRE_KOKKOS_DEVICE_PASS
 
+#define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
+#define DTYPE(data) BOOST_PP_TUPLE_ELEM(1, data)
+
+#define INSTANTIATE(_, data)                                                   \
+  template void u_lower_t(                                                     \
+      const gsl::not_null<Scalar<DTYPE(data)>*> result,                        \
+      const Scalar<DTYPE(data)>& lorentz_factor,                               \
+      const tnsr::I<DTYPE(data), DIM(data), Frame::Inertial>&                  \
+          spatial_velocity,                                                    \
+      const tnsr::ii<DTYPE(data), DIM(data), Frame::Inertial>& spatial_metric, \
+      const Scalar<DTYPE(data)>& lapse,                                        \
+      const tnsr::I<DTYPE(data), DIM(data), Frame::Inertial>& shift);          \
+  template void tilde_d_unbound_ut_criterion(                                  \
+      const gsl::not_null<Scalar<DTYPE(data)>*> result,                        \
+      const Scalar<DTYPE(data)>& tilde_d,                                      \
+      const Scalar<DTYPE(data)>& lorentz_factor,                               \
+      const tnsr::I<DTYPE(data), DIM(data), Frame::Inertial>&                  \
+          spatial_velocity,                                                    \
+      const tnsr::ii<DTYPE(data), DIM(data), Frame::Inertial>& spatial_metric, \
+      const Scalar<DTYPE(data)>& lapse,                                        \
+      const tnsr::I<DTYPE(data), DIM(data), Frame::Inertial>& shift);
+
+GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3),
+                        SPECTRE_DEVICE_AND_HOST_TYPES((double),
+                                                      (double, DataVector)))
+
+#undef DIM
+#undef INSTANTIATE
+
+#define INSTANTIATE(_, data)                                \
+  template void mass_weighted_internal_energy(              \
+      const gsl::not_null<Scalar<DTYPE(data)>*> result,     \
+      const Scalar<DTYPE(data)>& tilde_d,                   \
+      const Scalar<DTYPE(data)>& specific_internal_energy); \
+  template void mass_weighted_kinetic_energy(               \
+      const gsl::not_null<Scalar<DTYPE(data)>*> result,     \
+      const Scalar<DTYPE(data)>& tilde_d,                   \
+      const Scalar<DTYPE(data)>& lorentz_factor);
+
+GENERATE_INSTANTIATIONS(INSTANTIATE, (0),
+                        SPECTRE_DEVICE_AND_HOST_TYPES((double),
+                                                      (double, DataVector)))
+
+#undef DTYPE
+#undef INSTANTIATE
 }  // namespace hydro

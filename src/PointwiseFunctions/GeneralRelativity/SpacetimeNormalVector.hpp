@@ -9,7 +9,9 @@
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 /// \ingroup GeneralRelativityGroup
 /// Holds functions related to general relativity.
@@ -32,7 +34,7 @@ tnsr::A<DataType, SpatialDim, Frame> spacetime_normal_vector(
     const tnsr::I<DataType, SpatialDim, Frame>& shift);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void spacetime_normal_vector(
+KOKKOS_FUNCTION void spacetime_normal_vector(
     gsl::not_null<tnsr::A<DataType, SpatialDim, Frame>*>
         spacetime_normal_vector,
     const Scalar<DataType>& lapse,
@@ -55,10 +57,15 @@ struct SpacetimeNormalVectorCompute
 
   using return_type = tnsr::A<DataType, SpatialDim, Frame>;
 
-  static constexpr auto function = static_cast<void (*)(
-      gsl::not_null<tnsr::A<DataType, SpatialDim, Frame>*>,
-      const Scalar<DataType>&, const tnsr::I<DataType, SpatialDim, Frame>&)>(
-      &spacetime_normal_vector<DataType, SpatialDim, Frame>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<tnsr::A<DataTypeT, SpatialDim, Frame>*> result,
+      const Scalar<DataTypeT>& lapse,
+      const tnsr::I<DataTypeT, SpatialDim, Frame>& shift) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    spacetime_normal_vector<DataTypeT, SpatialDim, Frame>(result, lapse, shift);
+  }
 
   using base = SpacetimeNormalVector<DataType, SpatialDim, Frame>;
 };

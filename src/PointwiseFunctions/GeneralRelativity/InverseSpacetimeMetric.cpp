@@ -2,6 +2,7 @@
 // See LICENSE.txt for details.
 
 #include "PointwiseFunctions/GeneralRelativity/InverseSpacetimeMetric.hpp"
+#include "PointwiseFunctions/GeneralRelativity/InverseSpacetimeMetric.tpp"
 
 #include <cmath>
 
@@ -10,43 +11,8 @@
 #include "Utilities/ContainerHelpers.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeWithValue.hpp"
-
-namespace gr {
-template <typename DataType, size_t Dim, typename Frame>
-tnsr::AA<DataType, Dim, Frame> inverse_spacetime_metric(
-    const Scalar<DataType>& lapse, const tnsr::I<DataType, Dim, Frame>& shift,
-    const tnsr::II<DataType, Dim, Frame>& inverse_spatial_metric) {
-  tnsr::AA<DataType, Dim, Frame> inv_spacetime_metric{};
-  inverse_spacetime_metric(make_not_null(&inv_spacetime_metric), lapse, shift,
-                           inverse_spatial_metric);
-  return inv_spacetime_metric;
-}
-
-template <typename DataType, size_t Dim, typename Frame>
-void inverse_spacetime_metric(
-    const gsl::not_null<tnsr::AA<DataType, Dim, Frame>*>
-        inverse_spacetime_metric,
-    const Scalar<DataType>& lapse, const tnsr::I<DataType, Dim, Frame>& shift,
-    const tnsr::II<DataType, Dim, Frame>& inverse_spatial_metric) {
-  get<0, 0>(*inverse_spacetime_metric) = -1.0 / (get(lapse) * get(lapse));
-
-  const auto& minus_one_over_lapse_sqrd = get<0, 0>(*inverse_spacetime_metric);
-
-  for (size_t i = 0; i < Dim; ++i) {
-    inverse_spacetime_metric->get(0, i + 1) =
-        -shift.get(i) * minus_one_over_lapse_sqrd;
-  }
-
-  for (size_t i = 0; i < Dim; ++i) {
-    for (size_t j = i; j < Dim; ++j) {
-      inverse_spacetime_metric->get(i + 1, j + 1) =
-          inverse_spatial_metric.get(i, j) +
-          shift.get(i) * shift.get(j) * minus_one_over_lapse_sqrd;
-    }
-  }
-}
-}  // namespace gr
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
 #define DTYPE(data) BOOST_PP_TUPLE_ELEM(1, data)
@@ -67,7 +33,9 @@ void inverse_spacetime_metric(
       const tnsr::II<DTYPE(data), DIM(data), FRAME(data)>&                \
           inverse_spatial_metric);
 
-GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3), (double, DataVector),
+GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3),
+                        SPECTRE_DEVICE_AND_HOST_TYPES((double),
+                                                      (double, DataVector)),
                         (Frame::Grid, Frame::Distorted, Frame::Inertial))
 
 #undef DIM

@@ -2,6 +2,7 @@
 // See LICENSE.txt for details.
 
 #include "PointwiseFunctions/GeneralRelativity/SpacetimeNormalVector.hpp"
+#include "PointwiseFunctions/GeneralRelativity/SpacetimeNormalVector.tpp"
 
 #include <cmath>
 
@@ -10,33 +11,8 @@
 #include "Utilities/ContainerHelpers.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeWithValue.hpp"
-
-namespace gr {
-template <typename DataType, size_t SpatialDim, typename Frame>
-tnsr::A<DataType, SpatialDim, Frame> spacetime_normal_vector(
-    const Scalar<DataType>& lapse,
-    const tnsr::I<DataType, SpatialDim, Frame>& shift) {
-  tnsr::A<DataType, SpatialDim, Frame> local_spacetime_normal_vector{
-      get_size(get(lapse))};
-  spacetime_normal_vector(make_not_null(&local_spacetime_normal_vector), lapse,
-                          shift);
-  return local_spacetime_normal_vector;
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-void spacetime_normal_vector(
-    const gsl::not_null<tnsr::A<DataType, SpatialDim, Frame>*>
-        spacetime_normal_vector,
-    const Scalar<DataType>& lapse,
-    const tnsr::I<DataType, SpatialDim, Frame>& shift) {
-  get<0>(*spacetime_normal_vector) = 1. / get(lapse);
-  for (size_t i = 0; i < SpatialDim; i++) {
-    spacetime_normal_vector->get(i + 1) =
-        -shift.get(i) * get<0>(*spacetime_normal_vector);
-  }
-}
-}  // namespace gr
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
 #define DTYPE(data) BOOST_PP_TUPLE_ELEM(1, data)
@@ -53,7 +29,9 @@ void spacetime_normal_vector(
       const Scalar<DTYPE(data)>& lapse,                                  \
       const tnsr::I<DTYPE(data), DIM(data), FRAME(data)>& shift);
 
-GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3), (double, DataVector),
+GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3),
+                        SPECTRE_DEVICE_AND_HOST_TYPES((double),
+                                                      (double, DataVector)),
                         (Frame::Grid, Frame::Inertial))
 
 #undef DIM

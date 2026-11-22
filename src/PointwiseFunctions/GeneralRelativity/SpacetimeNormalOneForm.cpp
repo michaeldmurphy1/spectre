@@ -2,6 +2,7 @@
 // See LICENSE.txt for details.
 
 #include "PointwiseFunctions/GeneralRelativity/SpacetimeNormalOneForm.hpp"
+#include "PointwiseFunctions/GeneralRelativity/SpacetimeNormalOneForm.tpp"
 
 #include <cmath>
 
@@ -9,29 +10,9 @@
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/SetNumberOfGridPoints.hpp"
-
-namespace gr {
-template <typename DataType, size_t SpatialDim, typename Frame>
-void spacetime_normal_one_form(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> normal_one_form,
-    const Scalar<DataType>& lapse) {
-  set_number_of_grid_points(normal_one_form, lapse);
-  for (auto& component : *normal_one_form) {
-    component = 0.0;
-  }
-  get<0>(*normal_one_form) = -get(lapse);
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-tnsr::a<DataType, SpatialDim, Frame> spacetime_normal_one_form(
-    const Scalar<DataType>& lapse) {
-  tnsr::a<DataType, SpatialDim, Frame> normal_one_form{};
-  spacetime_normal_one_form(make_not_null(&normal_one_form), lapse);
-  return normal_one_form;
-}
-}  // namespace gr
 
 #define DIM(data) BOOST_PP_TUPLE_ELEM(0, data)
 #define DTYPE(data) BOOST_PP_TUPLE_ELEM(1, data)
@@ -45,7 +26,9 @@ tnsr::a<DataType, SpatialDim, Frame> spacetime_normal_one_form(
           normal_one_form,                                               \
       const Scalar<DTYPE(data)>& lapse);
 
-GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3), (double, DataVector),
+GENERATE_INSTANTIATIONS(INSTANTIATE, (1, 2, 3),
+                        SPECTRE_DEVICE_AND_HOST_TYPES((double),
+                                                      (double, DataVector)),
                         (Frame::Grid, Frame::Inertial))
 
 #undef DIM

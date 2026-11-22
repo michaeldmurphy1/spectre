@@ -9,7 +9,9 @@
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 /// \ingroup GeneralRelativityGroup
 /// Holds functions related to general relativity.
@@ -33,9 +35,10 @@ Scalar<DataType> lapse(
     const tnsr::aa<DataType, SpatialDim, Frame>& spacetime_metric);
 
 template <typename DataType, size_t SpatialDim, typename Frame>
-void lapse(gsl::not_null<Scalar<DataType>*> lapse,
-           const tnsr::I<DataType, SpatialDim, Frame>& shift,
-           const tnsr::aa<DataType, SpatialDim, Frame>& spacetime_metric);
+KOKKOS_FUNCTION void lapse(
+    gsl::not_null<Scalar<DataType>*> lapse,
+    const tnsr::I<DataType, SpatialDim, Frame>& shift,
+    const tnsr::aa<DataType, SpatialDim, Frame>& spacetime_metric);
 /// @}
 
 namespace Tags {
@@ -53,11 +56,15 @@ struct LapseCompute : Lapse<DataType>, db::ComputeTag {
 
   using return_type = Scalar<DataType>;
 
-  static constexpr auto function =
-      static_cast<void (*)(const gsl::not_null<Scalar<DataType>*> lapse,
-                           const tnsr::I<DataType, SpatialDim, Frame>&,
-                           const tnsr::aa<DataType, SpatialDim, Frame>&)>(
-          &lapse<DataType, SpatialDim, Frame>);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataTypeT>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<Scalar<DataTypeT>*> result,
+      const tnsr::I<DataTypeT, SpatialDim, Frame>& shift,
+      const tnsr::aa<DataTypeT, SpatialDim, Frame>& spacetime_metric) {
+    ASSERT_DEVICE_CAPABLE(DataTypeT);
+    lapse<DataTypeT, SpatialDim, Frame>(result, shift, spacetime_metric);
+  }
 
   using base = Lapse<DataType>;
 };

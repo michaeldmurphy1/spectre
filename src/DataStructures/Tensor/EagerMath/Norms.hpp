@@ -3,16 +3,22 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataBox/TagName.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/Functional.hpp"
 #include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
 #include "Utilities/Numeric.hpp"
 #include "Utilities/TMPL.hpp"
+#include "Utilities/TypeTraits/IsDeviceCapable.hpp"
 
 namespace L2Norm_detail {
 template <typename DataType, typename Symm, typename IndexList>
@@ -27,6 +33,22 @@ Scalar<DataType> pointwise_l2_norm_square(
         tensor.multiplicity(tensor_element) * square(*tensor_element);
   }
   return pointwise_l2_normsq;
+}
+
+// The square of the norm at a point, for data types that can be used on the
+// device (the multiplicities are read in constant expressions, since the
+// arrays they come from don't exist in device code)
+template <typename TensorType, size_t... StorageIndices>
+KOKKOS_FUNCTION typename TensorType::type pointwise_l2_norm_square_at_point(
+    const TensorType& tensor, std::index_sequence<StorageIndices...> /*meta*/) {
+  typename TensorType::type result = 0.0;
+  ((result +=
+    static_cast<double>(
+        std::integral_constant<size_t, TensorType::structure::multiplicity(
+                                           StorageIndices)>::value) *
+    square(tensor[StorageIndices])),
+   ...);
+  return result;
 }
 }  // namespace L2Norm_detail
 
@@ -56,9 +78,19 @@ Scalar<DataType> pointwise_l2_norm(
       sqrt(get(L2Norm_detail::pointwise_l2_norm_square(tensor)))};
 }
 template <typename DataType, typename Symm, typename IndexList>
+  requires(not tt::is_device_capable_v<DataType>)
 void pointwise_l2_norm(const gsl::not_null<Scalar<DataType>*> norm,
                        const Tensor<DataType, Symm, IndexList>& tensor) {
   get(*norm) = sqrt(get(L2Norm_detail::pointwise_l2_norm_square(tensor)));
+}
+template <typename DataType, typename Symm, typename IndexList>
+  requires tt::is_device_capable_v<DataType>
+KOKKOS_FUNCTION void pointwise_l2_norm(
+    const gsl::not_null<Scalar<DataType>*> norm,
+    const Tensor<DataType, Symm, IndexList>& tensor) {
+  get(*norm) = sqrt(L2Norm_detail::pointwise_l2_norm_square_at_point(
+      tensor,
+      std::make_index_sequence<Tensor<DataType, Symm, IndexList>::size()>{}));
 }
 /// @}
 
@@ -122,9 +154,14 @@ template <typename Tag>
 struct PointwiseL2NormCompute : PointwiseL2Norm<Tag>, db::ComputeTag {
   using base = PointwiseL2Norm<Tag>;
   using return_type = typename base::type;
-  static constexpr auto function =
-      static_cast<void (*)(const gsl::not_null<return_type*>,
-                           const typename Tag::type&)>(&pointwise_l2_norm);
+  SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+  template <typename DataType, typename Symm, typename IndexList>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<Scalar<DataType>*> result,
+      const Tensor<DataType, Symm, IndexList>& tensor) {
+    ASSERT_DEVICE_CAPABLE(DataType);
+    pointwise_l2_norm(result, tensor);
+  }
   using argument_tags = tmpl::list<Tag>;
 };
 

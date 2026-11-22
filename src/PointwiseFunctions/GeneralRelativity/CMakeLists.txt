@@ -59,9 +59,11 @@ spectre_target_headers(
   HamiltonianConstraint.hpp
   InterfaceNullNormal.hpp
   InverseSpacetimeMetric.hpp
+  InverseSpacetimeMetric.tpp
   KerrHorizon.hpp
   KerrSchildCoords.hpp
   Lapse.hpp
+  Lapse.tpp
   MomentumConstraint.hpp
   ProjectionOperators.hpp
   Ricci.hpp
@@ -70,10 +72,13 @@ spectre_target_headers(
   Psi4Real.hpp
   QuadraticCurvatureScalars.hpp
   Shift.hpp
+  Shift.tpp
   SpacetimeDerivativeOfGothG.hpp
   SpacetimeMetric.hpp
   SpacetimeNormalOneForm.hpp
+  SpacetimeNormalOneForm.tpp
   SpacetimeNormalVector.hpp
+  SpacetimeNormalVector.tpp
   SpatialMetric.hpp
   Tags.hpp
   TagsDeclarations.hpp

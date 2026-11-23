@@ -35,6 +35,7 @@ spectre_target_headers(
   ConservativeFromPrimitive.hpp
   ConservativeFromPrimitive.tpp
   FixConservatives.hpp
+  FixConservatives.tpp
   FixConservativesOnDeviceKokkos.hpp
   FixConservativesOnDeviceKokkos.tpp
   Flattener.hpp

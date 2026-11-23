@@ -516,9 +516,14 @@ evaluated on the device, the patch evaluates them for all elements on the
 device at the time of the observation, from the state or the dense output. A
 kernel reduces each component of each element to the values all norms are
 computed from (`Events::NormStatistics`), and only these are copied to the
-host. Each element then contributes them to the observer as the event would on
-its DataBox (`Events::ObserveNorms::contribute_statistics`), so the output and
-the observer registration are the same. Other events run on the DataBoxes of
+host. The patch combines those of its elements that contribute to the same
+subfile (`Events::combine`) and contributes them to the observer once, from the
+first of these elements, which is the only one registered for the event
+(`evolution::patches::Actions::RegisterWithObservers`). The output is that of
+the event on the DataBoxes of the elements, up to the order of the sums.
+Contributing for each element instead cost about 20 µs per element and event
+on the host, almost 90% of an observation (44 of 50 ms for the norms of the
+BNS input on 512 elements, Nov 2026). Other events run on the DataBoxes of
 the elements as above; at registration patch 0 prints which `ObserveNorms` run
 on the device and which tensors keep the others on the host.
 
@@ -573,7 +578,8 @@ different design.
   `evolution::patches::SlabSizeReduction`: both components
   reduce to the first patch, which combines the results and sends them to both.
   Observations don't need this, since the observers already collect the
-  contributions of each element by its `ElementId`.
+  contributions of the elements (or of the first element of a patch for the
+  events it observes on the device) by their `ElementId`.
 - Each Charm++ processing element has its own execution space instance (see
   `Parallel::device_execution_space`). Patches enqueue their kernels on it and
   fence it only before host code reads device data, e.g. before sending

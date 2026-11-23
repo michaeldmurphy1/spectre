@@ -359,6 +359,12 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
    * `section_observation_key` is the key of the section of the element (see
    * `observers::get_section_observation_key`), `number_of_points` the number
    * of grid points of the element and `local_volume` its volume.
+   *
+   * The statistics can also be those of several elements that contribute to
+   * the same subfile (see `subfile_path_for_element`), combined with
+   * `Events::combine`, with their total number of grid points and volume. Then
+   * `array_index` contributes for all of them, so only it may be registered
+   * with the observer for this event.
    */
   template <typename Metavariables, size_t VolumeDim,
             typename ParallelComponent>
@@ -370,6 +376,13 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
       const std::optional<std::string>& section_observation_key,
       const Domain<VolumeDim>& domain, size_t number_of_points,
       double local_volume, const NormStatisticsOfTensors& statistics) const;
+
+  /// The path of the subfile (without extension) that the element contributes
+  /// to, or `std::nullopt` if the element is not observed.
+  template <size_t Dim>
+  std::optional<std::string> subfile_path_for_element(
+      const std::optional<std::string>& section_observation_key,
+      const Domain<Dim>& domain, const ElementId<Dim>& element_id) const;
 
   using observation_registration_tags = tmpl::list<::Tags::DataBox>;
 
@@ -407,13 +420,6 @@ class ObserveNorms<tmpl::list<ObservableTensorTags...>,
   void pup(PUP::er& p) override;
 
  private:
-  // The path of the subfile (without extension) that the element contributes
-  // to, or `std::nullopt` if the element is not observed.
-  template <size_t Dim>
-  std::optional<std::string> subfile_path_for_element(
-      const std::optional<std::string>& section_observation_key,
-      const Domain<Dim>& domain, const ElementId<Dim>& element_id) const;
-
   // Send the norms of an element to the observer
   template <typename Metavariables, size_t VolumeDim,
             typename ParallelComponent>

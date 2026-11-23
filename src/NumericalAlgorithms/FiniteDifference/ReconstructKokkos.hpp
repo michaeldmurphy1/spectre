@@ -105,24 +105,26 @@ void reconstruct(
         Kokkos::RangePolicy<Kokkos::DefaultExecutionSpace,
                             Kokkos::IndexType<int>>(exec, 0, points.size()),
         KOKKOS_LAMBDA(const int index) {
-          auto [element, cell] = points(index);
-          cell[dim] -= 1;
-          const double* q =
-              &padded_volume_vars(element, 0, cell[2] + offsets[2],
-                                  cell[1] + offsets[1], cell[0] + offsets[0]);
+          const auto [element, face] = points(index);
+          // The cell below face `face` in direction `dim`, from -1 to
+          // `number_of_cells`. Only constant indices into `face`: indexing it
+          // with `dim` would keep it in local memory.
+          const int x = face[0] - (dim == 0 ? 1 : 0);
+          const int y = face[1] - (dim == 1 ? 1 : 0);
+          const int z = face[2] - (dim == 2 ? 1 : 0);
+          const int cell_in_dim = dim == 0 ? x : (dim == 1 ? y : z);
+          const double* q = &padded_volume_vars(element, 0, z + offsets[2],
+                                                y + offsets[1], x + offsets[0]);
           // The value on the lower face of the cell is on the upper side of
           // face `cell`, and the value on the upper face of the cell is on the
           // lower side of face `cell + 1`
-          const bool has_lower_face = cell[dim] >= 0;
-          const bool has_upper_face = cell[dim] < number_of_cells;
+          const bool has_lower_face = cell_in_dim >= 0;
+          const bool has_upper_face = cell_in_dim < number_of_cells;
           double* upper_side_value =
-              has_lower_face
-                  ? &upper_side(element, 0, cell[2], cell[1], cell[0])
-                  : nullptr;
-          cell[dim] += 1;
+              has_lower_face ? &upper_side(element, 0, z, y, x) : nullptr;
           double* lower_side_value =
               has_upper_face
-                  ? &lower_side(element, 0, cell[2], cell[1], cell[0])
+                  ? &lower_side(element, 0, face[2], face[1], face[0])
                   : nullptr;
           for (size_t var = 0; var < number_of_variables; ++var) {
             const auto lower_and_upper_values =

@@ -117,7 +117,7 @@ struct PrimitiveFromConservativeAtGridPoint {
       Tags::PrimitiveFromConservativeOptions,
       ::Tags::PerElement<WholeGridBelowCutoff>>;
 
-  KOKKOS_FUNCTION static PointwiseStatus apply(
+  KOKKOS_FORCEINLINE_FUNCTION static PointwiseStatus apply(
       const gsl::not_null<Scalar<double>*> rest_mass_density,
       const gsl::not_null<Scalar<double>*> electron_fraction,
       const gsl::not_null<Scalar<double>*> specific_internal_energy,

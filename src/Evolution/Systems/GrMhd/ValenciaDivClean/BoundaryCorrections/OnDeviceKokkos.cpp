@@ -603,7 +603,7 @@ struct RusanovPackageDataFromReconstruction {
       from_reconstruction_extra_tags<FixAtmosphere, HasMeshVelocity>>;
 
   template <typename... Args>
-  KOKKOS_FUNCTION static PointwiseStatus apply(
+  KOKKOS_FORCEINLINE_FUNCTION static PointwiseStatus apply(
       const gsl::not_null<Scalar<double>*> packaged_tilde_d,
       const gsl::not_null<Scalar<double>*> packaged_tilde_ye,
       const gsl::not_null<Scalar<double>*> packaged_tilde_tau,
@@ -669,7 +669,7 @@ struct HllPackageDataFromReconstruction {
       from_reconstruction_extra_tags<FixAtmosphere, HasMeshVelocity>>;
 
   template <typename... Args>
-  KOKKOS_FUNCTION static PointwiseStatus apply(
+  KOKKOS_FORCEINLINE_FUNCTION static PointwiseStatus apply(
       const gsl::not_null<Scalar<double>*> packaged_tilde_d,
       const gsl::not_null<Scalar<double>*> packaged_tilde_ye,
       const gsl::not_null<Scalar<double>*> packaged_tilde_tau,

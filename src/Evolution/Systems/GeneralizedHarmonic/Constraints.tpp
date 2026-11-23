@@ -24,913 +24,139 @@
 #endif  // SPECTRE_KOKKOS
 
 namespace gh::Constraints_detail {
-// Functions to compute generalized-harmonic 2-index constraint, where
-// function arguments are in the order that each quantity first
-// appears in the corresponding term in Eq. (44) of
-// https://arXiv.org/abs/gr-qc/0512093v3
+// Sets `result` to zero, with the number of grid points of `pattern`
+template <typename T, typename Pattern>
+KOKKOS_FUNCTION void set_to_zero(const gsl::not_null<T*> result,
+                                 const Pattern& pattern) {
+  set_number_of_grid_points(result, pattern);
+  for (auto& component : *result) {
+    component = 0.0;
+  }
+}
+
+// Contractions of the variables that the terms of the two-index and F
+// constraints (Eqs. (43) and (44) of https://arXiv.org/abs/gr-qc/0512093v3)
+// share. With them each term is a few small contractions instead of nested
+// loops over all its indices (up to 9216 iterations per component for a term
+// of the F constraint).
 template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_1_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
+struct Contractions {
+  // g^{cd} \partial_i \Phi_{jcd}
+  tnsr::ij<DataType, SpatialDim, Frame> trace_d_phi{};
+  // g^{cd} \partial_i \Pi_{cd}
+  tnsr::i<DataType, SpatialDim, Frame> trace_d_pi{};
+  // g^{cd} \Phi_{icd} and \gamma^{ij} g^{cd} \Phi_{jcd}
+  tnsr::i<DataType, SpatialDim, Frame> trace_phi{};
+  tnsr::I<DataType, SpatialDim, Frame> trace_phi_up{};
+  // g^{cd} C_{icd} of the three-index constraint
+  tnsr::i<DataType, SpatialDim, Frame> trace_three_index_constraint{};
+  // n^c \Phi_{ica}, n^c n^d \Phi_{icd} and g^{ab} n^c \Phi_{icb}
+  tnsr::ia<DataType, SpatialDim, Frame> phi_n{};
+  tnsr::i<DataType, SpatialDim, Frame> phi_nn{};
+  tnsr::iA<DataType, SpatialDim, Frame> phi_n_up{};
+  // g^{ac} g^{bd} \Phi_{icd} and \Phi_{icd} g^{ce} g^{df} \Phi_{jef}
+  tnsr::iAA<DataType, SpatialDim, Frame> phi_up{};
+  tnsr::ii<DataType, SpatialDim, Frame> phi_phi{};
+  // \gamma^{ij} \Phi_{jab}
+  tnsr::Iaa<DataType, SpatialDim, Frame> phi_spatial_up{};
+  // \Pi_{ab} n^b, g^{ab} \Pi_{ab} and g^{ac} g^{bd} \Pi_{cd}
+  tnsr::a<DataType, SpatialDim, Frame> pi_n{};
+  Scalar<DataType> trace_pi{};
+  tnsr::AA<DataType, SpatialDim, Frame> pi_up{};
+};
+
+template <typename DataType, size_t SpatialDim, typename Frame>
+KOKKOS_FUNCTION void compute_contractions(
+    const gsl::not_null<Contractions<DataType, SpatialDim, Frame>*> result,
+    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
     const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::ijaa<DataType, SpatialDim, Frame>& d_phi) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      for (size_t j = 0; j < SpatialDim; ++j) {
-        for (size_t k = 0; k < SpatialDim; ++k) {
-          constraint->get(i, a) +=
-              inverse_spatial_metric.get(j, k) * d_phi.get(j, i, k + 1, a);
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_2_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
     const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::ijaa<DataType, SpatialDim, Frame>& d_phi) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          if (a > 0) {
-            constraint->get(i, a) -= 0.5 * inverse_spacetime_metric.get(c, d) *
-                                     d_phi.get(a - 1, i, c, d);
-          }
-          for (size_t j = 0; j < SpatialDim; ++j) {
-            constraint->get(i, a) -= 0.5 * spacetime_normal_vector.get(j + 1) *
-                                     spacetime_normal_one_form.get(a) *
-                                     inverse_spacetime_metric.get(c, d) *
-                                     d_phi.get(j, i, c, d);
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_3_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& d_pi) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      for (size_t b = 0; b < SpatialDim + 1; ++b) {
-        constraint->get(i, a) +=
-            spacetime_normal_vector.get(b) * d_pi.get(i, b, a);
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_4_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& d_pi) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          constraint->get(i, a) -= 0.5 * spacetime_normal_one_form.get(a) *
-                                   inverse_spacetime_metric.get(c, d) *
-                                   d_pi.get(i, c, d);
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_5_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::ab<DataType, SpatialDim, Frame>& spacetime_d_gauge_function) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      constraint->get(i, a) += spacetime_d_gauge_function.get(i + 1, a);
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_6_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          for (size_t e = 0; e < SpatialDim + 1; ++e) {
-            for (size_t f = 0; f < SpatialDim + 1; ++f) {
-              if (a > 0) {
-                constraint->get(i, a) += 0.5 * phi.get(a - 1, c, d) *
-                                         phi.get(i, e, f) *
-                                         inverse_spacetime_metric.get(c, e) *
-                                         inverse_spacetime_metric.get(d, f);
-              }
-              for (size_t j = 0; j < SpatialDim; ++j) {
-                constraint->get(i, a) +=
-                    0.5 * spacetime_normal_vector.get(j + 1) *
-                    spacetime_normal_one_form.get(a) * phi.get(j, c, d) *
-                    phi.get(i, e, f) * inverse_spacetime_metric.get(c, e) *
-                    inverse_spacetime_metric.get(d, f);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_7_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      for (size_t j = 0; j < SpatialDim; ++j) {
-        for (size_t k = 0; k < SpatialDim; ++k) {
-          for (size_t c = 0; c < SpatialDim + 1; ++c) {
-            for (size_t d = 0; d < SpatialDim + 1; ++d) {
-              for (size_t e = 0; e < SpatialDim + 1; ++e) {
-                constraint->get(i, a) +=
-                    0.5 * inverse_spatial_metric.get(j, k) * phi.get(j, c, d) *
-                    phi.get(i, k + 1, e) * inverse_spacetime_metric.get(c, d) *
-                    spacetime_normal_vector.get(e) *
-                    spacetime_normal_one_form.get(a);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_8_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      for (size_t j = 0; j < SpatialDim; ++j) {
-        for (size_t k = 0; k < SpatialDim; ++k) {
-          for (size_t m = 0; m < SpatialDim; ++m) {
-            for (size_t n = 0; n < SpatialDim; ++n) {
-              constraint->get(i, a) -= inverse_spatial_metric.get(j, k) *
-                                       inverse_spatial_metric.get(m, n) *
-                                       phi.get(j, m + 1, a) *
-                                       phi.get(i, k + 1, n + 1);
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_9_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
     const tnsr::aa<DataType, SpatialDim, Frame>& pi,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      for (size_t b = 0; b < SpatialDim + 1; ++b) {
-        for (size_t c = 0; c < SpatialDim + 1; ++c) {
-          for (size_t d = 0; d < SpatialDim + 1; ++d) {
-            for (size_t e = 0; e < SpatialDim + 1; ++e) {
-              constraint->get(i, a) +=
-                  0.5 * phi.get(i, c, d) * pi.get(b, e) *
-                  spacetime_normal_one_form.get(a) *
-                  (inverse_spacetime_metric.get(c, b) *
-                       inverse_spacetime_metric.get(d, e) +
-                   0.5 * inverse_spacetime_metric.get(b, e) *
-                       spacetime_normal_vector.get(c) *
-                       spacetime_normal_vector.get(d));
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_10_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
     const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::aa<DataType, SpatialDim, Frame>& pi,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      for (size_t b = 0; b < SpatialDim + 1; ++b) {
-        for (size_t c = 0; c < SpatialDim + 1; ++c) {
-          for (size_t d = 0; d < SpatialDim + 1; ++d) {
-            constraint->get(i, a) -= phi.get(i, c, d) * pi.get(b, a) *
-                                     spacetime_normal_vector.get(c) *
-                                     (inverse_spacetime_metric.get(b, d) +
-                                      0.5 * spacetime_normal_vector.get(b) *
-                                          spacetime_normal_vector.get(d));
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void two_index_constraint_add_term_11_of_11(
-    const gsl::not_null<tnsr::ia<DataType, SpatialDim, Frame>*> constraint,
-    const Scalar<DataType>& gamma2,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
+    const tnsr::iaa<DataType, SpatialDim, Frame>& d_pi,
+    const tnsr::ijaa<DataType, SpatialDim, Frame>& d_phi,
     const tnsr::iaa<DataType, SpatialDim, Frame>& three_index_constraint) {
-  for (size_t i = 0; i < SpatialDim; ++i) {
-    for (size_t a = 0; a < SpatialDim + 1; ++a) {
-      for (size_t d = 0; d < SpatialDim + 1; ++d) {
-        for (size_t c = 0; c < SpatialDim + 1; ++c) {
-          constraint->get(i, a) += 0.5 * get(gamma2) *
-                                   spacetime_normal_one_form.get(a) *
-                                   inverse_spacetime_metric.get(c, d) *
-                                   three_index_constraint.get(i, c, d);
-        }
-        constraint->get(i, a) -= get(gamma2) * spacetime_normal_vector.get(d) *
-                                 three_index_constraint.get(i, a, d);
-      }
-    }
-  }
-}
+  set_to_zero(make_not_null(&result->trace_d_phi), pi);
+  set_to_zero(make_not_null(&result->trace_d_pi), pi);
+  set_to_zero(make_not_null(&result->trace_phi), pi);
+  set_to_zero(make_not_null(&result->trace_phi_up), pi);
+  set_to_zero(make_not_null(&result->trace_three_index_constraint), pi);
+  set_to_zero(make_not_null(&result->phi_n), pi);
+  set_to_zero(make_not_null(&result->phi_nn), pi);
+  set_to_zero(make_not_null(&result->phi_n_up), pi);
+  set_to_zero(make_not_null(&result->phi_up), pi);
+  set_to_zero(make_not_null(&result->phi_phi), pi);
+  set_to_zero(make_not_null(&result->phi_spatial_up), pi);
+  set_to_zero(make_not_null(&result->pi_n), pi);
+  set_to_zero(make_not_null(&result->trace_pi), pi);
+  set_to_zero(make_not_null(&result->pi_up), pi);
 
-// Functions to compute generalized-harmonic F constraint, where
-// function arguments are in the order that each quantity first
-// appears in the corresponding term in Eq. (43) of
-// https://arXiv.org/abs/gr-qc/0512093v3
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_1_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& d_pi) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        if (a > 0) {
-          constraint->get(a) +=
-              0.5 * inverse_spacetime_metric.get(b, c) * d_pi.get(a - 1, b, c);
-        }
-        for (size_t i = 0; i < SpatialDim; ++i) {
-          constraint->get(a) += 0.5 * spacetime_normal_vector.get(i + 1) *
-                                spacetime_normal_one_form.get(a) *
-                                inverse_spacetime_metric.get(b, c) *
-                                d_pi.get(i, b, c);
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_2_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& d_pi) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t i = 0; i < SpatialDim; ++i) {
-      for (size_t j = 0; j < SpatialDim; ++j) {
-        constraint->get(a) -=
-            inverse_spatial_metric.get(i, j) * d_pi.get(i, j + 1, a);
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_3_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::ijaa<DataType, SpatialDim, Frame>& d_phi) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t i = 0; i < SpatialDim; ++i) {
-      for (size_t j = 0; j < SpatialDim; ++j) {
-        for (size_t b = 0; b < SpatialDim + 1; ++b) {
-          constraint->get(a) -= inverse_spatial_metric.get(i, j) *
-                                spacetime_normal_vector.get(b) *
-                                d_phi.get(i, j, b, a);
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_4_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::ijaa<DataType, SpatialDim, Frame>& d_phi) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t i = 0; i < SpatialDim; ++i) {
-          for (size_t j = 0; j < SpatialDim; ++j) {
-            constraint->get(a) += 0.5 * spacetime_normal_one_form.get(a) *
-                                  inverse_spacetime_metric.get(b, c) *
-                                  inverse_spatial_metric.get(i, j) *
-                                  d_phi.get(i, j, b, c);
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_5_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::ab<DataType, SpatialDim, Frame>& spacetime_d_gauge_function) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t i = 0; i < SpatialDim; ++i) {
-      for (size_t j = 0; j < SpatialDim; ++j) {
-        constraint->get(a) += spacetime_normal_one_form.get(a) *
-                              inverse_spatial_metric.get(i, j) *
-                              spacetime_d_gauge_function.get(i + 1, j + 1);
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_6_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          for (size_t j = 0; j < SpatialDim; ++j) {
-            for (size_t k = 0; k < SpatialDim; ++k) {
-              if (a > 0) {
-                constraint->get(a) += phi.get(a - 1, j + 1, b) *
-                                      inverse_spatial_metric.get(j, k) *
-                                      phi.get(k, c, d) *
-                                      inverse_spacetime_metric.get(b, d) *
-                                      spacetime_normal_vector.get(c);
-              }
-              for (size_t i = 0; i < SpatialDim; ++i) {
-                constraint->get(a) +=
-                    spacetime_normal_one_form.get(a) *
-                    spacetime_normal_vector.get(i + 1) * phi.get(i, j + 1, b) *
-                    inverse_spatial_metric.get(j, k) * phi.get(k, c, d) *
-                    inverse_spacetime_metric.get(b, d) *
-                    spacetime_normal_vector.get(c);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_7_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          for (size_t j = 0; j < SpatialDim; ++j) {
-            for (size_t k = 0; k < SpatialDim; ++k) {
-              if (a > 0) {
-                constraint->get(a) -= 0.5 * phi.get(a - 1, j + 1, b) *
-                                      inverse_spatial_metric.get(j, k) *
-                                      phi.get(k, c, d) *
-                                      inverse_spacetime_metric.get(c, d) *
-                                      spacetime_normal_vector.get(b);
-              }
-              for (size_t i = 0; i < SpatialDim; ++i) {
-                constraint->get(a) -=
-                    0.5 * spacetime_normal_one_form.get(a) *
-                    spacetime_normal_vector.get(i + 1) * phi.get(i, j + 1, b) *
-                    inverse_spatial_metric.get(j, k) * phi.get(k, c, d) *
-                    inverse_spacetime_metric.get(c, d) *
-                    spacetime_normal_vector.get(b);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_8_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::ab<DataType, SpatialDim, Frame>& spacetime_d_gauge_function) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      if (a > 0) {
-        constraint->get(a) -= spacetime_normal_vector.get(b) *
-                              spacetime_d_gauge_function.get(a, b);
-      }
-      for (size_t i = 0; i < SpatialDim; ++i) {
-        constraint->get(a) -= spacetime_normal_one_form.get(a) *
-                              spacetime_normal_vector.get(i + 1) *
-                              spacetime_normal_vector.get(b) *
-                              spacetime_d_gauge_function.get(i + 1, b);
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_9_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          for (size_t i = 0; i < SpatialDim; ++i) {
-            for (size_t j = 0; j < SpatialDim; ++j) {
-              constraint->get(a) += inverse_spatial_metric.get(i, j) *
-                                    phi.get(i, c, d) * phi.get(j, b, a) *
-                                    inverse_spacetime_metric.get(b, c) *
-                                    spacetime_normal_vector.get(d);
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_10_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t c = 0; c < SpatialDim + 1; ++c) {
-      for (size_t d = 0; d < SpatialDim + 1; ++d) {
-        for (size_t i = 0; i < SpatialDim; ++i) {
-          for (size_t j = 0; j < SpatialDim; ++j) {
-            for (size_t m = 0; m < SpatialDim; ++m) {
-              for (size_t n = 0; n < SpatialDim; ++n) {
-                constraint->get(a) -=
-                    0.5 * spacetime_normal_one_form.get(a) *
-                    inverse_spatial_metric.get(i, j) *
-                    inverse_spatial_metric.get(m, n) * phi.get(i, m + 1, c) *
-                    phi.get(n, j + 1, d) * inverse_spacetime_metric.get(c, d);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_11_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          for (size_t e = 0; e < SpatialDim + 1; ++e) {
-            for (size_t i = 0; i < SpatialDim; ++i) {
-              for (size_t j = 0; j < SpatialDim; ++j) {
-                constraint->get(a) -= 0.25 * spacetime_normal_one_form.get(a) *
-                                      inverse_spatial_metric.get(i, j) *
-                                      phi.get(i, c, d) * phi.get(j, b, e) *
-                                      inverse_spacetime_metric.get(c, b) *
-                                      inverse_spacetime_metric.get(d, e);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_12_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::aa<DataType, SpatialDim, Frame>& pi,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          for (size_t e = 0; e < SpatialDim + 1; ++e) {
-            constraint->get(a) += 0.25 * spacetime_normal_one_form.get(a) *
-                                  pi.get(c, d) * pi.get(b, e) *
-                                  inverse_spacetime_metric.get(c, b) *
-                                  inverse_spacetime_metric.get(d, e);
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_13_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::a<DataType, SpatialDim, Frame>& gauge_function,
-    const tnsr::aa<DataType, SpatialDim, Frame>& pi) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t i = 0; i < SpatialDim; ++i) {
-      for (size_t j = 0; j < SpatialDim; ++j) {
-        constraint->get(a) -= inverse_spatial_metric.get(i, j) *
-                              gauge_function.get(i + 1) * pi.get(j + 1, a);
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_14_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::aa<DataType, SpatialDim, Frame>& pi) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t i = 0; i < SpatialDim; ++i) {
-        for (size_t j = 0; j < SpatialDim; ++j) {
-          constraint->get(a) -= spacetime_normal_vector.get(b) *
-                                inverse_spatial_metric.get(i, j) *
-                                pi.get(b, i + 1) * pi.get(j + 1, a);
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_15_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::aa<DataType, SpatialDim, Frame>& pi) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          for (size_t e = 0; e < SpatialDim + 1; ++e) {
-            if (a > 0) {
-              constraint->get(a) -=
-                  0.25 * phi.get(a - 1, c, d) * spacetime_normal_vector.get(c) *
-                  spacetime_normal_vector.get(d) * pi.get(b, e) *
-                  inverse_spacetime_metric.get(b, e);
-            }
-            for (size_t i = 0; i < SpatialDim; ++i) {
-              constraint->get(a) -=
-                  0.25 * spacetime_normal_one_form.get(a) *
-                  spacetime_normal_vector.get(i + 1) * phi.get(i, c, d) *
-                  spacetime_normal_vector.get(c) *
-                  spacetime_normal_vector.get(d) * pi.get(b, e) *
-                  inverse_spacetime_metric.get(b, e);
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_16_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::aa<DataType, SpatialDim, Frame>& pi,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          for (size_t e = 0; e < SpatialDim + 1; ++e) {
-            constraint->get(a) +=
-                0.5 * spacetime_normal_one_form.get(a) * pi.get(c, d) *
-                pi.get(b, e) * inverse_spacetime_metric.get(c, e) *
-                spacetime_normal_vector.get(d) * spacetime_normal_vector.get(b);
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_17_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::aa<DataType, SpatialDim, Frame>& pi) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          for (size_t e = 0; e < SpatialDim + 1; ++e) {
-            if (a > 0) {
-              constraint->get(a) += phi.get(a - 1, c, d) * pi.get(b, e) *
-                                    spacetime_normal_vector.get(c) *
-                                    spacetime_normal_vector.get(b) *
-                                    inverse_spacetime_metric.get(d, e);
-            }
-            for (size_t i = 0; i < SpatialDim; ++i) {
-              constraint->get(a) += spacetime_normal_one_form.get(a) *
-                                    spacetime_normal_vector.get(i + 1) *
-                                    phi.get(i, c, d) * pi.get(b, e) *
-                                    spacetime_normal_vector.get(c) *
-                                    spacetime_normal_vector.get(b) *
-                                    inverse_spacetime_metric.get(d, e);
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_18_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::aa<DataType, SpatialDim, Frame>& pi) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t e = 0; e < SpatialDim + 1; ++e) {
-        for (size_t i = 0; i < SpatialDim; ++i) {
-          for (size_t j = 0; j < SpatialDim; ++j) {
-            constraint->get(a) -=
-                inverse_spatial_metric.get(i, j) * phi.get(i, b, a) *
-                spacetime_normal_vector.get(b) * pi.get(j + 1, e) *
-                spacetime_normal_vector.get(e);
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_19_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::aa<DataType, SpatialDim, Frame>& pi) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t c = 0; c < SpatialDim + 1; ++c) {
-      for (size_t d = 0; d < SpatialDim + 1; ++d) {
-        for (size_t i = 0; i < SpatialDim; ++i) {
-          for (size_t j = 0; j < SpatialDim; ++j) {
-            constraint->get(a) -=
-                0.5 * inverse_spatial_metric.get(i, j) * phi.get(i, c, d) *
-                spacetime_normal_vector.get(c) *
-                spacetime_normal_vector.get(d) * pi.get(j + 1, a);
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_20_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::a<DataType, SpatialDim, Frame>& gauge_function,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t i = 0; i < SpatialDim; ++i) {
-        for (size_t j = 0; j < SpatialDim; ++j) {
-          constraint->get(a) -= inverse_spatial_metric.get(i, j) *
-                                gauge_function.get(i + 1) * phi.get(j, b, a) *
-                                spacetime_normal_vector.get(b);
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_21_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::a<DataType, SpatialDim, Frame>& gauge_function,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          if (a > 0) {
-            constraint->get(a) += phi.get(a - 1, c, d) * gauge_function.get(b) *
-                                  inverse_spacetime_metric.get(b, c) *
-                                  spacetime_normal_vector.get(d);
-          }
-          for (size_t i = 0; i < SpatialDim; ++i) {
-            constraint->get(a) += spacetime_normal_one_form.get(a) *
-                                  spacetime_normal_vector.get(i + 1) *
-                                  phi.get(i, c, d) * gauge_function.get(b) *
-                                  inverse_spacetime_metric.get(b, c) *
-                                  spacetime_normal_vector.get(d);
-          }
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_22_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const Scalar<DataType>& gamma2,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& three_index_constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
+  for (size_t c = 0; c < SpatialDim + 1; ++c) {
     for (size_t d = 0; d < SpatialDim + 1; ++d) {
+      get(result->trace_pi) +=
+          inverse_spacetime_metric.get(c, d) * pi.get(c, d);
+      result->pi_n.get(c) += pi.get(c, d) * spacetime_normal_vector.get(d);
       for (size_t i = 0; i < SpatialDim; ++i) {
-        constraint->get(a) += get(gamma2) *
-                              inverse_spacetime_metric.get(i + 1, d) *
-                              three_index_constraint.get(i, d, a);
-        constraint->get(a) += get(gamma2) * spacetime_normal_vector.get(i + 1) *
-                              spacetime_normal_vector.get(d) *
-                              three_index_constraint.get(i, d, a);
-      }
-
-      for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        if (a > 0) {
-          constraint->get(a) -= 0.5 * get(gamma2) *
-                                inverse_spacetime_metric.get(c, d) *
-                                three_index_constraint.get(a - 1, c, d);
-        }
-        for (size_t i = 0; i < SpatialDim; ++i) {
-          constraint->get(a) -= 0.5 * get(gamma2) *
-                                spacetime_normal_one_form.get(a) *
-                                spacetime_normal_vector.get(i + 1) *
-                                inverse_spacetime_metric.get(c, d) *
-                                three_index_constraint.get(i, c, d);
+        result->trace_d_pi.get(i) +=
+            inverse_spacetime_metric.get(c, d) * d_pi.get(i, c, d);
+        result->trace_phi.get(i) +=
+            inverse_spacetime_metric.get(c, d) * phi.get(i, c, d);
+        result->trace_three_index_constraint.get(i) +=
+            inverse_spacetime_metric.get(c, d) *
+            three_index_constraint.get(i, c, d);
+        result->phi_n.get(i, d) +=
+            spacetime_normal_vector.get(c) * phi.get(i, c, d);
+        for (size_t j = 0; j < SpatialDim; ++j) {
+          result->trace_d_phi.get(i, j) +=
+              inverse_spacetime_metric.get(c, d) * d_phi.get(i, j, c, d);
         }
       }
     }
   }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_23_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::aa<DataType, SpatialDim, Frame>& pi,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::a<DataType, SpatialDim, Frame>& gauge_function,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector) {
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    for (size_t j = 0; j < SpatialDim; ++j) {
+      result->trace_phi_up.get(i) +=
+          inverse_spatial_metric.get(i, j) * result->trace_phi.get(j);
+    }
+    for (size_t a = 0; a < SpatialDim + 1; ++a) {
+      result->phi_nn.get(i) +=
+          spacetime_normal_vector.get(a) * result->phi_n.get(i, a);
+      for (size_t b = 0; b < SpatialDim + 1; ++b) {
+        result->phi_n_up.get(i, b) +=
+            inverse_spacetime_metric.get(b, a) * result->phi_n.get(i, a);
+      }
+    }
+  }
+  // The symmetric components only
   for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
+    for (size_t b = a; b < SpatialDim + 1; ++b) {
       for (size_t c = 0; c < SpatialDim + 1; ++c) {
         for (size_t d = 0; d < SpatialDim + 1; ++d) {
-          constraint->get(a) +=
-              0.5 * spacetime_normal_one_form.get(a) * pi.get(c, d) *
-              inverse_spacetime_metric.get(c, d) * gauge_function.get(b) *
-              spacetime_normal_vector.get(b);
-        }
-      }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_24_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::a<DataType, SpatialDim, Frame>& gauge_function,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t c = 0; c < SpatialDim + 1; ++c) {
-      for (size_t d = 0; d < SpatialDim + 1; ++d) {
-        for (size_t i = 0; i < SpatialDim; ++i) {
-          for (size_t j = 0; j < SpatialDim; ++j) {
-            constraint->get(a) -= spacetime_normal_one_form.get(a) *
-                                  inverse_spatial_metric.get(i, j) *
-                                  phi.get(i, j + 1, c) * gauge_function.get(d) *
-                                  inverse_spacetime_metric.get(c, d);
+          result->pi_up.get(a, b) += inverse_spacetime_metric.get(a, c) *
+                                     inverse_spacetime_metric.get(b, d) *
+                                     pi.get(c, d);
+          for (size_t i = 0; i < SpatialDim; ++i) {
+            result->phi_up.get(i, a, b) += inverse_spacetime_metric.get(a, c) *
+                                           inverse_spacetime_metric.get(b, d) *
+                                           phi.get(i, c, d);
           }
         }
       }
-    }
-  }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_term_25_of_25(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::II<DataType, SpatialDim, Frame>& inverse_spatial_metric,
-    const tnsr::a<DataType, SpatialDim, Frame>& gauge_function,
-    const tnsr::iaa<DataType, SpatialDim, Frame>& phi,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric) {
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t c = 0; c < SpatialDim + 1; ++c) {
-      for (size_t d = 0; d < SpatialDim + 1; ++d) {
-        for (size_t i = 0; i < SpatialDim; ++i) {
-          for (size_t j = 0; j < SpatialDim; ++j) {
-            constraint->get(a) += 0.5 * spacetime_normal_one_form.get(a) *
-                                  inverse_spatial_metric.get(i, j) *
-                                  gauge_function.get(i + 1) * phi.get(j, c, d) *
-                                  inverse_spacetime_metric.get(c, d);
-          }
+      for (size_t k = 0; k < SpatialDim; ++k) {
+        for (size_t j = 0; j < SpatialDim; ++j) {
+          result->phi_spatial_up.get(k, a, b) +=
+              inverse_spatial_metric.get(k, j) * phi.get(j, a, b);
         }
       }
     }
   }
-}
-
-template <typename DataType, size_t SpatialDim, typename Frame>
-KOKKOS_FUNCTION void f_constraint_add_stress_energy_term(
-    const gsl::not_null<tnsr::a<DataType, SpatialDim, Frame>*> constraint,
-    const tnsr::AA<DataType, SpatialDim, Frame>& inverse_spacetime_metric,
-    const tnsr::A<DataType, SpatialDim, Frame>& spacetime_normal_vector,
-    const tnsr::a<DataType, SpatialDim, Frame>& spacetime_normal_one_form,
-    const tnsr::aa<DataType, SpatialDim, Frame>& trace_reversed_stress_energy) {
-  // This term, like many terms in the f constraint, may benefit from
-  // allocating a temporary for the trace. However, once we apply that
-  // optimization it should be applied to all terms that can benefit from
-  // temporary storage, and the allocation shared among all of the terms.
-  for (size_t a = 0; a < SpatialDim + 1; ++a) {
-    for (size_t b = 0; b < SpatialDim + 1; ++b) {
-      constraint->get(a) -= 16.0 * M_PI * spacetime_normal_vector.get(b) *
-                            trace_reversed_stress_energy.get(a, b);
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    for (size_t j = i; j < SpatialDim; ++j) {
       for (size_t c = 0; c < SpatialDim + 1; ++c) {
-        constraint->get(a) += 8.0 * M_PI * spacetime_normal_one_form.get(a) *
-                              inverse_spacetime_metric.get(b, c) *
-                              trace_reversed_stress_energy.get(b, c);
+        for (size_t d = 0; d < SpatialDim + 1; ++d) {
+          result->phi_phi.get(i, j) +=
+              phi.get(i, c, d) * result->phi_up.get(j, c, d);
+        }
       }
     }
   }
@@ -1044,34 +270,86 @@ KOKKOS_FUNCTION void two_index_constraint(
   for (auto& component : *constraint) {
     component = 0.0;
   }
+  Constraints_detail::Contractions<DataType, SpatialDim, Frame> sums{};
+  Constraints_detail::compute_contractions(
+      make_not_null(&sums), spacetime_normal_vector, inverse_spatial_metric,
+      inverse_spacetime_metric, pi, phi, d_pi, d_phi, three_index_constraint);
 
-  Constraints_detail::two_index_constraint_add_term_1_of_11(
-      constraint, inverse_spatial_metric, d_phi);
-  Constraints_detail::two_index_constraint_add_term_2_of_11(
-      constraint, spacetime_normal_vector, spacetime_normal_one_form,
-      inverse_spacetime_metric, d_phi);
-  Constraints_detail::two_index_constraint_add_term_3_of_11(
-      constraint, spacetime_normal_vector, d_pi);
-  Constraints_detail::two_index_constraint_add_term_4_of_11(
-      constraint, spacetime_normal_one_form, inverse_spacetime_metric, d_pi);
-  Constraints_detail::two_index_constraint_add_term_5_of_11(
-      constraint, spacetime_d_gauge_function);
-  Constraints_detail::two_index_constraint_add_term_6_of_11(
-      constraint, spacetime_normal_vector, spacetime_normal_one_form, phi,
-      inverse_spacetime_metric);
-  Constraints_detail::two_index_constraint_add_term_7_of_11(
-      constraint, inverse_spatial_metric, phi, inverse_spacetime_metric,
-      spacetime_normal_vector, spacetime_normal_one_form);
-  Constraints_detail::two_index_constraint_add_term_8_of_11(
-      constraint, inverse_spatial_metric, phi);
-  Constraints_detail::two_index_constraint_add_term_9_of_11(
-      constraint, phi, pi, spacetime_normal_one_form, inverse_spacetime_metric,
-      spacetime_normal_vector);
-  Constraints_detail::two_index_constraint_add_term_10_of_11(
-      constraint, phi, pi, spacetime_normal_vector, inverse_spacetime_metric);
-  Constraints_detail::two_index_constraint_add_term_11_of_11(
-      constraint, gamma2, spacetime_normal_one_form, inverse_spacetime_metric,
-      spacetime_normal_vector, three_index_constraint);
+  // The terms of Eq. (44) of https://arXiv.org/abs/gr-qc/0512093v3 (numbered
+  // as there) with a spacetime index `a` of a spatial tensor `Y_{ji}`, i.e.
+  // `(a > 0) Y_{(a-1)i} + n_a n^j Y_{ji}`: terms 2 and 6
+  tnsr::ij<DataType, SpatialDim, Frame> y{};
+  Constraints_detail::set_to_zero(make_not_null(&y), pi);
+  // The coefficient of `n_a`: terms 4, 7, 9, half of 11, and `n^j Y_{ji}`
+  tnsr::i<DataType, SpatialDim, Frame> normal_coefficient{};
+  Constraints_detail::set_to_zero(make_not_null(&normal_coefficient), pi);
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    for (size_t j = 0; j < SpatialDim; ++j) {
+      y.get(j, i) = 0.5 * (sums.phi_phi.get(j, i) - sums.trace_d_phi.get(j, i));
+    }
+  }
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    for (size_t j = 0; j < SpatialDim; ++j) {
+      normal_coefficient.get(i) +=
+          spacetime_normal_vector.get(j + 1) * y.get(j, i) +
+          0.5 * sums.phi_n.get(i, j + 1) * sums.trace_phi_up.get(j);
+    }
+    normal_coefficient.get(i) +=
+        -0.5 * sums.trace_d_pi.get(i) +
+        0.25 * get(sums.trace_pi) * sums.phi_nn.get(i) +
+        0.5 * get(gamma2) * sums.trace_three_index_constraint.get(i);
+    for (size_t c = 0; c < SpatialDim + 1; ++c) {
+      for (size_t d = 0; d < SpatialDim + 1; ++d) {
+        normal_coefficient.get(i) +=
+            0.5 * phi.get(i, c, d) * sums.pi_up.get(c, d);
+      }
+    }
+  }
+
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    for (size_t a = 0; a < SpatialDim + 1; ++a) {
+      // Terms 4, 7, 9, half of 11, and terms 2 and 6
+      constraint->get(i, a) +=
+          spacetime_normal_one_form.get(a) * normal_coefficient.get(i);
+      if (a > 0) {
+        constraint->get(i, a) += y.get(a - 1, i);
+      }
+      // Term 5
+      constraint->get(i, a) += spacetime_d_gauge_function.get(i + 1, a);
+      for (size_t b = 0; b < SpatialDim + 1; ++b) {
+        // Terms 3, 10 and the other half of 11
+        constraint->get(i, a) +=
+            spacetime_normal_vector.get(b) *
+                (d_pi.get(i, b, a) -
+                 get(gamma2) * three_index_constraint.get(i, a, b)) -
+            pi.get(b, a) *
+                (sums.phi_n_up.get(i, b) +
+                 0.5 * spacetime_normal_vector.get(b) * sums.phi_nn.get(i));
+      }
+      // Term 1
+      for (size_t j = 0; j < SpatialDim; ++j) {
+        for (size_t k = 0; k < SpatialDim; ++k) {
+          constraint->get(i, a) +=
+              inverse_spatial_metric.get(j, k) * d_phi.get(j, i, k + 1, a);
+        }
+      }
+    }
+    // Term 8
+    for (size_t k = 0; k < SpatialDim; ++k) {
+      for (size_t m = 0; m < SpatialDim; ++m) {
+        DataType phi_ikm =
+            inverse_spatial_metric.get(m, 0) * phi.get(i, k + 1, 1);
+        for (size_t n = 1; n < SpatialDim; ++n) {
+          phi_ikm +=
+              inverse_spatial_metric.get(m, n) * phi.get(i, k + 1, n + 1);
+        }
+        for (size_t a = 0; a < SpatialDim + 1; ++a) {
+          constraint->get(i, a) -=
+              sums.phi_spatial_up.get(k, m + 1, a) * phi_ikm;
+        }
+      }
+    }
+  }
 }
 
 template <typename DataType, size_t SpatialDim, typename Frame>
@@ -1185,9 +463,22 @@ KOKKOS_FUNCTION void f_constraint(
       spacetime_normal_one_form, spacetime_normal_vector,
       inverse_spatial_metric, inverse_spacetime_metric, pi, phi, d_pi, d_phi,
       gamma2, three_index_constraint);
-  Constraints_detail::f_constraint_add_stress_energy_term(
-      constraint, inverse_spacetime_metric, spacetime_normal_vector,
-      spacetime_normal_one_form, trace_reversed_stress_energy);
+  Scalar<DataType> trace_stress_energy{};
+  Constraints_detail::set_to_zero(make_not_null(&trace_stress_energy), pi);
+  for (size_t b = 0; b < SpatialDim + 1; ++b) {
+    for (size_t c = 0; c < SpatialDim + 1; ++c) {
+      get(trace_stress_energy) += inverse_spacetime_metric.get(b, c) *
+                                  trace_reversed_stress_energy.get(b, c);
+    }
+  }
+  for (size_t a = 0; a < SpatialDim + 1; ++a) {
+    constraint->get(a) += 8.0 * M_PI * spacetime_normal_one_form.get(a) *
+                          get(trace_stress_energy);
+    for (size_t b = 0; b < SpatialDim + 1; ++b) {
+      constraint->get(a) -= 16.0 * M_PI * spacetime_normal_vector.get(b) *
+                            trace_reversed_stress_energy.get(a, b);
+    }
+  }
 }
 
 template <typename DataType, size_t SpatialDim, typename Frame>
@@ -1209,75 +500,140 @@ KOKKOS_FUNCTION void f_constraint(
   for (auto& component : *constraint) {
     component = 0.0;
   }
+  Constraints_detail::Contractions<DataType, SpatialDim, Frame> sums{};
+  Constraints_detail::compute_contractions(
+      make_not_null(&sums), spacetime_normal_vector, inverse_spatial_metric,
+      inverse_spacetime_metric, pi, phi, d_pi, d_phi, three_index_constraint);
+  // g^{ab} H_b, \gamma^{ij} H_j, H_a n^a, \gamma^{ij} \Pi_{jb} n^b and
+  // \gamma^{ij} n^c n^d \Phi_{jcd}
+  tnsr::A<DataType, SpatialDim, Frame> gauge_up{};
+  tnsr::I<DataType, SpatialDim, Frame> gauge_spatial_up{};
+  Scalar<DataType> gauge_n{};
+  tnsr::I<DataType, SpatialDim, Frame> pi_n_spatial_up{};
+  tnsr::I<DataType, SpatialDim, Frame> phi_nn_up{};
+  Constraints_detail::set_to_zero(make_not_null(&gauge_up), pi);
+  Constraints_detail::set_to_zero(make_not_null(&gauge_spatial_up), pi);
+  Constraints_detail::set_to_zero(make_not_null(&gauge_n), pi);
+  Constraints_detail::set_to_zero(make_not_null(&pi_n_spatial_up), pi);
+  Constraints_detail::set_to_zero(make_not_null(&phi_nn_up), pi);
+  for (size_t a = 0; a < SpatialDim + 1; ++a) {
+    get(gauge_n) += gauge_function.get(a) * spacetime_normal_vector.get(a);
+    for (size_t b = 0; b < SpatialDim + 1; ++b) {
+      gauge_up.get(a) +=
+          inverse_spacetime_metric.get(a, b) * gauge_function.get(b);
+    }
+  }
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    for (size_t j = 0; j < SpatialDim; ++j) {
+      gauge_spatial_up.get(i) +=
+          inverse_spatial_metric.get(i, j) * gauge_function.get(j + 1);
+      pi_n_spatial_up.get(i) +=
+          inverse_spatial_metric.get(i, j) * sums.pi_n.get(j + 1);
+      phi_nn_up.get(i) += inverse_spatial_metric.get(i, j) * sums.phi_nn.get(j);
+    }
+  }
 
-  Constraints_detail::f_constraint_add_term_1_of_25(
-      constraint, spacetime_normal_one_form, spacetime_normal_vector,
-      inverse_spacetime_metric, d_pi);
-  Constraints_detail::f_constraint_add_term_2_of_25(
-      constraint, inverse_spatial_metric, d_pi);
-  Constraints_detail::f_constraint_add_term_3_of_25(
-      constraint, inverse_spatial_metric, spacetime_normal_vector, d_phi);
-  Constraints_detail::f_constraint_add_term_4_of_25(
-      constraint, spacetime_normal_one_form, inverse_spacetime_metric,
-      inverse_spatial_metric, d_phi);
-  Constraints_detail::f_constraint_add_term_5_of_25(
-      constraint, spacetime_normal_one_form, inverse_spatial_metric,
-      spacetime_d_gauge_function);
-  Constraints_detail::f_constraint_add_term_6_of_25(
-      constraint, spacetime_normal_one_form, spacetime_normal_vector, phi,
-      inverse_spatial_metric, inverse_spacetime_metric);
-  Constraints_detail::f_constraint_add_term_7_of_25(
-      constraint, spacetime_normal_one_form, spacetime_normal_vector, phi,
-      inverse_spatial_metric, inverse_spacetime_metric);
-  Constraints_detail::f_constraint_add_term_8_of_25(
-      constraint, spacetime_normal_one_form, spacetime_normal_vector,
-      spacetime_d_gauge_function);
-  Constraints_detail::f_constraint_add_term_9_of_25(
-      constraint, inverse_spatial_metric, phi, inverse_spacetime_metric,
-      spacetime_normal_vector);
-  Constraints_detail::f_constraint_add_term_10_of_25(
-      constraint, spacetime_normal_one_form, inverse_spatial_metric, phi,
-      inverse_spacetime_metric);
-  Constraints_detail::f_constraint_add_term_11_of_25(
-      constraint, spacetime_normal_one_form, inverse_spatial_metric, phi,
-      inverse_spacetime_metric);
-  Constraints_detail::f_constraint_add_term_12_of_25(
-      constraint, spacetime_normal_one_form, pi, inverse_spacetime_metric);
-  Constraints_detail::f_constraint_add_term_13_of_25(
-      constraint, inverse_spatial_metric, gauge_function, pi);
-  Constraints_detail::f_constraint_add_term_14_of_25(
-      constraint, spacetime_normal_vector, inverse_spatial_metric, pi);
-  Constraints_detail::f_constraint_add_term_15_of_25(
-      constraint, inverse_spacetime_metric, spacetime_normal_one_form,
-      spacetime_normal_vector, phi, pi);
-  Constraints_detail::f_constraint_add_term_16_of_25(
-      constraint, spacetime_normal_one_form, pi, inverse_spacetime_metric,
-      spacetime_normal_vector);
-  Constraints_detail::f_constraint_add_term_17_of_25(
-      constraint, inverse_spacetime_metric, spacetime_normal_one_form,
-      spacetime_normal_vector, phi, pi);
-  Constraints_detail::f_constraint_add_term_18_of_25(
-      constraint, inverse_spatial_metric, phi, spacetime_normal_vector, pi);
-  Constraints_detail::f_constraint_add_term_19_of_25(
-      constraint, inverse_spatial_metric, phi, spacetime_normal_vector, pi);
-  Constraints_detail::f_constraint_add_term_20_of_25(
-      constraint, inverse_spatial_metric, gauge_function, phi,
-      spacetime_normal_vector);
-  Constraints_detail::f_constraint_add_term_21_of_25(
-      constraint, spacetime_normal_one_form, spacetime_normal_vector, phi,
-      gauge_function, inverse_spacetime_metric);
-  Constraints_detail::f_constraint_add_term_22_of_25(
-      constraint, gamma2, inverse_spacetime_metric, spacetime_normal_vector,
-      three_index_constraint, spacetime_normal_one_form);
-  Constraints_detail::f_constraint_add_term_23_of_25(
-      constraint, spacetime_normal_one_form, pi, inverse_spacetime_metric,
-      gauge_function, spacetime_normal_vector);
-  Constraints_detail::f_constraint_add_term_24_of_25(
-      constraint, spacetime_normal_one_form, inverse_spatial_metric, phi,
-      gauge_function, inverse_spacetime_metric);
-  Constraints_detail::f_constraint_add_term_25_of_25(
-      constraint, spacetime_normal_one_form, inverse_spatial_metric,
-      gauge_function, phi, inverse_spacetime_metric);
+  // The terms of Eq. (43) of https://arXiv.org/abs/gr-qc/0512093v3 (numbered
+  // as there) with a spacetime index `a` of a spatial covector `X_i`, i.e.
+  // `(a > 0) X_{a-1} + n_a n^i X_i`: terms 1, 6, 7, 8, 15, 17, 21 and half of
+  // 22
+  tnsr::i<DataType, SpatialDim, Frame> x{};
+  Constraints_detail::set_to_zero(make_not_null(&x), pi);
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    x.get(i) = 0.5 * sums.trace_d_pi.get(i) -
+               0.25 * get(sums.trace_pi) * sums.phi_nn.get(i) -
+               0.5 * get(gamma2) * sums.trace_three_index_constraint.get(i);
+    for (size_t j = 0; j < SpatialDim; ++j) {
+      x.get(i) -= 0.5 * sums.phi_n.get(i, j + 1) * sums.trace_phi_up.get(j);
+      for (size_t b = 0; b < SpatialDim + 1; ++b) {
+        for (size_t k = 0; k < SpatialDim; ++k) {
+          x.get(i) += phi.get(i, j + 1, b) * inverse_spatial_metric.get(j, k) *
+                      sums.phi_n_up.get(k, b);
+        }
+      }
+    }
+    for (size_t b = 0; b < SpatialDim + 1; ++b) {
+      x.get(i) += sums.phi_n_up.get(i, b) * sums.pi_n.get(b) +
+                  sums.phi_n.get(i, b) * gauge_up.get(b) -
+                  spacetime_normal_vector.get(b) *
+                      spacetime_d_gauge_function.get(i + 1, b);
+    }
+  }
+
+  // The coefficient of `n_a`: terms 4, 5, 10, 11, 12, 16, 23, 24, 25 and
+  // `n^i X_i`
+  Scalar<DataType> normal_coefficient{};
+  Constraints_detail::set_to_zero(make_not_null(&normal_coefficient), pi);
+  get(normal_coefficient) = 0.5 * get(sums.trace_pi) * get(gauge_n);
+  for (size_t i = 0; i < SpatialDim; ++i) {
+    get(normal_coefficient) +=
+        spacetime_normal_vector.get(i + 1) * x.get(i) +
+        0.5 * gauge_spatial_up.get(i) * sums.trace_phi.get(i);
+    for (size_t j = 0; j < SpatialDim; ++j) {
+      get(normal_coefficient) += inverse_spatial_metric.get(i, j) *
+                                 (0.5 * sums.trace_d_phi.get(i, j) +
+                                  spacetime_d_gauge_function.get(i + 1, j + 1) -
+                                  0.25 * sums.phi_phi.get(i, j));
+      for (size_t c = 0; c < SpatialDim + 1; ++c) {
+        for (size_t d = 0; d < SpatialDim + 1; ++d) {
+          get(normal_coefficient) -= 0.5 *
+                                     sums.phi_spatial_up.get(i, j + 1, c) *
+                                     inverse_spacetime_metric.get(c, d) *
+                                     sums.phi_spatial_up.get(j, i + 1, d);
+        }
+      }
+    }
+    for (size_t c = 0; c < SpatialDim + 1; ++c) {
+      get(normal_coefficient) -=
+          sums.phi_spatial_up.get(i, i + 1, c) * gauge_up.get(c);
+    }
+  }
+  for (size_t c = 0; c < SpatialDim + 1; ++c) {
+    for (size_t d = 0; d < SpatialDim + 1; ++d) {
+      get(normal_coefficient) += 0.25 * pi.get(c, d) * sums.pi_up.get(c, d) +
+                                 0.5 * sums.pi_n.get(c) *
+                                     inverse_spacetime_metric.get(c, d) *
+                                     sums.pi_n.get(d);
+    }
+  }
+
+  for (size_t a = 0; a < SpatialDim + 1; ++a) {
+    // Terms 1, 4, 5, 6, 7, 8, 10, 11, 12, 15, 16, 17, 21, 23, 24, 25 and half
+    // of 22
+    constraint->get(a) +=
+        spacetime_normal_one_form.get(a) * get(normal_coefficient);
+    if (a > 0) {
+      constraint->get(a) += x.get(a - 1);
+    }
+    for (size_t i = 0; i < SpatialDim; ++i) {
+      // Terms 13, 14, 19, 18 and 20
+      constraint->get(a) -= (gauge_spatial_up.get(i) + pi_n_spatial_up.get(i) +
+                             0.5 * phi_nn_up.get(i)) *
+                                pi.get(i + 1, a) +
+                            (pi_n_spatial_up.get(i) + gauge_spatial_up.get(i)) *
+                                sums.phi_n.get(i, a);
+      for (size_t b = 0; b < SpatialDim + 1; ++b) {
+        // Term 9 and the other half of 22
+        constraint->get(a) +=
+            sums.phi_n_up.get(i, b) * sums.phi_spatial_up.get(i, b, a) +
+            get(gamma2) *
+                (inverse_spacetime_metric.get(i + 1, b) +
+                 spacetime_normal_vector.get(i + 1) *
+                     spacetime_normal_vector.get(b)) *
+                three_index_constraint.get(i, b, a);
+      }
+      for (size_t j = 0; j < SpatialDim; ++j) {
+        // Terms 2 and 3
+        constraint->get(a) -=
+            inverse_spatial_metric.get(i, j) * d_pi.get(i, j + 1, a);
+        for (size_t b = 0; b < SpatialDim + 1; ++b) {
+          constraint->get(a) -= inverse_spatial_metric.get(i, j) *
+                                spacetime_normal_vector.get(b) *
+                                d_phi.get(i, j, b, a);
+        }
+      }
+    }
+  }
 }
 
 template <typename DataType, size_t SpatialDim, typename Frame>

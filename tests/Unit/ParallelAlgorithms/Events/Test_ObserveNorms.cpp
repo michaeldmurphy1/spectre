@@ -442,6 +442,46 @@ void test(const std::unique_ptr<ObserveEvent> observe,
         results_from_box.l2_integral_norm_values);
   CHECK(results.volume_integral_values ==
         results_from_box.volume_integral_values);
+
+  // The statistics of two copies of the element combined into one
+  // contribution, as patches combine their elements: the norms are the same,
+  // and the number of grid points, the volume and the volume integrals double
+  Events::NormStatisticsOfTensors two_copies = statistics;
+  for (auto& [name, names_and_statistics] : two_copies) {
+    for (auto& component_statistics : names_and_statistics.second) {
+      component_statistics =
+          Events::combine(component_statistics, component_statistics);
+    }
+  }
+  observe_norms.contribute_statistics(
+      ActionTesting::cache<element_component>(runner, array_index), array_index,
+      std::add_pointer_t<element_component>{}, {"TimeName", observation_time},
+      observers::get_section_observation_key<ArraySectionIdTag>(box),
+      get<domain::Tags::Domain<3>>(box), 2 * num_points,
+      2.0 * definite_integral(det_jacobian, mesh), two_copies);
+  ActionTesting::invoke_queued_simple_action<observer_component>(
+      make_not_null(&runner), 0);
+  CHECK(results.reduction_names == results_from_box.reduction_names);
+  CHECK(results.number_of_grid_points ==
+        2 * results_from_box.number_of_grid_points);
+  CHECK(results.volume == approx(2.0 * results_from_box.volume));
+  CHECK(results.max_values == results_from_box.max_values);
+  CHECK(results.min_values == results_from_box.min_values);
+  CHECK_ITERABLE_APPROX(results.l1_norm_values,
+                        results_from_box.l1_norm_values);
+  CHECK_ITERABLE_APPROX(results.l1_integral_norm_values,
+                        results_from_box.l1_integral_norm_values);
+  CHECK_ITERABLE_APPROX(results.l2_norm_values,
+                        results_from_box.l2_norm_values);
+  CHECK_ITERABLE_APPROX(results.l2_integral_norm_values,
+                        results_from_box.l2_integral_norm_values);
+  std::vector<double> doubled_volume_integrals =
+      results_from_box.volume_integral_values;
+  for (double& value : doubled_volume_integrals) {
+    value *= 2.0;
+  }
+  CHECK_ITERABLE_APPROX(results.volume_integral_values,
+                        doubled_volume_integrals);
 }
 
 template <Spectral::Basis basis, typename ArraySectionIdTag,

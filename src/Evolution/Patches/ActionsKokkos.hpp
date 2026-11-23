@@ -571,12 +571,39 @@ bool observes_on_device(const Event& event) {
   return missing.has_value() and missing->empty();
 }
 
+// The slots of the elements that contribute to each subfile of `event`, in
+// the order of the slots. Elements that `event` doesn't observe are left out.
+template <typename ObserveNormsEvent, size_t Dim>
+std::vector<std::vector<size_t>> slots_by_subfile(
+    const ObserveNormsEvent& event,
+    const std::optional<std::string>& section_observation_key,
+    const Domain<Dim>& domain, const std::vector<ElementId<Dim>>& element_ids) {
+  std::vector<std::string> subfiles{};
+  std::vector<std::vector<size_t>> result{};
+  for (size_t slot = 0; slot < element_ids.size(); ++slot) {
+    const std::optional<std::string> subfile = event.subfile_path_for_element(
+        section_observation_key, domain, element_ids[slot]);
+    if (not subfile.has_value()) {
+      continue;
+    }
+    const auto it = alg::find(subfiles, *subfile);
+    if (it == subfiles.end()) {
+      subfiles.push_back(*subfile);
+      result.push_back({slot});
+    } else {
+      result[static_cast<size_t>(it - subfiles.begin())].push_back(slot);
+    }
+  }
+  return result;
+}
+
 // Runs the `ObserveNorms` `events` (see `observes_on_device`) on the device:
 // the patch computes the observed tensors of all its elements on the device,
 // they are reduced there (see `device_compute::device_norm_statistics`) and
-// only the
-// results of each element are copied to the host and contributed to the
-// observer, as if the event had run on the DataBox of the element. With
+// only the results of each element are copied to the host. The patch combines
+// those of its elements that contribute to the same subfile and contributes
+// them to the observer once, which gives the observation of the events on the
+// DataBoxes of the elements up to the order of the sums. With
 // `dense_output`, the tensors are computed from the last dense output of the
 // patch.
 template <typename PatchTag, typename ParallelComponent, typename DbTagsList,
@@ -632,33 +659,43 @@ void observe_norms_on_device(const std::vector<const Event*>& events,
   const auto& domain = db::get<::domain::Tags::Domain<dim>>(*box);
   const size_t number_of_points =
       patch.patch_elements().subcell_mesh().number_of_grid_points();
+  const std::optional<std::string> section_observation_key =
+      observers::get_section_observation_key<void>(*box);
   // The last component is the volume
   const size_t volume_component = statistics.extent(1) - 1;
-  // The names and statistics of the tensors, whose statistics are replaced by
-  // those of each element in turn
-  ::Events::NormStatisticsOfTensors tensors_statistics{};
-  for (const auto& tensor : observables.tensors) {
-    tensors_statistics.emplace(
-        tensor.name,
-        std::pair{tensor.component_names, std::vector<::Events::NormStatistics>(
-                                              tensor.component_names.size())});
-  }
-  for (size_t slot = 0; slot < element_ids.size(); ++slot) {
-    for (const auto& tensor : observables.tensors) {
-      auto& component_statistics = tensors_statistics.at(tensor.name).second;
-      for (size_t c = 0; c < component_statistics.size(); ++c) {
-        component_statistics[c] = statistics(slot, tensor.first_component + c);
+  for_each_event([&](const auto* const derived_event) {
+    // The elements contribute once per subfile, combined, from the first of
+    // them, which is the only one registered (see `RegisterWithObservers`)
+    for (const auto& slots : slots_by_subfile(
+             *derived_event, section_observation_key, domain, element_ids)) {
+      ::Events::NormStatisticsOfTensors tensors_statistics{};
+      for (const auto& tensor : observables.tensors) {
+        std::vector<::Events::NormStatistics> component_statistics(
+            tensor.component_names.size());
+        for (size_t c = 0; c < component_statistics.size(); ++c) {
+          component_statistics[c] =
+              statistics(slots.front(), tensor.first_component + c);
+          for (size_t i = 1; i < slots.size(); ++i) {
+            component_statistics[c] = ::Events::combine(
+                component_statistics[c],
+                statistics(slots[i], tensor.first_component + c));
+          }
+        }
+        tensors_statistics.emplace(
+            tensor.name,
+            std::pair{tensor.component_names, std::move(component_statistics)});
       }
-    }
-    for_each_event([&](const auto* const derived_event) {
+      double volume = 0.0;
+      for (const size_t slot : slots) {
+        volume += statistics(slot, volume_component).integral;
+      }
       derived_event->contribute_statistics(
-          cache, element_ids[slot],
+          cache, element_ids[slots.front()],
           static_cast<const ParallelComponent*>(nullptr), observation_value,
-          observers::get_section_observation_key<void>(*box), domain,
-          number_of_points, statistics(slot, volume_component).integral,
-          tensors_statistics);
-    });
-  }
+          section_observation_key, domain, number_of_points * slots.size(),
+          volume, tensors_statistics);
+    }
+  });
 }
 
 // Runs the `events` on each element of the patch, as
@@ -863,8 +900,10 @@ void change_slab_size(const ::Events::ChangeSlabSize& event,
  * \details Each element of the patch is a contributor with its `ElementId`,
  * and its registration is that of the events on its DataBox (see
  * `Patch::make_element_box`), so its data is written and reduced like that of
- * an
- * element of the `DgElementArray`.
+ * an element of the `DgElementArray`. The exception are the events that the
+ * patch observes on the device (see `Tags::ObserveOnDevice`): the patch
+ * contributes their norms once per subfile, for all its elements that
+ * contribute to it, so only the first of these registers.
  */
 template <typename PatchTag>
 struct RegisterWithObservers {
@@ -883,6 +922,21 @@ struct RegisterWithObservers {
     auto& observer = *Parallel::local_branch(
         Parallel::get_parallel_component<observers::Observer<Metavariables>>(
             cache));
+    using Patch = typename PatchTag::type;
+    const auto observes_on_device = [&cache](const Event& event) {
+      if constexpr (detail::ComputesDeviceObservables<Patch>) {
+        return Parallel::get<Tags::ObserveOnDevice>(cache) and
+               detail::observes_on_device<Patch, Metavariables>(event);
+      } else {
+        (void)cache;
+        (void)event;
+        return false;
+      }
+    };
+    // The events observed on the device and the subfiles that an element has
+    // registered for
+    std::vector<std::pair<const Event*, observers::ObservationKey>>
+        registered_on_device{};
     // Registration doesn't use the variables
     detail::for_each_element_box<PatchTag>(
         make_not_null(&box), cache, detail::ElementVariables::WithoutValues,
@@ -895,6 +949,13 @@ struct RegisterWithObservers {
                     observers::get_registration_observation_type_and_key(
                         event, element_box);
                 type_and_key.has_value()) {
+              if (observes_on_device(event)) {
+                std::pair event_and_key{&event, type_and_key->second};
+                if (alg::found(registered_on_device, event_and_key)) {
+                  return;
+                }
+                registered_on_device.push_back(std::move(event_and_key));
+              }
               Parallel::simple_action<
                   observers::Actions::RegisterContributorWithObserver>(
                   observer, type_and_key->second,

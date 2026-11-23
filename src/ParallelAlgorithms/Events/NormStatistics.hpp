@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -35,6 +36,19 @@ struct NormStatistics {
 /// The names of the components of an observed tensor and their
 /// `NormStatistics` on an element, by tensor name (see
 /// `ObserveNorms::contribute_statistics`)
+/// The `NormStatistics` of the grid points of `a` and `b` together, e.g. of
+/// two elements
+inline NormStatistics combine(const NormStatistics& a,
+                              const NormStatistics& b) {
+  return {.max = std::max(a.max, b.max),
+          .min = std::min(a.min, b.min),
+          .sum_abs = a.sum_abs + b.sum_abs,
+          .sum_square = a.sum_square + b.sum_square,
+          .integral_abs = a.integral_abs + b.integral_abs,
+          .integral_square = a.integral_square + b.integral_square,
+          .integral = a.integral + b.integral};
+}
+
 using NormStatisticsOfTensors =
     std::unordered_map<std::string, std::pair<std::vector<std::string>,
                                               std::vector<NormStatistics>>>;

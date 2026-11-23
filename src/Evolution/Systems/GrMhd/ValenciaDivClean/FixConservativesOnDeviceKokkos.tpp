@@ -13,6 +13,7 @@
 #include "DataStructures/PointwiseStatus.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservatives.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FixConservatives.tpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "Utilities/Gsl.hpp"

@@ -27,6 +27,21 @@ class er;
 }  // namespace PUP
 /// \endcond
 
+/// \cond
+namespace Mesh_detail {
+// The basis and quadrature of a dimension are stored together in one byte
+KOKKOS_INLINE_FUNCTION constexpr Spectral::Basis extract_basis(
+    const uint8_t bits) {
+  return static_cast<Spectral::Basis>(0b11110000 bitand bits);
+}
+
+KOKKOS_INLINE_FUNCTION constexpr Spectral::Quadrature extract_quadrature(
+    const uint8_t bits) {
+  return static_cast<Spectral::Quadrature>(0b00001111 bitand bits);
+}
+}  // namespace Mesh_detail
+/// \endcond
+
 /*!
  * \ingroup DataStructuresGroup
  * \brief Holds the number of grid points, basis, and quadrature in each
@@ -54,6 +69,7 @@ class er;
  *
  * \tparam Dim the number of dimensions of the computational grid.
  */
+
 template <size_t Dim>
 class Mesh {
  public:
@@ -178,7 +194,10 @@ class Mesh {
   /*!
    * \brief The basis chosen in dimension \p d of the grid (zero-indexed).
    */
-  KOKKOS_FUNCTION Spectral::Basis basis(size_t d) const;
+  // Defined here so that device kernels inline it
+  KOKKOS_FUNCTION Spectral::Basis basis(const size_t d) const {
+    return Mesh_detail::extract_basis(gsl::at(quadrature_and_basis_, d));
+  }
 
   /*!
    * \brief The quadrature chosen in each dimension of the grid.
@@ -188,7 +207,10 @@ class Mesh {
   /*!
    * \brief The quadrature chosen in dimension \p d of the grid (zero-indexed).
    */
-  KOKKOS_FUNCTION Spectral::Quadrature quadrature(size_t d) const;
+  // Defined here so that device kernels inline it
+  KOKKOS_FUNCTION Spectral::Quadrature quadrature(const size_t d) const {
+    return Mesh_detail::extract_quadrature(gsl::at(quadrature_and_basis_, d));
+  }
 
   /*!
    * \brief Returns a Mesh with dimension \p d removed (zero-indexed).

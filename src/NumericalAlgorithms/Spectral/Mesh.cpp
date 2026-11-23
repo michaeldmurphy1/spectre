@@ -20,13 +20,8 @@ KOKKOS_FUNCTION uint8_t combine(const Spectral::Basis basis,
   return static_cast<uint8_t>(basis) bitor static_cast<uint8_t>(quadrature);
 }
 
-KOKKOS_FUNCTION Spectral::Basis extract_basis(const uint8_t bits) {
-  return static_cast<Spectral::Basis>(0b11110000 bitand bits);
-}
-
-KOKKOS_FUNCTION Spectral::Quadrature extract_quadrature(const uint8_t bits) {
-  return static_cast<Spectral::Quadrature>(0b00001111 bitand bits);
-}
+using Mesh_detail::extract_basis;
+using Mesh_detail::extract_quadrature;
 }  // namespace
 
 template <size_t Dim>
@@ -187,11 +182,6 @@ KOKKOS_FUNCTION std::array<Spectral::Basis, Dim> Mesh<Dim>::basis() const {
 }
 
 template <size_t Dim>
-KOKKOS_FUNCTION Spectral::Basis Mesh<Dim>::basis(const size_t d) const {
-  return extract_basis(gsl::at(quadrature_and_basis_, d));
-}
-
-template <size_t Dim>
 KOKKOS_FUNCTION std::array<Spectral::Quadrature, Dim> Mesh<Dim>::quadrature()
     const {
   if constexpr (Dim == 0) {
@@ -206,12 +196,6 @@ KOKKOS_FUNCTION std::array<Spectral::Quadrature, Dim> Mesh<Dim>::quadrature()
             extract_quadrature(quadrature_and_basis_[1]),
             extract_quadrature(quadrature_and_basis_[2])};
   }
-}
-
-template <size_t Dim>
-KOKKOS_FUNCTION Spectral::Quadrature Mesh<Dim>::quadrature(
-    const size_t d) const {
-  return extract_quadrature(gsl::at(quadrature_and_basis_, d));
 }
 
 template <size_t Dim>

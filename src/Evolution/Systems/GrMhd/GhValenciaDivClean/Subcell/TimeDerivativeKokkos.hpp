@@ -185,7 +185,10 @@ class TimeDerivativeOnDevice {
    * `Tags::primitive_grmhd_and_spacetime_reconstruction_tags` of the elements
    * padded with ghost zones of the width of the reconstruction. The GH
    * variables in the interior are replaced by the filtered ones if the
-   * spacetime dissipation is given.
+   * spacetime dissipation is given. Only the ghost zones of the hydro
+   * variables are read (see `::fd::device::SplitVolumeView`).
+   * \param hydro_ghost_variables the hydro ghost variables (the first
+   * variables of `padded_ghost_variables`) of the cells of the elements.
    * \param primitives the primitive variables at the cell centers.
    * \param inverse_jacobian the inverse Jacobian from the element-logical to
    * the inertial frame at the cell centers.
@@ -225,6 +228,7 @@ class TimeDerivativeOnDevice {
           ValenciaDivClean::fd::face_atmosphere_snapshot_tags>*>
           face_status,
       const ::fd::device::VolumeView& padded_ghost_variables,
+      const ::fd::device::ConstStridedVolumeView& hydro_ghost_variables,
       const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,
       const ::fd::device::BatchInverseJacobian<dim>& inverse_jacobian,
       const Batch<domain::Tags::Coordinates<dim, Frame::Grid>>&

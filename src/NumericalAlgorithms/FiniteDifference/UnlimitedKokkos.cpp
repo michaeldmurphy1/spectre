@@ -20,12 +20,11 @@ void unlimited(
     const Kokkos::DefaultExecutionSpace& exec,
     const std::array<StridedVolumeView, Dim>& upper_side_of_face_vars,
     const std::array<StridedVolumeView, Dim>& lower_side_of_face_vars,
-    const ConstStridedVolumeView& padded_volume_vars,
-    const Index<Dim>& volume_extents) {
+    const SplitVolumeView& volume_vars, const Index<Dim>& volume_extents) {
   detail::reconstruct<
       ::fd::reconstruction::detail::UnlimitedReconstructor<Degree>>(
-      exec, upper_side_of_face_vars, lower_side_of_face_vars,
-      padded_volume_vars, volume_extents);
+      exec, upper_side_of_face_vars, lower_side_of_face_vars, volume_vars,
+      volume_extents);
 }
 
 #define DEGREE(data) BOOST_PP_TUPLE_ELEM(0, data)
@@ -36,7 +35,7 @@ void unlimited(
       const Kokkos::DefaultExecutionSpace& exec,                               \
       const std::array<StridedVolumeView, DIM(data)>& upper_side_of_face_vars, \
       const std::array<StridedVolumeView, DIM(data)>& lower_side_of_face_vars, \
-      const ConstStridedVolumeView& padded_volume_vars,                        \
+      const SplitVolumeView& volume_vars,                                      \
       const Index<DIM(data)>& volume_extents);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (2, 4, 6, 8), (1, 2, 3))

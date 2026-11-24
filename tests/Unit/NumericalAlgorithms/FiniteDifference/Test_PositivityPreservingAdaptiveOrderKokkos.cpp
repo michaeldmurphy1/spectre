@@ -143,7 +143,8 @@ void test_compare_to_host(const std::vector<helpers::ElementData<Dim>>& data,
   const auto upper_side = make_face_views("upper side", volume_extents);
   const auto lower_side = make_face_views("lower side", volume_extents);
   ::fd::device::positivity_preserving_adaptive_order(
-      exec, strided(upper_side), strided(lower_side), padded, volume_extents,
+      exec, strided(upper_side), strided(lower_side),
+      ::fd::device::split_volume_view(padded, volume_extents), volume_extents,
       options.positivity_preserving, options.low_order_reconstructor, alphas[0],
       options.use_7th_order ? std::optional{alphas[1]} : std::nullopt,
       options.use_9th_order ? std::optional{alphas[2]} : std::nullopt);

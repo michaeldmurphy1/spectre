@@ -28,16 +28,16 @@ void reconstruct(
     const Kokkos::DefaultExecutionSpace& exec,
     const std::array<StridedVolumeView, Dim>& upper_side_of_face_vars,
     const std::array<StridedVolumeView, Dim>& lower_side_of_face_vars,
-    const ConstStridedVolumeView& padded_volume_vars,
-    const Index<Dim>& volume_extents, const double four_to_the_alpha_5,
-    const double six_to_the_alpha_7, const double eight_to_the_alpha_9) {
+    const SplitVolumeView& volume_vars, const Index<Dim>& volume_extents,
+    const double four_to_the_alpha_5, const double six_to_the_alpha_7,
+    const double eight_to_the_alpha_9) {
   detail::reconstruct<::fd::reconstruction::detail::
                           PositivityPreservingAdaptiveOrderReconstructor<
                               LowOrderReconstructor, PositivityPreserving,
                               Use9thOrder, Use7thOrder>>(
-      exec, upper_side_of_face_vars, lower_side_of_face_vars,
-      padded_volume_vars, volume_extents, four_to_the_alpha_5,
-      six_to_the_alpha_7, eight_to_the_alpha_9);
+      exec, upper_side_of_face_vars, lower_side_of_face_vars, volume_vars,
+      volume_extents, four_to_the_alpha_5, six_to_the_alpha_7,
+      eight_to_the_alpha_9);
 }
 
 template <bool PositivityPreserving, bool Use9thOrder, bool Use7thOrder,
@@ -83,8 +83,8 @@ void positivity_preserving_adaptive_order(
     const Kokkos::DefaultExecutionSpace& exec,
     const std::array<StridedVolumeView, Dim>& upper_side_of_face_vars,
     const std::array<StridedVolumeView, Dim>& lower_side_of_face_vars,
-    const ConstStridedVolumeView& padded_volume_vars,
-    const Index<Dim>& volume_extents, const bool positivity_preserving,
+    const SplitVolumeView& volume_vars, const Index<Dim>& volume_extents,
+    const bool positivity_preserving,
     const ::fd::reconstruction::FallbackReconstructorType
         low_order_reconstructor,
     const double four_to_the_alpha_5,
@@ -98,7 +98,7 @@ void positivity_preserving_adaptive_order(
   const auto select = [&]<bool Use9thOrder, bool Use7thOrder>() {
     select_positivity<Use9thOrder, Use7thOrder, Dim>(
         positivity_preserving, low_order_reconstructor, exec,
-        upper_side_of_face_vars, lower_side_of_face_vars, padded_volume_vars,
+        upper_side_of_face_vars, lower_side_of_face_vars, volume_vars,
         volume_extents, four_to_the_alpha_5, alpha_7_value, alpha_9_value);
   };
   if (six_to_the_alpha_7.has_value()) {
@@ -123,7 +123,7 @@ void positivity_preserving_adaptive_order(
       const Kokkos::DefaultExecutionSpace& exec,                               \
       const std::array<StridedVolumeView, DIM(data)>& upper_side_of_face_vars, \
       const std::array<StridedVolumeView, DIM(data)>& lower_side_of_face_vars, \
-      const ConstStridedVolumeView& padded_volume_vars,                        \
+      const SplitVolumeView& volume_vars,                                      \
       const Index<DIM(data)>& volume_extents, bool positivity_preserving,      \
       ::fd::reconstruction::FallbackReconstructorType low_order_reconstructor, \
       double four_to_the_alpha_5,                                              \

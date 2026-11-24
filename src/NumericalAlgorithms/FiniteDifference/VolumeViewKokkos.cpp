@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <limits>
 #include <string>
+#include <utility>
 
 #include "DataStructures/Index.hpp"
 #include "Domain/Structure/Direction.hpp"
@@ -18,6 +19,7 @@
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/Literals.hpp"
 #include "Utilities/MakeSignalingNan.hpp"
 
 #ifdef SPECTRE_KOKKOS
@@ -146,6 +148,61 @@ void pack_with_ghost_zones(
   }
 }
 
+template <size_t Dim>
+SplitVolumeView split_volume_view(const ConstStridedVolumeView& padded_vars,
+                                  const Index<Dim>& volume_extents) {
+  const size_t ghost_width = detail::ghost_width(padded_vars, volume_extents);
+  std::array<std::pair<size_t, size_t>, 3> interior{};
+  for (size_t d = 0; d < 3; ++d) {
+    gsl::at(interior, d) =
+        d < Dim ? std::pair{ghost_width, ghost_width + volume_extents[d]}
+                : std::pair{0_st, 1_st};
+  }
+  return {.interior = Kokkos::subview(padded_vars, Kokkos::ALL(), Kokkos::ALL(),
+                                      interior[2], interior[1], interior[0]),
+          .padded = padded_vars};
+}
+
+SplitVolumeView variable_range(const SplitVolumeView& volume_vars,
+                               const size_t begin, const size_t end) {
+  ASSERT(begin <= end and end <= volume_vars.interior.extent(1) and
+             end <= volume_vars.padded.extent(1),
+         "The variables [" << begin << ", " << end
+                           << ") aren't in the volume data of "
+                           << volume_vars.interior.extent(1) << " variables");
+  const auto variables = Kokkos::make_pair(begin, end);
+  return {
+      .interior =
+          Kokkos::subview(volume_vars.interior, Kokkos::ALL(), variables,
+                          Kokkos::ALL(), Kokkos::ALL(), Kokkos::ALL()),
+      .padded = Kokkos::subview(volume_vars.padded, Kokkos::ALL(), variables,
+                                Kokkos::ALL(), Kokkos::ALL(), Kokkos::ALL())};
+}
+
+template <size_t Dim>
+StridedVolumeView batch_volume_view(
+    const Kokkos::View<double***, Kokkos::LayoutLeft>& storage,
+    const size_t first, const size_t count, const Index<Dim>& volume_extents) {
+  const size_t number_of_points = storage.extent(0);
+  const size_t number_of_components = storage.extent(1);
+  ASSERT(number_of_points == volume_extents.product(),
+         "The batch has " << number_of_points
+                          << " grid points but the extents are "
+                          << volume_extents);
+  ASSERT(first + count <= number_of_components,
+         "The components [" << first << ", " << first + count
+                            << ") aren't in the batch of "
+                            << number_of_components << " components");
+  const auto extents = extents_3d(volume_extents);
+  return StridedVolumeView(
+      // The first point of component `first` of element 0
+      Kokkos::subview(storage, Kokkos::ALL(), first, Kokkos::ALL()).data(),
+      Kokkos::LayoutStride(
+          storage.extent(2), number_of_components * number_of_points, count,
+          number_of_points, extents[2], extents[1] * extents[0], extents[1],
+          extents[0], extents[0], 1));
+}
+
 namespace detail {
 namespace {
 int checked_size(const size_t number_of_elements,
@@ -186,7 +243,13 @@ BatchPoints::BatchPoints(const size_t number_of_elements,
       const VolumeView::host_mirror_type& padded_vars, size_t element,         \
       const gsl::span<const double>& volume_vars,                              \
       const DirectionMap<DIM(data), gsl::span<const double>>& ghost_cell_vars, \
-      const Index<DIM(data)>& volume_extents);
+      const Index<DIM(data)>& volume_extents);                                 \
+  template SplitVolumeView split_volume_view(                                  \
+      const ConstStridedVolumeView& padded_vars,                               \
+      const Index<DIM(data)>& volume_extents);                                 \
+  template StridedVolumeView batch_volume_view(                                \
+      const Kokkos::View<double***, Kokkos::LayoutLeft>& storage,              \
+      size_t first, size_t count, const Index<DIM(data)>& volume_extents);
 
 GENERATE_INSTANTIATIONS(INSTANTIATION, (1, 2, 3))
 

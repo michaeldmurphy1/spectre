@@ -71,6 +71,7 @@
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
 #include "Evolution/VariableFixing/Tags.hpp"
 #include "Framework/TestHelpers.hpp"
+#include "Helpers/NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/DerivativeOrder.hpp"
 #include "NumericalAlgorithms/FiniteDifference/FallbackReconstructorType.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
@@ -353,6 +354,10 @@ void test(const Correction& correction, const Reconstructor& recons) {
       gsl::make_span(volume_ghost_vars.data(), volume_ghost_vars.size()),
       ghost_spans, subcell_mesh.extents());
   Kokkos::deep_copy(exec, padded, host_padded);
+  // As in FD patches, the cells of the elements are read from their own view,
+  // not from the interior of the padded view (see `helpers::split`)
+  const auto ghost_variables =
+      TestHelpers::fd::device::split(exec, padded, subcell_mesh.extents());
 
   Variables<subcell::cell_spacetime_tags> cell_spacetime_with_coords{
       number_of_cells};
@@ -399,11 +404,11 @@ void test(const Correction& correction, const Reconstructor& recons) {
   DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags> face_status{exec};
   face_status.reset(exec);
   time_derivative.apply(
-      exec, make_not_null(&dt_vars), make_not_null(&face_status), padded,
-      evolved, primitives, cell_spacetime.batch_views(), face_geometry,
-      cell_geometry, grid_to_inertial.is_moving, div_mesh_velocity, correction,
-      *eos, &fixer, 1.0, fd_patch::PackagedDataFromDg<3>{},
-      Kokkos::View<const double*>{});
+      exec, make_not_null(&dt_vars), make_not_null(&face_status),
+      ghost_variables, evolved, primitives, cell_spacetime.batch_views(),
+      face_geometry, cell_geometry, grid_to_inertial.is_moving,
+      div_mesh_velocity, correction, *eos, &fixer, 1.0,
+      fd_patch::PackagedDataFromDg<3>{}, Kokkos::View<const double*>{});
   face_status.copy_to_host(exec);
   exec.fence();
   CHECK_FALSE(face_status.failed());
@@ -426,11 +431,12 @@ void test(const Correction& correction, const Reconstructor& recons) {
   // doesn't support
   BatchedVariables<subcell::dt_tags_on_device> moving_dt_vars{
       exec, number_of_cells, 1};
-  time_derivative.apply(
-      exec, make_not_null(&moving_dt_vars), make_not_null(&face_status), padded,
-      evolved, primitives, cell_spacetime.batch_views(), face_geometry,
-      cell_geometry, true, div_mesh_velocity, correction, *eos, &fixer, 1.0,
-      fd_patch::PackagedDataFromDg<3>{}, Kokkos::View<const double*>{});
+  time_derivative.apply(exec, make_not_null(&moving_dt_vars),
+                        make_not_null(&face_status), ghost_variables, evolved,
+                        primitives, cell_spacetime.batch_views(), face_geometry,
+                        cell_geometry, true, div_mesh_velocity, correction,
+                        *eos, &fixer, 1.0, fd_patch::PackagedDataFromDg<3>{},
+                        Kokkos::View<const double*>{});
   BatchedVariables<subcell::dt_tags_on_device, Kokkos::HostSpace>
       host_moving_dt{number_of_cells, 1};
   deep_copy(exec, make_not_null(&host_moving_dt), moving_dt_vars);

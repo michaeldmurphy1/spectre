@@ -89,7 +89,10 @@
 #include "PointwiseFunctions/GeneralRelativity/DetAndInverseSpatialMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/SpatialMetric.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/Equilibrium3D.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/HybridEos.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/Spectral.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Time/Tags/Time.hpp"
 #include "Utilities/CloneUniquePtrs.hpp"
@@ -236,6 +239,31 @@ Variables<ghost_tags> ghost_variables(const Variables<prim_tags>& prims,
   return result;
 }
 
+// The equation of state of the TOV star and the one the evolution uses: a
+// polytrope (promoted to 3D), or the spectral equation of state of the BNS
+// runs and the hybrid equation of state built on it
+struct EquationsOfStateForTest {
+  std::unique_ptr<EquationsOfState::EquationOfState<true, 1>> star;
+  std::unique_ptr<EquationsOfState::EquationOfState<true, 3>> evolution;
+};
+
+EquationsOfStateForTest polytrope() {
+  auto star =
+      std::make_unique<EquationsOfState::PolytropicFluid<true>>(100.0, 2.0);
+  auto evolution = star->promote_to_3d_eos();
+  return {std::move(star), std::move(evolution)};
+}
+
+EquationsOfStateForTest hybrid_spectral() {
+  const EquationsOfState::Spectral spectral{
+      1.0118e-4, 3.3625e-7, {2.0, 0.0, 0.4029, -0.1008}, 0.005};
+  return {std::make_unique<EquationsOfState::Spectral>(spectral),
+          std::make_unique<EquationsOfState::Equilibrium3D<
+              EquationsOfState::HybridEos<EquationsOfState::Spectral>>>(
+              EquationsOfState::HybridEos<EquationsOfState::Spectral>{spectral,
+                                                                      1.75})};
+}
+
 // The FD time derivative of one element of a perturbed TOV star on the device
 // is the same as on the host. With `div_per_cell`, the divergence of the mesh
 // velocity varies in the element and the device gets it at each cell, as the
@@ -244,7 +272,8 @@ template <typename Reconstructor>
 void test(const gsl::not_null<std::mt19937*> generator,
           const Reconstructor& recons,
           const std::optional<double>& expansion_velocity,
-          const bool div_per_cell = false) {
+          const bool div_per_cell = false,
+          const EquationsOfStateForTest& equations_of_state = polytrope()) {
   CAPTURE(pretty_type::short_name<Reconstructor>());
   CAPTURE(recons.ghost_zone_size());
   CAPTURE(expansion_velocity);
@@ -259,10 +288,9 @@ void test(const gsl::not_null<std::mt19937*> generator,
   using variables_tag = typename TheSystem::variables_tag;
   using dt_variables_tag = db::add_tag_prefix<::Tags::dt, variables_tag>;
 
+  CAPTURE(pretty_type::get_runtime_type_name(*equations_of_state.evolution));
   const gh::Solutions::WrappedGr<::RelativisticEuler::Solutions::TovStar> soln{
-      1.28e-3,
-      std::make_unique<EquationsOfState::PolytropicFluid<true>>(100.0, 2.0)
-          ->get_clone(),
+      1.28e-3, equations_of_state.star->get_clone(),
       RelativisticEuler::Solutions::TovCoordinates::Schwarzschild};
   const Affine affine_map{-1.0, 1.0, -4.0, 4.0};
   const Affine3D coordinate_map{affine_map, affine_map, affine_map};
@@ -434,7 +462,7 @@ void test(const gsl::not_null<std::mt19937*> generator,
           std::make_unique<BoundaryCorrection>(
               gh::BoundaryCorrections::UpwindPenalty<3>{},
               ValenciaDivClean::BoundaryCorrections::Hll{1.0e-30, 1.0e-8})},
-      soln.equation_of_state().promote_to_3d_eos(), cell_prims,
+      equations_of_state.evolution->get_clone(), cell_prims,
       Variables<typename dt_variables_tag::tags_list>{number_of_cells},
       cell_vars, neighbor_data,
       typename evolution::dg::subcell::Tags::ReconstructionOrder<3>::type{},
@@ -621,7 +649,7 @@ void test(const gsl::not_null<std::mt19937*> generator,
   DeferredPointwiseStatus<ValenciaDivClean::fd::face_atmosphere_snapshot_tags>
       face_status{exec};
   face_status.reset(exec);
-  const auto eos = soln.equation_of_state().promote_to_3d_eos();
+  const auto& eos = equations_of_state.evolution;
   std::optional<DeviceTimeDerivative::Batch<DeviceTimeDerivative::MeshVelocity>>
       mesh_velocity{};
   if (expansion_velocity.has_value()) {
@@ -666,7 +694,7 @@ void test(const gsl::not_null<std::mt19937*> generator,
 }
 }  // namespace
 
-// [[TimeOut, 10]]
+// [[TimeOut, 20]]
 SPECTRE_TEST_CASE(
     "Unit.Evolution.Systems.GrMhd.GhValenciaDivClean.Subcell.TimeDerivative."
     "Kokkos",
@@ -704,5 +732,10 @@ SPECTRE_TEST_CASE(
                            false};
   test(make_not_null(&generator), fixed_monotonised_central, {0.5});
   test(make_not_null(&generator), fixed_adaptive_order, {});
+  // The equation of state of the BNS runs, with their reconstruction
+  test(make_not_null(&generator), fixed_adaptive_order, {}, false,
+       hybrid_spectral());
+  test(make_not_null(&generator), fixed_monotonised_central, {}, false,
+       hybrid_spectral());
 }
 }  // namespace grmhd::GhValenciaDivClean

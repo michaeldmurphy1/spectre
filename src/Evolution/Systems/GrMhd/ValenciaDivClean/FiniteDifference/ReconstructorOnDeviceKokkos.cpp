@@ -115,45 +115,40 @@ void ReconstructorOnDevice::reconstruct(
         upper_side_of_face_vars,
     const std::array<::fd::device::StridedVolumeView, 3>&
         lower_side_of_face_vars,
-    const ::fd::device::ConstVolumeView& padded_ghost_variables,
+    const ::fd::device::SplitVolumeView& ghost_variables,
     const Index<3>& volume_extents) {
-  ASSERT(padded_ghost_variables.extent(1) >= number_of_reconstructed_variables,
+  ASSERT(ghost_variables.padded.extent(1) >= number_of_reconstructed_variables,
          "The padded ghost variables have "
-             << padded_ghost_variables.extent(1)
+             << ghost_variables.padded.extent(1)
              << " variables, but the reconstruction needs "
              << number_of_reconstructed_variables);
-  const auto padded_range = [&padded_ghost_variables](const size_t begin,
-                                                      const size_t end) {
-    return ::fd::device::ConstStridedVolumeView{Kokkos::subview(
-        padded_ghost_variables, Kokkos::ALL(), Kokkos::make_pair(begin, end),
-        Kokkos::ALL(), Kokkos::ALL(), Kokkos::ALL())};
-  };
-  // The ranges of variables that are reconstructed from the same padded data
-  // with the same method: [begin, end), the padded data, and whether to
+  // The ranges of variables that are reconstructed from the same volume data
+  // with the same method: [begin, end), the volume data, and whether to
   // preserve positivity (with adaptive order)
-  std::vector<
-      std::tuple<size_t, size_t, ::fd::device::ConstStridedVolumeView, bool>>
+  std::vector<std::tuple<size_t, size_t, ::fd::device::SplitVolumeView, bool>>
       ranges{};
   if (reconstruct_rho_times_temperature_) {
     // As the host, which multiplies the temperature by the rest mass density
     // in the volume and the ghost zones
-    if (rho_times_temperature_.extent(0) != padded_ghost_variables.extent(0) or
-        rho_times_temperature_.extent(2) != padded_ghost_variables.extent(2) or
-        rho_times_temperature_.extent(3) != padded_ghost_variables.extent(3) or
-        rho_times_temperature_.extent(4) != padded_ghost_variables.extent(4)) {
+    const auto& padded = ghost_variables.padded;
+    const auto& interior = ghost_variables.interior;
+    if (rho_times_temperature_.extent(0) != padded.extent(0) or
+        rho_times_temperature_.extent(2) != padded.extent(2) or
+        rho_times_temperature_.extent(3) != padded.extent(3) or
+        rho_times_temperature_.extent(4) != padded.extent(4)) {
       rho_times_temperature_ = ::fd::device::VolumeView{
           Kokkos::view_alloc(exec, Kokkos::WithoutInitializing,
                              "rho_times_temperature"),
-          padded_ghost_variables.extent(0),
+          padded.extent(0),
           1,
-          padded_ghost_variables.extent(2),
-          padded_ghost_variables.extent(3),
-          padded_ghost_variables.extent(4)};
+          padded.extent(2),
+          padded.extent(3),
+          padded.extent(4)};
     }
-    const auto& padded = padded_ghost_variables;
     const auto& rho_times_temperature = rho_times_temperature_;
     // The edges and corners of the padded data aren't set (they are signaling
-    // NaNs with `SPECTRE_NAN_INIT`) and aren't used, so skip them
+    // NaNs with `SPECTRE_NAN_INIT`) and aren't used, so skip them. The cells
+    // of the elements are read from the interior.
     const size_t ghost_width =
         ::fd::device::detail::ghost_width(padded, volume_extents);
     const Kokkos::Array<size_t, 3> interior_end{
@@ -172,48 +167,68 @@ void ReconstructorOnDevice::reconstruct(
                                         padded.extent(3), padded.extent(4)}),
         KOKKOS_LAMBDA(const size_t e, const size_t k, const size_t j,
                       const size_t i) {
-          const size_t outside = (k < ghost_width or k >= interior_end[0]) +
-                                 (j < ghost_width or j >= interior_end[1]) +
-                                 (i < ghost_width or i >= interior_end[2]);
-          if (outside <= 1) {
+          const bool k_outside = k < ghost_width or k >= interior_end[0];
+          const bool j_outside = j < ghost_width or j >= interior_end[1];
+          const bool i_outside = i < ghost_width or i >= interior_end[2];
+          const size_t outside = static_cast<size_t>(k_outside) +
+                                 static_cast<size_t>(j_outside) +
+                                 static_cast<size_t>(i_outside);
+          if (outside == 0) {
+            const size_t k0 = k - ghost_width;
+            const size_t j0 = j - ghost_width;
+            const size_t i0 = i - ghost_width;
+            rho_times_temperature(e, 0, k, j, i) =
+                interior(e, temperature_index, k0, j0, i0) *
+                interior(e, rest_mass_density_index, k0, j0, i0);
+          } else if (outside == 1) {
             rho_times_temperature(e, 0, k, j, i) =
                 padded(e, temperature_index, k, j, i) *
                 padded(e, rest_mass_density_index, k, j, i);
           }
         });
+    const auto rho_times_temperature_volume = ::fd::device::split_volume_view(
+        ::fd::device::ConstStridedVolumeView{rho_times_temperature_},
+        volume_extents);
     ranges = {
-        {0, temperature_index, padded_range(0, temperature_index), true},
-        {temperature_index, temperature_index + 1,
-         ::fd::device::ConstStridedVolumeView{rho_times_temperature_}, true},
+        {0, temperature_index,
+         ::fd::device::variable_range(ghost_variables, 0, temperature_index),
+         true},
+        {temperature_index, temperature_index + 1, rho_times_temperature_volume,
+         true},
         {temperature_index + 1, number_of_positivity_preserving_variables,
-         padded_range(temperature_index + 1,
-                      number_of_positivity_preserving_variables),
+         ::fd::device::variable_range(
+             ghost_variables, temperature_index + 1,
+             number_of_positivity_preserving_variables),
          true}};
   } else {
-    ranges = {{0, number_of_positivity_preserving_variables,
-               padded_range(0, number_of_positivity_preserving_variables),
-               true}};
+    ranges = {
+        {0, number_of_positivity_preserving_variables,
+         ::fd::device::variable_range(
+             ghost_variables, 0, number_of_positivity_preserving_variables),
+         true}};
   }
-  ranges.emplace_back(number_of_positivity_preserving_variables,
-                      number_of_reconstructed_variables,
-                      padded_range(number_of_positivity_preserving_variables,
+  ranges.emplace_back(
+      number_of_positivity_preserving_variables,
+      number_of_reconstructed_variables,
+      ::fd::device::variable_range(ghost_variables,
+                                   number_of_positivity_preserving_variables,
                                    number_of_reconstructed_variables),
-                      false);
+      false);
 
-  for (const auto& [begin, end, padded, positivity_preserving] : ranges) {
+  for (const auto& [begin, end, volume, positivity_preserving] : ranges) {
     if (begin == end) {
       continue;
     }
     if (adaptive_order_) {
       ::fd::device::positivity_preserving_adaptive_order(
           exec, variable_range(upper_side_of_face_vars, begin, end),
-          variable_range(lower_side_of_face_vars, begin, end), padded,
+          variable_range(lower_side_of_face_vars, begin, end), volume,
           volume_extents, positivity_preserving, low_order_reconstructor_,
           four_to_the_alpha_5_, six_to_the_alpha_7_, eight_to_the_alpha_9_);
     } else {
       ::fd::device::monotonised_central(
           exec, variable_range(upper_side_of_face_vars, begin, end),
-          variable_range(lower_side_of_face_vars, begin, end), padded,
+          variable_range(lower_side_of_face_vars, begin, end), volume,
           volume_extents);
     }
   }

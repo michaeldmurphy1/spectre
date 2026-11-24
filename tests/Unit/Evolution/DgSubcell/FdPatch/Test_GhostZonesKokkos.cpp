@@ -491,6 +491,36 @@ void test_parts(const gsl::not_null<std::mt19937*> generator) {
     CHECK(flat_whole(i) == flat_in_parts(i));
   }
 
+  // Without `fill_interior`, the interior of the part keeps its values and
+  // everything else is filled as before
+  const GhostZones<1> without_interior{
+      exec,
+      elements,
+      interpolants,
+      patches,
+      1,
+      ghost_width,
+      {GhostVariablesPart{.number_of_variables = 2,
+                          .variables_per_element = 2,
+                          .fill_interior = false},
+       GhostVariablesPart{.number_of_variables = 1,
+                          .variables_per_element = 4,
+                          .first_variable = 2}}};
+  const auto padded_without_interior = padded(without_interior, device_parts);
+  for (size_t e = 0; e < number_of_elements; ++e) {
+    for (size_t v = 0; v < 3; ++v) {
+      for (size_t x = 0; x < padded_in_parts.extent(4); ++x) {
+        CAPTURE(e);
+        CAPTURE(v);
+        CAPTURE(x);
+        const bool in_interior =
+            x >= ghost_width and x < ghost_width + number_of_cells;
+        CHECK(padded_without_interior(e, v, 0, 0, x) ==
+              (v < 2 and in_interior ? 0.5 : padded_in_parts(e, v, 0, 0, x)));
+      }
+    }
+  }
+
   const auto sent = [&](const GhostZones<1>& ghost_zones,
                         const auto& ghost_variables) {
     const Kokkos::View<double*> send_data("send data",
@@ -501,8 +531,11 @@ void test_parts(const gsl::not_null<std::mt19937*> generator) {
   const auto sent_whole = sent(whole, device_whole);
   const auto sent_in_parts = sent(in_parts, device_parts);
   REQUIRE(sent_whole.size() == sent_in_parts.size());
+  const auto sent_without_interior = sent(without_interior, device_parts);
+  REQUIRE(sent_whole.size() == sent_without_interior.size());
   for (size_t i = 0; i < sent_whole.size(); ++i) {
     CHECK(sent_whole(i) == sent_in_parts(i));
+    CHECK(sent_whole(i) == sent_without_interior(i));
   }
 }
 

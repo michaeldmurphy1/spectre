@@ -183,9 +183,10 @@ class TimeDerivativeOnDevice {
    * \param face_status where the failures of the fix to the atmosphere on
    * both sides of the faces (see `fd::compute_conservatives_on_device`) are
    * added.
-   * \param padded_ghost_variables the ghost variables of the elements padded
-   * with ghost zones of width at least 2, filled by
-   * `evolution::dg::subcell::fd_patch::GhostZones`.
+   * \param ghost_variables the ghost variables of the elements, padded with
+   * ghost zones of width at least 2 filled by
+   * `evolution::dg::subcell::fd_patch::GhostZones` (see
+   * `::fd::device::SplitVolumeView`).
    * \param evolved_variables the evolved variables at the cell centers, which
    * must hold the `evolved_tags_on_device`.
    * \param primitives the primitive variables at the cell centers.
@@ -221,7 +222,7 @@ class TimeDerivativeOnDevice {
       gsl::not_null<BatchedVariables<DtTags>*> dt_vars,
       gsl::not_null<DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>
           face_status,
-      const ::fd::device::VolumeView& padded_ghost_variables,
+      const ::fd::device::SplitVolumeView& ghost_variables,
       const BatchedVariables<EvolvedTags>& evolved_variables,
       const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,
       const CellSpacetimeViews& cell_spacetime,

@@ -292,7 +292,7 @@ void TimeDerivativeOnDevice<Correction>::apply(
     const gsl::not_null<
         DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>
         face_status,
-    const ::fd::device::VolumeView& padded_ghost_variables,
+    const ::fd::device::SplitVolumeView& ghost_variables,
     const BatchedVariables<EvolvedTags>& evolved_variables,
     const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,
     const CellSpacetimeViews& cell_spacetime,
@@ -318,7 +318,7 @@ void TimeDerivativeOnDevice<Correction>::apply(
   reconstructor_.reconstruct(
       exec, fd::reconstructed_face_views(upper_faces_, subcell_extents_),
       fd::reconstructed_face_views(lower_faces_, subcell_extents_),
-      padded_ghost_variables, subcell_extents_);
+      ghost_variables, subcell_extents_);
 
   // 2. Primitive and conserved variables, fluxes, normals and packaged data
   // on the faces

@@ -51,6 +51,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/TimeDerivativeKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/System.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphereOnDeviceKokkos.hpp"
+#include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
@@ -153,11 +154,14 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
           time,
           functions_of_time,
           reconstructor_on_device.ghost_zone_size(),
+          // The time derivative reads the cells of the elements from
+          // `ghost_variables_`, so only the ghost zones are filled
           {patch_ns::GhostVariablesPart{
               .number_of_variables =
                   Variables<ghost_tags>::number_of_independent_components,
               .variables_per_element =
-                  Variables<ghost_tags>::number_of_independent_components}},
+                  Variables<ghost_tags>::number_of_independent_components,
+              .fill_interior = false}},
           number_of_packaged_variables,
           number_of_packaged_variables,
           0},
@@ -385,8 +389,15 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::compute_time_derivative(
           subcell::TimeDerivativeOnDevice<Correction>& time_derivative) {
         time_derivative.apply(
             exec, make_not_null(&dt_variables), fixing_.face_status(),
-            patch_elements().padded_ghost_variables(), *evolved_variables,
-            *primitives, cell_spacetime_variables->batch_views(),
+            ::fd::device::SplitVolumeView{
+                .interior = ::fd::device::batch_volume_view(
+                    ghost_variables_.view(), 0,
+                    decltype(ghost_variables_)::
+                        number_of_independent_components,
+                    patch_elements().subcell_mesh().extents()),
+                .padded = patch_elements().padded_ghost_variables()},
+            *evolved_variables, *primitives,
+            cell_spacetime_variables->batch_views(),
             patch_elements().face_geometry(),
             patch_elements().cell_det_inverse_jacobian(),
             patch_elements().mesh_is_moving(),

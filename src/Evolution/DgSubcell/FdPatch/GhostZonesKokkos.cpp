@@ -204,11 +204,13 @@ GhostZones<Dim>::GhostZones(
             << ". Only periodic boundaries are supported.");
     }
     for (size_t part = 0; part < parts_.size(); ++part) {
-      from_patch_[part].add_copy(
-          source_offset(part, slot), number_of_cells,
-          slot * padded_element_stride +
-              first_variables_[part] * number_of_padded_cells,
-          number_of_padded_cells, unpadded_points, padded_points);
+      if (parts_[part].fill_interior) {
+        from_patch_[part].add_copy(
+            source_offset(part, slot), number_of_cells,
+            slot * padded_element_stride +
+                first_variables_[part] * number_of_padded_cells,
+            number_of_padded_cells, unpadded_points, padded_points);
+      }
     }
 
     for (const auto& direction : Direction<Dim>::all_directions()) {

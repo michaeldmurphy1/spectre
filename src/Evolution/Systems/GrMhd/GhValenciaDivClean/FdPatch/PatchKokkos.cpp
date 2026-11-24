@@ -35,6 +35,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PalenzuelaEtAl.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/RdmpTciDataKokkos.hpp"
 #include "Evolution/VariableFixing/LimitLorentzFactorOnDeviceKokkos.hpp"
+#include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Spectral/QuadratureWeights.hpp"
 #include "Time/StepperErrorTolerances.hpp"
 #include "Time/TimeStepId.hpp"
@@ -169,7 +170,9 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
   // The ghost variables are those of `PrimitiveGhostVariables`: the hydro
   // variables to reconstruct, which are computed into `ghost_variables_`, and
   // the GH variables, which are read from the evolved variables (where they
-  // come first)
+  // come first). The time derivative reads the hydro variables of the cells
+  // of the elements from `ghost_variables_`, so only their ghost zones are
+  // filled, and the GH variables from the padded ghost variables.
   constexpr size_t number_of_hydro_ghost_variables =
       Variables<hydro_ghost_tags>::number_of_independent_components;
   constexpr size_t number_of_gh_variables =
@@ -193,7 +196,8 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::Patch(
           hydro_reconstructor.ghost_zone_size(),
           {patch_ns::GhostVariablesPart{
                .number_of_variables = number_of_hydro_ghost_variables,
-               .variables_per_element = number_of_hydro_ghost_variables},
+               .variables_per_element = number_of_hydro_ghost_variables,
+               .fill_interior = false},
            patch_ns::GhostVariablesPart{
                .number_of_variables = number_of_gh_variables,
                .variables_per_element =
@@ -492,6 +496,10 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::compute_time_derivative(
         time_derivative.apply(
             exec, make_not_null(&dt_variables_), evolved_variables,
             fixing_.face_status(), elements.padded_ghost_variables(),
+            ::fd::device::batch_volume_view(
+                ghost_variables_.view(), 0,
+                decltype(ghost_variables_)::number_of_independent_components,
+                elements.subcell_mesh().extents()),
             *primitives,
             get<::Tags::BatchView<domain::Tags::InverseJacobian<
                 3, Frame::ElementLogical, Frame::Inertial>>>(

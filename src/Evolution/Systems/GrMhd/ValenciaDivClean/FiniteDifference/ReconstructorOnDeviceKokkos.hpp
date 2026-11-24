@@ -85,10 +85,9 @@ class ReconstructorOnDevice {
    * \param upper_side_of_face_vars the values on the upper side of the faces
    * in each direction, e.g. from `reconstructed_face_views`.
    * \param lower_side_of_face_vars the values on the lower side of the faces.
-   * \param padded_ghost_variables the ghost variables padded with ghost zones
-   * of width at least `ghost_zone_size()`. Variables after the
-   * `reconstructed_face_tags` (e.g. the spacetime variables of
-   * GhValenciaDivClean) are ignored.
+   * \param ghost_variables the ghost variables padded with ghost zones of
+   * width at least `ghost_zone_size()` (see `::fd::device::SplitVolumeView`).
+   * Variables after the `reconstructed_face_tags` are ignored.
    * \param volume_extents the number of cells in each element.
    */
   void reconstruct(const Kokkos::DefaultExecutionSpace& exec,
@@ -96,7 +95,7 @@ class ReconstructorOnDevice {
                        upper_side_of_face_vars,
                    const std::array<::fd::device::StridedVolumeView, 3>&
                        lower_side_of_face_vars,
-                   const ::fd::device::ConstVolumeView& padded_ghost_variables,
+                   const ::fd::device::SplitVolumeView& ghost_variables,
                    const Index<3>& volume_extents);
 
  private:

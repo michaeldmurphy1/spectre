@@ -33,9 +33,9 @@ namespace fd::device {
  * each face (see `fd::device::monotonised_central`).
  * \param lower_side_of_face_vars same as `upper_side_of_face_vars`, but for
  * the lower side of the faces.
- * \param padded_volume_vars the volume data padded with ghost zones of width
- * at least 3 (4 with the 7th order, 5 with the 9th order), e.g. a subview of
- * some of the variables of a `ConstVolumeView`.
+ * \param volume_vars the volume data, padded with ghost zones of width at
+ * least 3 (4 with the 7th order, 5 with the 9th order), see
+ * `SplitVolumeView`. Can be some of the variables (see `variable_range`).
  * \param volume_extents the number of cells in each element.
  * \param positivity_preserving whether to fall back to lower orders if the
  * reconstructed values aren't positive.
@@ -52,8 +52,8 @@ void positivity_preserving_adaptive_order(
     const Kokkos::DefaultExecutionSpace& exec,
     const std::array<StridedVolumeView, Dim>& upper_side_of_face_vars,
     const std::array<StridedVolumeView, Dim>& lower_side_of_face_vars,
-    const ConstStridedVolumeView& padded_volume_vars,
-    const Index<Dim>& volume_extents, bool positivity_preserving,
+    const SplitVolumeView& volume_vars, const Index<Dim>& volume_extents,
+    bool positivity_preserving,
     ::fd::reconstruction::FallbackReconstructorType low_order_reconstructor,
     double four_to_the_alpha_5, const std::optional<double>& six_to_the_alpha_7,
     const std::optional<double>& eight_to_the_alpha_9);

@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 
 #include "DataStructures/Index.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
@@ -37,17 +38,19 @@ namespace fd::device {
  *
  * \note Unlike the CPU implementations, which keep the ghost data in separate
  * buffers and copy it into a small stencil buffer near the element boundary,
- * the kernels use padded views. This costs one copy and the unused edges and
- * corners, but every thread then applies the same stencil with no branches and
- * coalesced memory access, for all directions and all kernels that use the
- * padded data. The kernels are likely limited by memory bandwidth, so future
- * optimizations should reduce global memory traffic rather than arithmetic,
- * guided by profiling: e.g. fusing the reconstruction with the computation of
- * the fluxes and the boundary correction at each face, so face values aren't
- * written to and read back from global memory, and staging pencils or slabs of
- * the padded data in shared memory. A whole padded element doesn't fit for
- * larger elements, e.g. 64 KB per variable for 16 cells and ghost zones of
- * width 2. These only change the kernels, not their interface.
+ * the kernels use padded views. This costs the unused edges and corners, but
+ * every thread then applies the same stencil with coalesced memory access, for
+ * all directions and all kernels that use the padded data. Kernels that take a
+ * `SplitVolumeView` read the cells of the elements from an unpadded view, so
+ * they don't need them copied into the padded view. The kernels are likely
+ * limited by memory bandwidth, so future optimizations should reduce global
+ * memory traffic rather than arithmetic, guided by profiling: e.g. fusing the
+ * reconstruction with the computation of the fluxes and the boundary correction
+ * at each face, so face values aren't written to and read back from global
+ * memory, and staging pencils or slabs of the padded data in shared memory. A
+ * whole padded element doesn't fit for larger elements, e.g. 64 KB per variable
+ * for 16 cells and ghost zones of width 2. These only change the kernels, not
+ * their interface.
  */
 using VolumeView = Kokkos::View<double*****, Kokkos::LayoutRight>;
 /// \copydoc VolumeView
@@ -64,6 +67,46 @@ using StridedVolumeView = Kokkos::View<double*****, Kokkos::LayoutStride>;
 /// \copydoc StridedVolumeView
 using ConstStridedVolumeView =
     Kokkos::View<const double*****, Kokkos::LayoutStride>;
+
+/*!
+ * \brief Volume data of a batch of elements padded with ghost zones (see
+ * `VolumeView`), whose cells in the elements are read from another, unpadded
+ * view.
+ *
+ * \details Kernels that apply stencils read the cells of the elements from
+ * `interior` and the cells of the ghost zones from `padded`, whose interior
+ * isn't read. So the cells of the elements don't have to be copied into the
+ * padded view: e.g. FD patches read them from the batches they are computed
+ * into (see `evolution::dg::subcell::fd_patch::GhostZones`). Both views have
+ * the same elements and variables, and `interior` has the extents of the
+ * elements. A padded view whose interior is filled converts with
+ * `split_volume_view()`.
+ */
+struct SplitVolumeView {
+  ConstStridedVolumeView interior;
+  ConstStridedVolumeView padded;
+};
+
+/// The `SplitVolumeView` of a padded view whose interior is filled, with
+/// `volume_extents` cells in each element
+template <size_t Dim>
+SplitVolumeView split_volume_view(const ConstStridedVolumeView& padded_vars,
+                                  const Index<Dim>& volume_extents);
+
+/// The variables [`begin`, `end`) of `volume_vars`
+SplitVolumeView variable_range(const SplitVolumeView& volume_vars, size_t begin,
+                               size_t end);
+
+/*!
+ * \brief The `count` tensor components from `first` of data indexed by grid
+ * point, tensor component and element (e.g. the storage of a
+ * `BatchedVariables`) as volume data with `volume_extents` cells in each
+ * element.
+ */
+template <size_t Dim>
+StridedVolumeView batch_volume_view(
+    const Kokkos::View<double***, Kokkos::LayoutLeft>& storage, size_t first,
+    size_t count, const Index<Dim>& volume_extents);
 
 /*!
  * \brief Allocate a `VolumeView` for `number_of_elements` elements with
@@ -129,6 +172,62 @@ size_t ghost_width(const View& padded_vars, const Index<Dim>& volume_extents) {
 #endif  // SPECTRE_DEBUG
   return result;
 }
+
+/*!
+ * \brief One variable of a `SplitVolumeView` along a line of cells in one
+ * dimension, through an element and its ghost zones.
+ *
+ * \details Cell `c` of the line, from `-ghost_width` to
+ * `number_of_cells + ghost_width - 1`, is read from the interior view if it is
+ * in the element (`0 <= c < number_of_cells`) and from the padded view
+ * otherwise. Kernels that loop over the variables advance both pointers by the
+ * variable strides of the views.
+ */
+struct SplitLine {
+  /// Cell 0 of the line in the interior view
+  const double* interior;
+  /// Cell 0 of the line in the padded view
+  const double* padded;
+  int interior_stride;
+  int padded_stride;
+  int number_of_cells;
+
+  KOKKOS_FORCEINLINE_FUNCTION double operator()(const int cell) const {
+    // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    return cell >= 0 and cell < number_of_cells
+               ? interior[static_cast<ptrdiff_t>(cell) * interior_stride]
+               : padded[static_cast<ptrdiff_t>(cell) * padded_stride];
+    // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+  }
+
+  /// Move to the same line of the next variable, given the variable strides
+  /// of the interior and padded views
+  KOKKOS_FORCEINLINE_FUNCTION void next_variable(
+      const size_t interior_variable_stride,
+      const size_t padded_variable_stride) {
+    // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    interior += interior_variable_stride;
+    padded += padded_variable_stride;
+    // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+  }
+
+  /// The `Width` cells centered on the cell `center`, for stencils that read
+  /// `q[i]` for `i` from `-Width / 2` to `Width / 2` (at
+  /// `result.data() + Width / 2` with stride 1)
+  template <size_t Width>
+  KOKKOS_FORCEINLINE_FUNCTION Kokkos::Array<double, Width> stencil(
+      const int center) const {
+    return stencil_impl(center, std::make_index_sequence<Width>{});
+  }
+
+ private:
+  template <size_t... Is>
+  KOKKOS_FORCEINLINE_FUNCTION Kokkos::Array<double, sizeof...(Is)> stencil_impl(
+      const int center, std::index_sequence<Is...> /*meta*/) const {
+    constexpr int half_width = static_cast<int>(sizeof...(Is) / 2);
+    return {{(*this)(center - half_width + static_cast<int>(Is))...}};
+  }
+};
 
 /*!
  * \brief The cells `(element, variable, z, y, x)` of a batch, enumerated by a

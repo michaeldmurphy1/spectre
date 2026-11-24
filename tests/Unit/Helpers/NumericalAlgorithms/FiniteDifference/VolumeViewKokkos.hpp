@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "DataStructures/DataVector.hpp"
@@ -140,6 +141,45 @@ template <size_t Dim>
   // The copy may still read `host_padded`, which is freed on return
   exec.fence("TestHelpers::fd::device::pack");
   return padded;
+}
+
+/*!
+ * \brief The volume data of the padded view `padded_vars` as a
+ * `::fd::device::SplitVolumeView` whose interior is a separate view, and whose
+ * padded view is a copy of `padded_vars` with `interior_value` in the interior
+ * of each element, so kernels that read the interior of the padded view
+ * instead of the separate interior give different results.
+ */
+template <size_t Dim>
+::fd::device::SplitVolumeView split(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const ::fd::device::ConstStridedVolumeView& padded_vars,
+    const Index<Dim>& volume_extents, const double interior_value = 1.0e10) {
+  const size_t ghost_width =
+      ::fd::device::detail::ghost_width(padded_vars, volume_extents);
+  const auto interior =
+      ::fd::device::make_volume_view(exec, "interior", padded_vars.extent(0),
+                                     padded_vars.extent(1), volume_extents);
+  Kokkos::deep_copy(
+      exec, interior,
+      ::fd::device::split_volume_view(padded_vars, volume_extents).interior);
+  const auto padded = ::fd::device::make_volume_view(
+      exec, "padded", padded_vars.extent(0), padded_vars.extent(1),
+      volume_extents, ghost_width);
+  Kokkos::deep_copy(exec, padded, padded_vars);
+  std::array<std::pair<size_t, size_t>, 3> interior_range{};
+  for (size_t d = 0; d < 3; ++d) {
+    gsl::at(interior_range, d) =
+        d < Dim ? std::pair{ghost_width, ghost_width + volume_extents[d]}
+                : std::pair{size_t{0}, size_t{1}};
+  }
+  Kokkos::deep_copy(
+      exec,
+      Kokkos::subview(padded, Kokkos::ALL(), Kokkos::ALL(), interior_range[2],
+                      interior_range[1], interior_range[0]),
+      interior_value);
+  exec.fence("TestHelpers::fd::device::split");
+  return {.interior = interior, .padded = padded};
 }
 
 /// Copy views to the host

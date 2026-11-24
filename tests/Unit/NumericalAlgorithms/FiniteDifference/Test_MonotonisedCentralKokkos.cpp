@@ -56,20 +56,25 @@ std::array<StridedVolumeView, Dim> strided(
 }
 
 // Reconstruct the data on the device, padded with ghost zones of width
-// `padded_ghost_width`. Returns the host mirrors of the upper and lower side
-// of the faces in each direction.
+// `padded_ghost_width`, with the interior in a separate view if
+// `split_interior` (see `helpers::split`). Returns the host mirrors of the
+// upper and lower side of the faces in each direction.
 template <size_t Dim>
 std::array<std::array<VolumeView::host_mirror_type, Dim>, 2>
 reconstruct_on_device(const std::vector<helpers::ElementData<Dim>>& data,
                       const Index<Dim>& volume_extents,
-                      const size_t padded_ghost_width = ghost_width) {
+                      const size_t padded_ghost_width = ghost_width,
+                      const bool split_interior = false) {
   const Kokkos::DefaultExecutionSpace exec{};
   const auto padded = helpers::pack(exec, data, number_of_variables,
                                     volume_extents, padded_ghost_width);
   const auto upper_side = make_face_views("upper side", volume_extents);
   const auto lower_side = make_face_views("lower side", volume_extents);
   ::fd::device::monotonised_central(
-      exec, strided(upper_side), strided(lower_side), padded, volume_extents);
+      exec, strided(upper_side), strided(lower_side),
+      split_interior ? helpers::split(exec, padded, volume_extents)
+                     : ::fd::device::split_volume_view(padded, volume_extents),
+      volume_extents);
   return {{helpers::to_host(upper_side), helpers::to_host(lower_side)}};
 }
 
@@ -82,6 +87,10 @@ void test_compare_to_host(const gsl::not_null<std::mt19937*> generator,
       ghost_width);
   const auto [upper_side, lower_side] =
       reconstruct_on_device(data, volume_extents);
+  // Reading the cells of the elements from a separate view gives the same
+  // results
+  const auto [split_upper_side, split_lower_side] =
+      reconstruct_on_device(data, volume_extents, ghost_width, true);
 
   for (size_t element = 0; element < number_of_elements; ++element) {
     const auto& volume_vars = data[element].volume_vars;
@@ -114,6 +123,10 @@ void test_compare_to_host(const gsl::not_null<std::mt19937*> generator,
       CHECK_ITERABLE_APPROX(
           helpers::element_data(gsl::at(lower_side, d), element),
           gsl::at(expected_lower, d));
+      CHECK(helpers::element_data(gsl::at(split_upper_side, d), element) ==
+            helpers::element_data(gsl::at(upper_side, d), element));
+      CHECK(helpers::element_data(gsl::at(split_lower_side, d), element) ==
+            helpers::element_data(gsl::at(lower_side, d), element));
     }
   }
 }
@@ -162,8 +175,9 @@ void test_strided_face_views(const gsl::not_null<std::mt19937*> generator,
         Kokkos::subview(gsl::at(lower_storage, d), Kokkos::ALL(), variables,
                         Kokkos::ALL(), Kokkos::ALL(), Kokkos::ALL());
   }
-  ::fd::device::monotonised_central(exec, upper_side, lower_side, padded,
-                                    volume_extents);
+  ::fd::device::monotonised_central(
+      exec, upper_side, lower_side,
+      ::fd::device::split_volume_view(padded, volume_extents), volume_extents);
   const auto upper = helpers::to_host(upper_storage);
   const auto lower = helpers::to_host(lower_storage);
   for (size_t d = 0; d < Dim; ++d) {

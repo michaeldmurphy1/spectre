@@ -32,9 +32,9 @@ namespace fd::device {
  * variables, e.g., a batch of face variables.
  * \param lower_side_of_face_vars same as `upper_side_of_face_vars`, but for
  * the lower side of the faces.
- * \param padded_volume_vars the volume data padded with ghost zones of width
- * at least `Degree / 2 + 1`, see `fd::device::pack_with_ghost_zones`. Can be a
- * subview of some of the variables.
+ * \param volume_vars the volume data, padded with ghost zones of width at
+ * least `Degree / 2 + 1` (see `fd::device::pack_with_ghost_zones` and
+ * `SplitVolumeView`). Can be some of the variables (see `variable_range`).
  * \param volume_extents the number of cells in each element.
  */
 template <size_t Degree, size_t Dim>
@@ -42,7 +42,6 @@ void unlimited(
     const Kokkos::DefaultExecutionSpace& exec,
     const std::array<StridedVolumeView, Dim>& upper_side_of_face_vars,
     const std::array<StridedVolumeView, Dim>& lower_side_of_face_vars,
-    const ConstStridedVolumeView& padded_volume_vars,
-    const Index<Dim>& volume_extents);
+    const SplitVolumeView& volume_vars, const Index<Dim>& volume_extents);
 }  // namespace fd::device
 #endif  // SPECTRE_KOKKOS

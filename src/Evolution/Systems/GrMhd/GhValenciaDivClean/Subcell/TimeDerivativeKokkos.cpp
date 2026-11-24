@@ -70,29 +70,12 @@ static_assert(
     "The evolved variables must be those of the system");
 
 // The components [`first`, `first + count`) of a batch of elements with
-// `extents` as a volume view, with the points of each component laid out with
-// `extents` (the layout of a `Variables` for each element)
+// `extents` as a volume view
 template <typename TagsList>
 ::fd::device::StridedVolumeView component_range(
     const BatchedVariables<TagsList>& batch, const size_t first,
     const size_t count, const Index<dim>& extents) {
-  constexpr size_t number_of_components =
-      BatchedVariables<TagsList>::number_of_independent_components;
-  const size_t number_of_points = batch.number_of_grid_points();
-  ASSERT(number_of_points == extents.product(),
-         "The batch has " << number_of_points << " points but the extents are "
-                          << extents);
-  ASSERT(first + count <= number_of_components,
-         "The components [" << first << ", " << first + count
-                            << ") aren't in the batch of "
-                            << number_of_components << " components");
-  return ::fd::device::StridedVolumeView(
-      // The address of the first point of component `first` of element 0
-      Kokkos::subview(batch.view(), Kokkos::ALL(), first, Kokkos::ALL()).data(),
-      Kokkos::LayoutStride(
-          batch.number_of_elements(), number_of_components * number_of_points,
-          count, number_of_points, extents[2], extents[1] * extents[0],
-          extents[1], extents[0], extents[0], 1));
+  return ::fd::device::batch_volume_view(batch.view(), first, count, extents);
 }
 
 // The faces in each direction of a batch of face sets (see
@@ -259,6 +242,7 @@ void TimeDerivativeOnDevice<Correction>::apply(
         ValenciaDivClean::fd::face_atmosphere_snapshot_tags>*>
         face_status,
     const ::fd::device::VolumeView& padded_ghost_variables,
+    const ::fd::device::ConstStridedVolumeView& hydro_ghost_variables,
     const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,
     const ::fd::device::BatchInverseJacobian<dim>& inverse_jacobian,
     const Batch<domain::Tags::Coordinates<dim, Frame::Grid>>& grid_coordinates,
@@ -295,7 +279,9 @@ void TimeDerivativeOnDevice<Correction>::apply(
   // 1. Filter the GH variables, as the host does before computing the time
   // derivative. The filtered variables replace the evolved ones and the
   // interior of the padded ones; the ghost zones keep the unfiltered data of
-  // the neighbors.
+  // the neighbors. The GH variables are read from the padded view with its
+  // interior filled, since the FD derivatives are faster with one view than
+  // with a `::fd::device::SplitVolumeView`.
   if (spacetime_dissipation_.has_value()) {
     const ::fd::device::StridedVolumeView evolved_gh_variables =
         component_range(*evolved_variables, 0, number_of_gh_variables,
@@ -382,10 +368,12 @@ void TimeDerivativeOnDevice<Correction>::apply(
                            lapse, shift, inverse_spatial_metric);
 
   // 6. The spacetime metric and the 3+1 variables on both sides of the faces
-  const ::fd::device::ConstStridedVolumeView padded_spacetime_metric =
-      padded_range(padded_ghost_variables, number_of_hydro_ghost_variables,
-                   number_of_hydro_ghost_variables +
-                       number_of_spacetime_metric_components);
+  const ::fd::device::SplitVolumeView spacetime_metric_volume =
+      ::fd::device::split_volume_view(
+          padded_range(padded_ghost_variables, number_of_hydro_ghost_variables,
+                       number_of_hydro_ghost_variables +
+                           number_of_spacetime_metric_components),
+          subcell_extents_);
   const auto upper_metric_views =
       face_views(upper_face_spacetime_metric_, subcell_extents_);
   const auto lower_metric_views =
@@ -393,19 +381,19 @@ void TimeDerivativeOnDevice<Correction>::apply(
   switch (spacetime_reconstruction_degree_) {
     case 2:
       ::fd::device::unlimited<2>(exec, upper_metric_views, lower_metric_views,
-                                 padded_spacetime_metric, subcell_extents_);
+                                 spacetime_metric_volume, subcell_extents_);
       break;
     case 4:
       ::fd::device::unlimited<4>(exec, upper_metric_views, lower_metric_views,
-                                 padded_spacetime_metric, subcell_extents_);
+                                 spacetime_metric_volume, subcell_extents_);
       break;
     case 6:
       ::fd::device::unlimited<6>(exec, upper_metric_views, lower_metric_views,
-                                 padded_spacetime_metric, subcell_extents_);
+                                 spacetime_metric_volume, subcell_extents_);
       break;
     case 8:
       ::fd::device::unlimited<8>(exec, upper_metric_views, lower_metric_views,
-                                 padded_spacetime_metric, subcell_extents_);
+                                 spacetime_metric_volume, subcell_extents_);
       break;
     default:
       ERROR("Unsupported degree of the reconstruction of the spacetime metric: "
@@ -427,10 +415,14 @@ void TimeDerivativeOnDevice<Correction>::apply(
   }
 
   // 7. The GRMHD time derivatives
-  grmhd_.apply(exec, dt_vars, face_status, padded_ghost_variables, evolved,
-               primitives, cell_spacetime, face_geometry, cell_geometry,
-               mesh_velocity.has_value(), div_mesh_velocity, correction,
-               equation_of_state, fix_to_atmosphere,
+  grmhd_.apply(exec, dt_vars, face_status,
+               ::fd::device::SplitVolumeView{
+                   .interior = hydro_ghost_variables,
+                   .padded = padded_range(padded_ghost_variables, 0,
+                                          number_of_hydro_ghost_variables)},
+               evolved, primitives, cell_spacetime, face_geometry,
+               cell_geometry, mesh_velocity.has_value(), div_mesh_velocity,
+               correction, equation_of_state, fix_to_atmosphere,
                constraint_damping_parameter, packaged_data_from_dg,
                received_mortar_data);
 

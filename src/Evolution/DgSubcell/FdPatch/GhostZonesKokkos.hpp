@@ -48,11 +48,17 @@ namespace evolution::dg::subcell::fd_patch {
  * evolved variables without copying them into a batch of the ghost variables
  * first. In the padded view and in the ghost data sent to and received from
  * the neighbors, the variables of the parts are in order.
+ *
+ * Without `fill_interior`, the cells of the elements aren't copied into the
+ * interior of the padded view, only the ghost zones are filled: kernels that
+ * read the cells of the elements from the batch of the part instead (see
+ * `::fd::device::SplitVolumeView`) don't need the copy.
  */
 struct GhostVariablesPart {
   size_t number_of_variables;
   size_t variables_per_element;
   size_t first_variable = 0;
+  bool fill_interior = true;
 };
 
 /*!
@@ -62,7 +68,8 @@ struct GhostVariablesPart {
  * unpadded batches (see `GhostVariablesPart`) and are then copied into a padded
  * `fd::device::VolumeView` for the reconstruction. `fill_from_patch()` does, in
  * one kernel for each part:
- * - copy the cells of each element into the interior of its padded element,
+ * - copy the cells of each element into the interior of its padded element
+ *   (unless the part isn't `GhostVariablesPart::fill_interior`),
  * - for each face between two elements of the patch, including periodic faces,
  *   copy the `ghost_width` cells of the neighbor next to the face into the
  *   ghost zone.
@@ -96,11 +103,10 @@ struct GhostVariablesPart {
  * External boundaries aren't supported (only periodic boundaries, which are
  * faces between elements).
  *
- * \note The interior copy could be avoided by computing the ghost variables
- * directly into the interior of the padded view, which costs a strided batch
- * of the ghost variables instead of the `BatchedVariables`. Reading parts of
- * the ghost variables from where they already are (see `GhostVariablesPart`)
- * avoids an extra copy of them.
+ * \note Reading parts of the ghost variables from where they already are
+ * (see `GhostVariablesPart`) avoids an extra copy of them, and kernels that
+ * read the cells of the elements from there too (see
+ * `::fd::device::SplitVolumeView`) avoid the interior copy.
  *
  * \note The ghost zones from inside the patch don't wait for any messages.
  * Another possible optimization is to overlap communication with computation:

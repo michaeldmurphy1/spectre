@@ -112,7 +112,7 @@ template class TimeDerivativeOnDevice<BoundaryCorrections::Hll>;
       gsl::not_null<                                                           \
           DeferredPointwiseStatus<fd::face_atmosphere_snapshot_tags>*>         \
           face_status,                                                         \
-      const ::fd::device::VolumeView& padded_ghost_variables,                  \
+      const ::fd::device::SplitVolumeView& ghost_variables,                    \
       const BatchedVariables<evolved_tags_on_device>& evolved_variables,       \
       const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,       \
       const CellSpacetimeViews& cell_spacetime,                                \

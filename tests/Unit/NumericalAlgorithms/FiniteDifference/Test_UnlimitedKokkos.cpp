@@ -70,8 +70,10 @@ reconstruct_on_device(const std::vector<helpers::ElementData<Dim>>& data,
   }
   ::fd::device::unlimited<Degree>(
       exec, upper_side, lower_side,
-      Kokkos::subview(padded, Kokkos::ALL(), variables, Kokkos::ALL(),
-                      Kokkos::ALL(), Kokkos::ALL()),
+      ::fd::device::split_volume_view(
+          Kokkos::subview(padded, Kokkos::ALL(), variables, Kokkos::ALL(),
+                          Kokkos::ALL(), Kokkos::ALL()),
+          volume_extents),
       volume_extents);
   return {{helpers::to_host(upper_storage), helpers::to_host(lower_storage)}};
 }

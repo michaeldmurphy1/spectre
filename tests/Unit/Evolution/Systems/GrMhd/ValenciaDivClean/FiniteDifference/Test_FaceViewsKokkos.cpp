@@ -65,7 +65,7 @@ void test_reconstruct_into_face_batch(
           expected_upper[0], expected_upper[1], expected_upper[2]},
       std::array<::fd::device::StridedVolumeView, 3>{
           expected_lower[0], expected_lower[1], expected_lower[2]},
-      padded, volume_extents);
+      ::fd::device::split_volume_view(padded, volume_extents), volume_extents);
 
   // Reconstruction into batches of face variables
   const size_t points_per_face_set = 5 * 4 * 4;
@@ -81,7 +81,7 @@ void test_reconstruct_into_face_batch(
                                                             volume_extents),
       grmhd::ValenciaDivClean::fd::reconstructed_face_views(lower,
                                                             volume_extents),
-      padded, volume_extents);
+      ::fd::device::split_volume_view(padded, volume_extents), volume_extents);
 
   for (const auto& [batch, expected] : {std::pair{&upper, &expected_upper},
                                         std::pair{&lower, &expected_lower}}) {

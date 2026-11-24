@@ -75,6 +75,7 @@
 #include "Evolution/VariableFixing/Tags.hpp"
 #include "Framework/TestHelpers.hpp"
 #include "Helpers/DataStructures/MakeWithRandomValues.hpp"
+#include "Helpers/NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/FiniteDifference/FallbackReconstructorType.hpp"
 #include "NumericalAlgorithms/FiniteDifference/VolumeViewKokkos.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
@@ -94,6 +95,7 @@
 #include "Utilities/CloneUniquePtrs.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/Literals.hpp"
 #include "Utilities/PrettyType.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
@@ -486,6 +488,35 @@ void test(const gsl::not_null<std::mt19937*> generator,
     Kokkos::deep_copy(exec, padded, host_padded);
     exec.fence();
   }
+  // As in FD patches, the hydro ghost variables of the cells of the elements
+  // are read from their own batch, not from the interior of the padded view,
+  // which is overwritten here to check that. The filter reads the GH variables
+  // from the interior of the padded view.
+  constexpr size_t number_of_hydro_ghost_variables =
+      Variables<Tags::primitive_grmhd_reconstruction_tags>::
+          number_of_independent_components;
+  const auto hydro_ghost_variables =
+      TestHelpers::fd::device::split(
+          exec,
+          Kokkos::subview(
+              padded, Kokkos::ALL(),
+              Kokkos::make_pair(0_st, number_of_hydro_ghost_variables),
+              Kokkos::ALL(), Kokkos::ALL(), Kokkos::ALL()),
+          subcell_mesh.extents())
+          .interior;
+  {
+    const auto interior_cells = [&](const size_t d) {
+      return Kokkos::make_pair(ghost_width,
+                               ghost_width + subcell_mesh.extents(d));
+    };
+    Kokkos::deep_copy(
+        exec,
+        Kokkos::subview(
+            padded, Kokkos::ALL(),
+            Kokkos::make_pair(0_st, number_of_hydro_ghost_variables),
+            interior_cells(2), interior_cells(1), interior_cells(0)),
+        1.0e10);
+  }
   using inverse_jacobian_tag =
       domain::Tags::InverseJacobian<3, Frame::ElementLogical, Frame::Inertial>;
   Variables<tmpl::list<
@@ -599,7 +630,7 @@ void test(const gsl::not_null<std::mt19937*> generator,
   }
   time_derivative.apply(
       exec, make_not_null(&dt_vars), make_not_null(&evolved),
-      make_not_null(&face_status), padded, primitives,
+      make_not_null(&face_status), padded, hydro_ghost_variables, primitives,
       get<::Tags::BatchView<inverse_jacobian_tag>>(cell_geometry_batch),
       get<::Tags::BatchView<domain::Tags::Coordinates<3, Frame::Grid>>>(
           cell_geometry_batch),

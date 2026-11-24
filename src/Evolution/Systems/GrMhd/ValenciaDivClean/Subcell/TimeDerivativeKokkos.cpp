@@ -115,7 +115,7 @@ template class TimeDerivativeOnDevice<BoundaryCorrections::Hll>;
       const ::fd::device::VolumeView& padded_ghost_variables,                  \
       const BatchedVariables<evolved_tags_on_device>& evolved_variables,       \
       const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,       \
-      const BatchedVariables<cell_spacetime_tags>& cell_spacetime_variables,   \
+      const CellSpacetimeViews& cell_spacetime,                                \
       const BatchedVariables<                                                  \
           evolution::dg::subcell::fd_patch::inertial_face_tags>&               \
           face_geometry,                                                       \

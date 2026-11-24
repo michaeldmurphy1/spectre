@@ -190,6 +190,13 @@ class BatchedVariables<tmpl::list<Tags...>, Space> {
     return tuples::get<Tag>(batch.batch_views_);
   }
 
+  /// The `Tags::BatchView`s of all tensors, e.g. for interfaces that also
+  /// accept views of tensors in different batches
+  const tuples::TaggedTuple<::Tags::BatchView<Tags, Space>...>& batch_views()
+      const {
+    return batch_views_;
+  }
+
  private:
   storage_type storage_{};
   tuples::TaggedTuple<::Tags::BatchView<Tags, Space>...> batch_views_{};

@@ -27,6 +27,7 @@
 #include "Evolution/DgSubcell/FdPatch/GeometryKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/PackagedDataFromDgKokkos.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/TimeDerivativeKokkos.hpp"
+#include "Evolution/Systems/GrMhd/GhValenciaDivClean/Subcell/CouplingKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/FaceTags.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/ReconstructorOnDeviceKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/TimeDerivativeKokkos.hpp"
@@ -112,7 +113,9 @@ bool fix_reconstructed_states_to_atmosphere(
  * 4. compute the GH time derivatives (`gh::TimeDerivativeOnDevice`, which
  *    also adds the mesh velocity times the derivatives if the mesh moves);
  * 5. compute the spacetime variables at the cell centers that the GRMHD
- *    sources need (`grmhd_spacetime_on_device`);
+ *    sources need and that aren't views of the GH variables or of the 3+1
+ *    variables of step 4 (`grmhd_spacetime_on_device` and
+ *    `cell_spacetime_views`);
  * 6. reconstruct the spacetime metric to both sides of the faces with
  *    unlimited reconstruction and compute the lapse, shift and spatial metric
  *    there (`fd::spacetime_on_faces_on_device`);
@@ -249,13 +252,6 @@ class TimeDerivativeOnDevice {
     return grmhd_.number_of_face_points();
   }
 
-  /// The spacetime variables at the cell centers that the GRMHD sources used
-  /// in the last `apply()`, e.g. for tests
-  const BatchedVariables<ValenciaDivClean::subcell::cell_spacetime_tags>&
-  cell_spacetime_variables() const {
-    return cell_spacetime_variables_;
-  }
-
  private:
   size_t number_of_elements_ = 0;
   Index<dim> subcell_extents_{};
@@ -266,8 +262,7 @@ class TimeDerivativeOnDevice {
   gh::TimeDerivativeOnDevice gh_{};
   BatchedVariables<deriv_tags> derivatives_{};
   BatchedVariables<gamma_tags> gammas_{};
-  BatchedVariables<ValenciaDivClean::subcell::cell_spacetime_tags>
-      cell_spacetime_variables_{};
+  BatchedVariables<computed_cell_spacetime_tags> computed_cell_spacetime_{};
   BatchedVariables<face_spacetime_metric_tags> lower_face_spacetime_metric_{};
   BatchedVariables<face_spacetime_metric_tags> upper_face_spacetime_metric_{};
 };

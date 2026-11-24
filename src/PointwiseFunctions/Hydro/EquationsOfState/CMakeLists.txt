@@ -21,6 +21,7 @@ spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
+  AtFixedDensity.hpp
   Barotropic2D.hpp
   Barotropic3D.hpp
   Enthalpy.hpp

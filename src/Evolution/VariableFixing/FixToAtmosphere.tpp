@@ -16,6 +16,21 @@
 #include "Utilities/Kokkos/KokkosMacros.hpp"
 
 namespace VariableFixing {
+namespace FixToAtmosphere_detail {
+// The root find of the kappa limit, as a call that isn't inlined. Few points
+// need it, but inlined into the kernels that fix the atmosphere it would hold
+// registers for all of them: with the hybrid spectral equation of state, the
+// FD face kernels needed 254 registers and spilled (Release, sm_80), and 224
+// without spills with the call.
+SPECTRE_KOKKOS_DISABLE_EXEC_CHECK
+template <typename F>
+[[gnu::noinline]] KOKKOS_FUNCTION auto kappa_limit_root(const F& f,
+                                                        const double lower,
+                                                        const double upper) {
+  return RootFinder::toms748(f, lower, upper, 1e-50, 1.0e-13);
+}
+}  // namespace FixToAtmosphere_detail
+
 template <size_t Dim>
 template <size_t ThermodynamicDim, typename EosType>
 KOKKOS_FUNCTION void FixToAtmosphere<Dim>::DeviceView::fix_at_point(
@@ -246,7 +261,7 @@ KOKKOS_FUNCTION bool FixToAtmosphere<Dim>::DeviceView::apply_kappa_limit(
           return get_pressure(local_temperature) - p_max;
         };
         const auto root =
-            RootFinder::toms748(f, min_temperature, temp, 1e-50, 1.0e-13);
+            FixToAtmosphere_detail::kappa_limit_root(f, min_temperature, temp);
         if (root_find_failed != nullptr and not root.has_value()) {
           *root_find_failed = true;
           return false;

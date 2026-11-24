@@ -28,9 +28,15 @@ constexpr bool eos_is_barotropic =
     tt::is_a_v<EquationsOfState::Barotropic3D, EosType> or
     tt::is_a_v<EquationsOfState::detail::Barotropic3DFunctions, EosType>;
 
-// Tries the recovery `Scheme` unless `primitive_data` is already set
+// Tries the recovery `Scheme` unless `primitive_data` is already set.
+//
+// This is a call that isn't inlined: inlined, all schemes (of which most
+// points need only one) would hold registers for all points of the kernels of
+// the recovery. With the hybrid spectral equation of state those kernels
+// needed 254 registers and spilled 170 to 400 B per thread (Release, sm_80);
+// with the calls they need at most 176 registers and don't spill.
 template <typename Scheme, bool EnforcePhysicality, typename EosType>
-KOKKOS_FUNCTION void try_scheme(
+[[gnu::noinline]] KOKKOS_FUNCTION void try_scheme(
     const gsl::not_null<
         std::optional<PrimitiveRecoverySchemes::PrimitiveRecoveryData>*>
         primitive_data,

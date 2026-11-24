@@ -5,12 +5,14 @@
 
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "Evolution/DgSubcell/Tags/Coordinates.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Tags.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Subcell/TimeDerivativeKokkos.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/TMPL.hpp"
 
 #ifdef SPECTRE_KOKKOS
 #include "DataStructures/BatchedVariablesKokkos.hpp"
@@ -21,38 +23,69 @@ namespace grmhd::GhValenciaDivClean::subcell {
 template <typename Tag>
 using Batch = typename ::Tags::BatchView<Tag>::type;
 
+/// The spacetime variables at the cell centers that the GRMHD sources need
+/// (`grmhd::ValenciaDivClean::subcell::cell_spacetime_tags`) and that aren't
+/// already in the GH variables or the 3+1 variables of
+/// `gh::TimeDerivativeOnDevice`, so `grmhd_spacetime_on_device` computes them.
+/// The inertial coordinates are only used by Cartoon meshes, which FD patches
+/// don't support, so they aren't set.
+using computed_cell_spacetime_tags =
+    tmpl::list<::Tags::deriv<gr::Tags::Lapse<DataVector>, tmpl::size_t<3>,
+                             Frame::Inertial>,
+               ::Tags::deriv<gr::Tags::Shift<DataVector, 3>, tmpl::size_t<3>,
+                             Frame::Inertial>,
+               gr::Tags::SqrtDetSpatialMetric<DataVector>,
+               gr::Tags::ExtrinsicCurvature<DataVector, 3>,
+               evolution::dg::subcell::Tags::Coordinates<3, Frame::Inertial>>;
+
 /*!
- * \brief The spacetime variables at the cell centers that the GRMHD sources
- * need (`grmhd::ValenciaDivClean::subcell::cell_spacetime_tags`), from the GH
- * variables, in a Kokkos kernel on `exec`.
+ * \brief The `computed_cell_spacetime_tags` from the GH variables, in a Kokkos
+ * kernel on `exec`.
  *
  * \details This computes the same values as the FD time derivative of
  * GhValenciaDivClean on the host (`subcell::TimeDerivative`), with the same
  * operations in the same order (up to fused multiply-adds, see
  * `add_stress_energy_to_dt_pi_on_device`), from the same intermediate GH
  * quantities (\f$n^a\f$, \f$g^{ab}\f$, \f$n^b\Phi_{iba}\f$ and
- * \f$\frac{1}{2}n^a n^b\Phi_{iab}\f$), which are recomputed here. The lapse,
- * shift and inverse spatial metric are copied from the arguments, e.g. those
- * that `gh::TimeDerivativeOnDevice` computes. The inertial coordinates are
- * left unchanged.
+ * \f$\frac{1}{2}n^a n^b\Phi_{iab}\f$), which are recomputed here. The
+ * inertial coordinates are left unchanged. The other spacetime variables that
+ * the sources need are views of the arguments, see `cell_spacetime_views`.
  *
  * \param exec the execution space instance that runs the kernel.
- * \param cell_spacetime_variables the spacetime variables.
+ * \param computed_cell_spacetime the computed spacetime variables.
  * \param spacetime_metric the spacetime metric \f$g_{ab}\f$.
  * \param pi the GH variable \f$\Pi_{ab}\f$.
  * \param phi the GH variable \f$\Phi_{iab}\f$.
- * \param lapse the lapse computed from `spacetime_metric`.
+ * \param lapse the lapse computed from `spacetime_metric`, e.g. by
+ * `gh::TimeDerivativeOnDevice`.
  * \param shift the shift computed from `spacetime_metric`.
  * \param inverse_spatial_metric the inverse spatial metric computed from
  * `spacetime_metric`.
  */
 void grmhd_spacetime_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    gsl::not_null<
-        BatchedVariables<ValenciaDivClean::subcell::cell_spacetime_tags>*>
-        cell_spacetime_variables,
+    gsl::not_null<BatchedVariables<computed_cell_spacetime_tags>*>
+        computed_cell_spacetime,
     const Batch<gr::Tags::SpacetimeMetric<DataVector, 3>>& spacetime_metric,
     const Batch<gh::Tags::Pi<DataVector, 3>>& pi,
+    const Batch<gh::Tags::Phi<DataVector, 3>>& phi,
+    const Batch<gr::Tags::Lapse<DataVector>>& lapse,
+    const Batch<gr::Tags::Shift<DataVector, 3>>& shift,
+    const Batch<gr::Tags::InverseSpatialMetric<DataVector, 3>>&
+        inverse_spatial_metric);
+
+/*!
+ * \brief The spacetime variables at the cell centers that the GRMHD sources
+ * need, as views of the `computed_cell_spacetime` (see
+ * `grmhd_spacetime_on_device`) and of the other arguments, without copying.
+ *
+ * \details The spatial metric is the spatial part of the `spacetime_metric`,
+ * and its derivatives are the spatial part of `phi`, as on the host.
+ */
+ValenciaDivClean::subcell::CellSpacetimeViews cell_spacetime_views(
+    const BatchedVariables<computed_cell_spacetime_tags>&
+        computed_cell_spacetime,
+    const Batch<gr::Tags::SpacetimeMetric<DataVector, 3>>& spacetime_metric,
     const Batch<gh::Tags::Phi<DataVector, 3>>& phi,
     const Batch<gr::Tags::Lapse<DataVector>>& lapse,
     const Batch<gr::Tags::Shift<DataVector, 3>>& shift,

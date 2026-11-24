@@ -386,7 +386,7 @@ void Patch<OrderedListOfPrimitiveRecoverySchemes>::compute_time_derivative(
         time_derivative.apply(
             exec, make_not_null(&dt_variables), fixing_.face_status(),
             patch_elements().padded_ghost_variables(), *evolved_variables,
-            *primitives, *cell_spacetime_variables,
+            *primitives, cell_spacetime_variables->batch_views(),
             patch_elements().face_geometry(),
             patch_elements().cell_det_inverse_jacobian(),
             patch_elements().mesh_is_moving(),

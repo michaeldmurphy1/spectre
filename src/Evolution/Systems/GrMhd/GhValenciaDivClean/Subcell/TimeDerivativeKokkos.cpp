@@ -239,9 +239,8 @@ TimeDerivativeOnDevice<Correction>::TimeDerivativeOnDevice(
       BatchedVariables<deriv_tags>{exec, number_of_points, number_of_elements};
   gammas_ =
       BatchedVariables<gamma_tags>{exec, number_of_points, number_of_elements};
-  cell_spacetime_variables_ =
-      BatchedVariables<ValenciaDivClean::subcell::cell_spacetime_tags>{
-          exec, number_of_points, number_of_elements};
+  computed_cell_spacetime_ = BatchedVariables<computed_cell_spacetime_tags>{
+      exec, number_of_points, number_of_elements};
   Index<dim> face_extents = subcell_extents_;
   ++face_extents[0];
   lower_face_spacetime_metric_ = BatchedVariables<face_spacetime_metric_tags>{
@@ -372,11 +371,15 @@ void TimeDerivativeOnDevice<Correction>::apply(
       get<::Tags::BatchView<gr::Tags::Lapse<DataVector>>>(gh_cache);
   const auto shift =
       get<::Tags::BatchView<gr::Tags::Shift<DataVector, dim>>>(gh_cache);
-  grmhd_spacetime_on_device(
-      exec, make_not_null(&cell_spacetime_variables_), spacetime_metric, pi,
-      phi, lapse, shift,
+  const auto inverse_spatial_metric =
       get<::Tags::BatchView<gr::Tags::InverseSpatialMetric<DataVector, dim>>>(
-          gh_cache));
+          gh_cache);
+  grmhd_spacetime_on_device(exec, make_not_null(&computed_cell_spacetime_),
+                            spacetime_metric, pi, phi, lapse, shift,
+                            inverse_spatial_metric);
+  const auto cell_spacetime =
+      cell_spacetime_views(computed_cell_spacetime_, spacetime_metric, phi,
+                           lapse, shift, inverse_spatial_metric);
 
   // 6. The spacetime metric and the 3+1 variables on both sides of the faces
   const ::fd::device::ConstStridedVolumeView padded_spacetime_metric =
@@ -425,9 +428,9 @@ void TimeDerivativeOnDevice<Correction>::apply(
 
   // 7. The GRMHD time derivatives
   grmhd_.apply(exec, dt_vars, face_status, padded_ghost_variables, evolved,
-               primitives, cell_spacetime_variables_, face_geometry,
-               cell_geometry, mesh_velocity.has_value(), div_mesh_velocity,
-               correction, equation_of_state, fix_to_atmosphere,
+               primitives, cell_spacetime, face_geometry, cell_geometry,
+               mesh_velocity.has_value(), div_mesh_velocity, correction,
+               equation_of_state, fix_to_atmosphere,
                constraint_damping_parameter, packaged_data_from_dg,
                received_mortar_data);
 

@@ -9,6 +9,7 @@
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/AtIndex.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Evolution/DgSubcell/Tags/Coordinates.hpp"
@@ -21,6 +22,7 @@
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/KokkosCore.hpp"
+#include "Utilities/TMPL.hpp"
 
 #ifdef SPECTRE_KOKKOS
 namespace grmhd::GhValenciaDivClean::subcell {
@@ -48,9 +50,8 @@ policy(const Kokkos::DefaultExecutionSpace& exec, const size_t number_of_points,
 
 void grmhd_spacetime_on_device(
     const Kokkos::DefaultExecutionSpace& exec,
-    const gsl::not_null<
-        BatchedVariables<ValenciaDivClean::subcell::cell_spacetime_tags>*>
-        cell_spacetime_variables,
+    const gsl::not_null<BatchedVariables<computed_cell_spacetime_tags>*>
+        computed_cell_spacetime,
     const Batch<gr::Tags::SpacetimeMetric<DataVector, 3>>& spacetime_metric,
     const Batch<gh::Tags::Pi<DataVector, 3>>& pi,
     const Batch<gh::Tags::Phi<DataVector, 3>>& phi,
@@ -59,31 +60,19 @@ void grmhd_spacetime_on_device(
     const Batch<gr::Tags::InverseSpatialMetric<DataVector, 3>>&
         inverse_spatial_metric) {
   const size_t number_of_points =
-      cell_spacetime_variables->number_of_grid_points();
+      computed_cell_spacetime->number_of_grid_points();
   const size_t number_of_elements =
-      cell_spacetime_variables->number_of_elements();
+      computed_cell_spacetime->number_of_elements();
   ASSERT((get<0, 0>(spacetime_metric).extent(0) == number_of_points and
           get<0, 0>(spacetime_metric).extent(1) == number_of_elements),
          "The GH variables must have "
              << number_of_points << " grid points and " << number_of_elements
              << " elements");
-  const auto& vars = *cell_spacetime_variables;
-  const auto lapse_out =
-      get<::Tags::BatchView<gr::Tags::Lapse<DataVector>>>(vars);
-  const auto shift_out =
-      get<::Tags::BatchView<gr::Tags::Shift<DataVector, 3>>>(vars);
+  const auto& vars = *computed_cell_spacetime;
   const auto d_lapse_out =
       get<::Tags::BatchView<deriv<gr::Tags::Lapse<DataVector>>>>(vars);
   const auto d_shift_out =
       get<::Tags::BatchView<deriv<gr::Tags::Shift<DataVector, 3>>>>(vars);
-  const auto spatial_metric_out =
-      get<::Tags::BatchView<gr::Tags::SpatialMetric<DataVector, 3>>>(vars);
-  const auto d_spatial_metric_out =
-      get<::Tags::BatchView<deriv<gr::Tags::SpatialMetric<DataVector, 3>>>>(
-          vars);
-  const auto inverse_spatial_metric_out =
-      get<::Tags::BatchView<gr::Tags::InverseSpatialMetric<DataVector, 3>>>(
-          vars);
   const auto sqrt_det_spatial_metric_out =
       get<::Tags::BatchView<gr::Tags::SqrtDetSpatialMetric<DataVector>>>(vars);
   const auto extrinsic_curvature_out =
@@ -143,14 +132,6 @@ void grmhd_spacetime_on_device(
         for (size_t k = 0; k < 3; ++k) {
           d_lapse.get(k) = -get(alpha) * half_phi_two_normals.get(k);
         }
-        tnsr::ijj<double, 3> d_spatial_metric{};
-        for (size_t k = 0; k < 3; ++k) {
-          for (size_t m = 0; m < 3; ++m) {
-            for (size_t n = m; n < 3; ++n) {
-              d_spatial_metric.get(k, m, n) = phi_i.get(k, m + 1, n + 1);
-            }
-          }
-        }
         tnsr::ii<double, 3> extrinsic_curvature{};
         tnsr::ii<double, 3> spatial_metric{};
         for (size_t m = 0; m < 3; ++m) {
@@ -164,16 +145,47 @@ void grmhd_spacetime_on_device(
         const double det =
             gr::device::determinant_and_inverse(spatial_metric).determinant;
 
-        write_at(lapse_out, alpha, i, e);
-        write_at(shift_out, beta, i, e);
         write_at(d_lapse_out, d_lapse, i, e);
         write_at(d_shift_out, d_shift, i, e);
-        write_at(spatial_metric_out, spatial_metric, i, e);
-        write_at(d_spatial_metric_out, d_spatial_metric, i, e);
-        write_at(inverse_spatial_metric_out, inverse, i, e);
         get(sqrt_det_spatial_metric_out)(i, e) = sqrt(det);
         write_at(extrinsic_curvature_out, extrinsic_curvature, i, e);
       });
+}
+
+ValenciaDivClean::subcell::CellSpacetimeViews cell_spacetime_views(
+    const BatchedVariables<computed_cell_spacetime_tags>&
+        computed_cell_spacetime,
+    const Batch<gr::Tags::SpacetimeMetric<DataVector, 3>>& spacetime_metric,
+    const Batch<gh::Tags::Phi<DataVector, 3>>& phi,
+    const Batch<gr::Tags::Lapse<DataVector>>& lapse,
+    const Batch<gr::Tags::Shift<DataVector, 3>>& shift,
+    const Batch<gr::Tags::InverseSpatialMetric<DataVector, 3>>&
+        inverse_spatial_metric) {
+  ValenciaDivClean::subcell::CellSpacetimeViews result{};
+  tmpl::for_each<computed_cell_spacetime_tags>(
+      [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+        tuples::get<::Tags::BatchView<Tag>>(result) =
+            get<::Tags::BatchView<Tag>>(computed_cell_spacetime);
+      });
+  tuples::get<::Tags::BatchView<gr::Tags::Lapse<DataVector>>>(result) = lapse;
+  tuples::get<::Tags::BatchView<gr::Tags::Shift<DataVector, 3>>>(result) =
+      shift;
+  tuples::get<::Tags::BatchView<gr::Tags::InverseSpatialMetric<DataVector, 3>>>(
+      result) = inverse_spatial_metric;
+  auto& spatial_metric =
+      tuples::get<::Tags::BatchView<gr::Tags::SpatialMetric<DataVector, 3>>>(
+          result);
+  auto& d_spatial_metric = tuples::get<
+      ::Tags::BatchView<deriv<gr::Tags::SpatialMetric<DataVector, 3>>>>(result);
+  for (size_t m = 0; m < 3; ++m) {
+    for (size_t n = m; n < 3; ++n) {
+      spatial_metric.get(m, n) = spacetime_metric.get(m + 1, n + 1);
+      for (size_t k = 0; k < 3; ++k) {
+        d_spatial_metric.get(k, m, n) = phi.get(k, m + 1, n + 1);
+      }
+    }
+  }
+  return result;
 }
 
 void fixing_metric_on_device(

@@ -19,6 +19,7 @@
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/DeviceArgumentsKokkos.hpp"
 #include "DataStructures/Index.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Domain/Tags.hpp"
 #include "Evolution/DgSubcell/FdPatch/GeometryKokkos.hpp"
@@ -294,7 +295,7 @@ void TimeDerivativeOnDevice<Correction>::apply(
     const ::fd::device::VolumeView& padded_ghost_variables,
     const BatchedVariables<EvolvedTags>& evolved_variables,
     const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,
-    const BatchedVariables<cell_spacetime_tags>& cell_spacetime_variables,
+    const CellSpacetimeViews& cell_spacetime,
     const BatchedVariables<
         evolution::dg::subcell::fd_patch::inertial_face_tags>& face_geometry,
     const BatchedVariables<
@@ -394,7 +395,7 @@ void TimeDerivativeOnDevice<Correction>::apply(
             return get<::Tags::BatchView<Tag>>(primitives);
           } else if constexpr (tmpl::list_contains_v<cell_spacetime_tags,
                                                      Tag>) {
-            return get<::Tags::BatchView<Tag>>(cell_spacetime_variables);
+            return tuples::get<::Tags::BatchView<Tag>>(cell_spacetime);
           } else if constexpr (std::is_same_v<
                                    Tag, Tags::ConstraintDampingParameter>) {
             return constraint_damping_parameter;

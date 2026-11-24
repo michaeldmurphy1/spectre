@@ -12,6 +12,7 @@
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataBox/Prefixes.hpp"
 #include "DataStructures/DataVector.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
 #include "DataStructures/Tensor/Expressions/Evaluate.hpp"
 #include "DataStructures/Tensor/Expressions/TensorExpression.hpp"
@@ -61,8 +62,8 @@ using input_tags =
     tmpl::append<tmpl::list<spacetime_metric_tag, pi_tag, phi_tag, dt_pi_tag,
                             lapse_tag, shift_tag, inverse_tag>,
                  primitive_tags>;
-using cell_spacetime_tags =
-    grmhd::ValenciaDivClean::subcell::cell_spacetime_tags;
+using computed_cell_spacetime_tags =
+    grmhd::GhValenciaDivClean::subcell::computed_cell_spacetime_tags;
 
 constexpr size_t number_of_elements = 3;
 constexpr size_t number_of_points = 20;
@@ -159,18 +160,18 @@ Variables<input_tags> random_inputs(
 void test_grmhd_spacetime(const std::vector<Variables<input_tags>>& inputs) {
   const auto device_inputs = to_device(inputs);
   // The inertial coordinates must be left unchanged
-  std::vector<Variables<cell_spacetime_tags>> initial_values(
+  std::vector<Variables<computed_cell_spacetime_tags>> initial_values(
       number_of_elements,
-      Variables<cell_spacetime_tags>{number_of_points, -1.0});
-  auto cell_spacetime_variables = to_device(initial_values);
+      Variables<computed_cell_spacetime_tags>{number_of_points, -1.0});
+  auto computed_cell_spacetime = to_device(initial_values);
   grmhd::GhValenciaDivClean::subcell::grmhd_spacetime_on_device(
-      Kokkos::DefaultExecutionSpace{}, make_not_null(&cell_spacetime_variables),
+      Kokkos::DefaultExecutionSpace{}, make_not_null(&computed_cell_spacetime),
       batch_view<spacetime_metric_tag>(device_inputs),
       batch_view<pi_tag>(device_inputs), batch_view<phi_tag>(device_inputs),
       batch_view<lapse_tag>(device_inputs),
       batch_view<shift_tag>(device_inputs),
       batch_view<inverse_tag>(device_inputs));
-  const auto results = to_host(cell_spacetime_variables);
+  const auto results = to_host(computed_cell_spacetime);
 
   for (size_t e = 0; e < number_of_elements; ++e) {
     CAPTURE(e);
@@ -186,11 +187,6 @@ void test_grmhd_spacetime(const std::vector<Variables<input_tags>>& inputs) {
     const auto spatial_metric = gr::spatial_metric(spacetime_metric);
     const auto [det, inverse] = determinant_and_inverse(spatial_metric);
 
-    CHECK(get<lapse_tag>(result) == lapse);
-    CHECK(get<shift_tag>(result) == shift);
-    CHECK(get<inverse_tag>(result) == get<inverse_tag>(input));
-    CHECK(get<gr::Tags::SpatialMetric<DataVector, 3>>(result) ==
-          spatial_metric);
     CHECK_ITERABLE_APPROX(
         get(get<gr::Tags::SqrtDetSpatialMetric<DataVector>>(result)),
         sqrt(get(det)));
@@ -204,19 +200,55 @@ void test_grmhd_spacetime(const std::vector<Variables<input_tags>>& inputs) {
     CHECK_ITERABLE_APPROX(
         extrinsic_curvature,
         gh::extrinsic_curvature(normal, get<pi_tag>(input), phi));
-    const auto& d_spatial_metric =
-        get<deriv<gr::Tags::SpatialMetric<DataVector, 3>>>(result);
-    for (size_t k = 0; k < 3; ++k) {
-      for (size_t i = 0; i < 3; ++i) {
-        for (size_t j = i; j < 3; ++j) {
-          CHECK(d_spatial_metric.get(k, i, j) == phi.get(k, i + 1, j + 1));
-        }
-      }
-    }
     CHECK(get<evolution::dg::subcell::Tags::Coordinates<3, Frame::Inertial>>(
               result) ==
           get<evolution::dg::subcell::Tags::Coordinates<3, Frame::Inertial>>(
               initial_values[e]));
+  }
+
+  // The other variables are views of the inputs
+  const auto views = grmhd::GhValenciaDivClean::subcell::cell_spacetime_views(
+      computed_cell_spacetime, batch_view<spacetime_metric_tag>(device_inputs),
+      batch_view<phi_tag>(device_inputs), batch_view<lapse_tag>(device_inputs),
+      batch_view<shift_tag>(device_inputs),
+      batch_view<inverse_tag>(device_inputs));
+  const auto same_data = [](const auto& view_tensor,
+                            const auto& expected_tensor) {
+    REQUIRE(view_tensor.size() == expected_tensor.size());
+    for (size_t i = 0; i < view_tensor.size(); ++i) {
+      CHECK(view_tensor[i].data() == expected_tensor[i].data());
+      CHECK(view_tensor[i].stride(0) == expected_tensor[i].stride(0));
+      CHECK(view_tensor[i].stride(1) == expected_tensor[i].stride(1));
+    }
+  };
+  same_data(tuples::get<::Tags::BatchView<lapse_tag>>(views),
+            batch_view<lapse_tag>(device_inputs));
+  same_data(tuples::get<::Tags::BatchView<shift_tag>>(views),
+            batch_view<shift_tag>(device_inputs));
+  same_data(tuples::get<::Tags::BatchView<inverse_tag>>(views),
+            batch_view<inverse_tag>(device_inputs));
+  tmpl::for_each<computed_cell_spacetime_tags>(
+      [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+        same_data(tuples::get<::Tags::BatchView<Tag>>(views),
+                  batch_view<Tag>(computed_cell_spacetime));
+      });
+  const auto& spatial_metric_view =
+      tuples::get<::Tags::BatchView<gr::Tags::SpatialMetric<DataVector, 3>>>(
+          views);
+  const auto& d_spatial_metric_view = tuples::get<
+      ::Tags::BatchView<deriv<gr::Tags::SpatialMetric<DataVector, 3>>>>(views);
+  const auto spacetime_metric_view =
+      batch_view<spacetime_metric_tag>(device_inputs);
+  const auto phi_view = batch_view<phi_tag>(device_inputs);
+  for (size_t i = 0; i < 3; ++i) {
+    for (size_t j = i; j < 3; ++j) {
+      CHECK(spatial_metric_view.get(i, j).data() ==
+            spacetime_metric_view.get(i + 1, j + 1).data());
+      for (size_t k = 0; k < 3; ++k) {
+        CHECK(d_spatial_metric_view.get(k, i, j).data() ==
+              phi_view.get(k, i + 1, j + 1).data());
+      }
+    }
   }
 }
 

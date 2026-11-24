@@ -400,9 +400,10 @@ void test(const Correction& correction, const Reconstructor& recons) {
   face_status.reset(exec);
   time_derivative.apply(
       exec, make_not_null(&dt_vars), make_not_null(&face_status), padded,
-      evolved, primitives, cell_spacetime, face_geometry, cell_geometry,
-      grid_to_inertial.is_moving, div_mesh_velocity, correction, *eos, &fixer,
-      1.0, fd_patch::PackagedDataFromDg<3>{}, Kokkos::View<const double*>{});
+      evolved, primitives, cell_spacetime.batch_views(), face_geometry,
+      cell_geometry, grid_to_inertial.is_moving, div_mesh_velocity, correction,
+      *eos, &fixer, 1.0, fd_patch::PackagedDataFromDg<3>{},
+      Kokkos::View<const double*>{});
   face_status.copy_to_host(exec);
   exec.fence();
   CHECK_FALSE(face_status.failed());
@@ -427,8 +428,8 @@ void test(const Correction& correction, const Reconstructor& recons) {
       exec, number_of_cells, 1};
   time_derivative.apply(
       exec, make_not_null(&moving_dt_vars), make_not_null(&face_status), padded,
-      evolved, primitives, cell_spacetime, face_geometry, cell_geometry, true,
-      div_mesh_velocity, correction, *eos, &fixer, 1.0,
+      evolved, primitives, cell_spacetime.batch_views(), face_geometry,
+      cell_geometry, true, div_mesh_velocity, correction, *eos, &fixer, 1.0,
       fd_patch::PackagedDataFromDg<3>{}, Kokkos::View<const double*>{});
   BatchedVariables<subcell::dt_tags_on_device, Kokkos::HostSpace>
       host_moving_dt{number_of_cells, 1};

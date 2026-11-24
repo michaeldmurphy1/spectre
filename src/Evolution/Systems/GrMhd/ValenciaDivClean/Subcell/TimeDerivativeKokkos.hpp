@@ -13,6 +13,7 @@
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/DeferredPointwiseStatusKokkos.hpp"
 #include "DataStructures/Index.hpp"
+#include "DataStructures/TaggedTuple.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
 #include "Domain/Structure/Side.hpp"
 #include "Evolution/DgSubcell/FdPatch/GeometryKokkos.hpp"
@@ -78,6 +79,13 @@ using cell_spacetime_tags =
                gr::Tags::SqrtDetSpatialMetric<DataVector>,
                gr::Tags::ExtrinsicCurvature<DataVector, 3>,
                evolution::dg::subcell::Tags::Coordinates<3, Frame::Inertial>>;
+
+/// The `Tags::BatchView`s of the `cell_spacetime_tags`, which can be views of
+/// different batches (e.g. `BatchedVariables::batch_views()`), so that systems
+/// that evolve the spacetime don't have to copy the variables they already
+/// have
+using CellSpacetimeViews = tuples::tagged_tuple_from_typelist<
+    db::wrap_tags_in<::Tags::BatchView, cell_spacetime_tags>>;
 
 /*!
  * \brief The FD time derivative of the ValenciaDivClean system for a batch of
@@ -181,8 +189,8 @@ class TimeDerivativeOnDevice {
    * \param evolved_variables the evolved variables at the cell centers, which
    * must hold the `evolved_tags_on_device`.
    * \param primitives the primitive variables at the cell centers.
-   * \param cell_spacetime_variables the spacetime variables at the cell
-   * centers, which the sources need.
+   * \param cell_spacetime the spacetime variables at the cell centers, which
+   * the sources need.
    * \param face_geometry the normal covectors, determinants of the inverse
    * Jacobian and mesh velocities on the faces (a batch of \f$3N\f$ face sets).
    * \param cell_geometry the determinant of the inverse Jacobian at the cell
@@ -216,7 +224,7 @@ class TimeDerivativeOnDevice {
       const ::fd::device::VolumeView& padded_ghost_variables,
       const BatchedVariables<EvolvedTags>& evolved_variables,
       const BatchedVariables<hydro::grmhd_tags<DataVector>>& primitives,
-      const BatchedVariables<cell_spacetime_tags>& cell_spacetime_variables,
+      const CellSpacetimeViews& cell_spacetime,
       const BatchedVariables<
           evolution::dg::subcell::fd_patch::inertial_face_tags>& face_geometry,
       const BatchedVariables<

@@ -14,6 +14,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveFromConservativeOptions.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/PrimitiveRecoveryData.hpp"
 #include "NumericalAlgorithms/RootFinding/TOMS748.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/AtFixedDensity.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
@@ -295,6 +296,10 @@ FunctionOfMu<EnforcePhysicality, EosType>::primitives(const double mu) const {
       std::clamp(rest_mass_density_times_lorentz_factor_ / w_hat,
                  equation_of_state_.rest_mass_density_lower_bound(),
                  equation_of_state_.rest_mass_density_upper_bound());
+  // The parts of the equation of state that only depend on the density are
+  // evaluated once for the bounds and the pressure below
+  const auto& equation_of_state =
+      EquationsOfState::at_fixed_density(equation_of_state_, rho_hat);
   // Equations (39) and (25)
   const double q_bar =
       q_ - 0.5 * b_squared_ -
@@ -305,20 +310,19 @@ FunctionOfMu<EnforcePhysicality, EosType>::primitives(const double mu) const {
   if constexpr (EosType::thermodynamic_dim == 3) {
     epsilon_hat =
         std::clamp(epsilon_hat,
-                   equation_of_state_.specific_internal_energy_lower_bound(
+                   equation_of_state.specific_internal_energy_lower_bound(
                        rho_hat, electron_fraction_),
-                   equation_of_state_.specific_internal_energy_upper_bound(
+                   equation_of_state.specific_internal_energy_upper_bound(
                        rho_hat, electron_fraction_));
   } else if constexpr (EosType::thermodynamic_dim == 2) {
     epsilon_hat = std::clamp(
         epsilon_hat,
-        equation_of_state_.specific_internal_energy_lower_bound(rho_hat),
-        equation_of_state_.specific_internal_energy_upper_bound(rho_hat));
+        equation_of_state.specific_internal_energy_lower_bound(rho_hat),
+        equation_of_state.specific_internal_energy_upper_bound(rho_hat));
   } else {
     epsilon_hat = std::clamp(
-        epsilon_hat,
-        equation_of_state_.specific_internal_energy_lower_bound(),
-        equation_of_state_.specific_internal_energy_upper_bound());
+        epsilon_hat, equation_of_state.specific_internal_energy_lower_bound(),
+        equation_of_state.specific_internal_energy_upper_bound());
   }
   // Pressure from EOS
   double p_hat = std::numeric_limits<double>::signaling_NaN();
@@ -329,12 +333,12 @@ FunctionOfMu<EnforcePhysicality, EosType>::primitives(const double mu) const {
     // 1d-EOS. Instead, we recover the primitives and then reset the specific
     // internal energy and specific enthalpy using the EOS.
     p_hat =
-        get(equation_of_state_.pressure_from_density(Scalar<double>(rho_hat)));
+        get(equation_of_state.pressure_from_density(Scalar<double>(rho_hat)));
   } else if constexpr (EosType::thermodynamic_dim == 2) {
-    p_hat = get(equation_of_state_.pressure_from_density_and_energy(
+    p_hat = get(equation_of_state.pressure_from_density_and_energy(
         Scalar<double>(rho_hat), Scalar<double>(epsilon_hat)));
   } else if constexpr (EosType::thermodynamic_dim == 3) {
-    p_hat = get(equation_of_state_.pressure_from_density_and_energy(
+    p_hat = get(equation_of_state.pressure_from_density_and_energy(
         Scalar<double>(rho_hat), Scalar<double>(epsilon_hat),
         Scalar<double>(electron_fraction_)));
   }

@@ -33,6 +33,7 @@
 #include "Evolution/VariableFixing/FixToAtmosphere.tpp"
 #include "NumericalAlgorithms/DiscontinuousGalerkin/Formulation.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/AtFixedDensity.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/VisitDeviceView.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
@@ -88,6 +89,26 @@ KOKKOS_FUNCTION const Scalar<double>* mesh_velocity_or_nullptr(
     return nullptr;
   }
 }
+
+// The equation of state of `Hll::dg_package_data_impl`, which only computes
+// the sound speed squared (if the hydro speeds are used). The parts of the
+// equation of state that only depend on the density are evaluated once for
+// it.
+template <typename DeviceView>
+struct HllEquationOfState {
+  const DeviceView* equation_of_state;
+
+  KOKKOS_FUNCTION Scalar<double>
+  sound_speed_squared_from_density_and_temperature(
+      const Scalar<double>& rest_mass_density,
+      const Scalar<double>& temperature,
+      const Scalar<double>& electron_fraction) const {
+    return EquationsOfState::at_fixed_density(*equation_of_state,
+                                              get(rest_mass_density))
+        .sound_speed_squared_from_density_and_temperature(
+            rest_mass_density, temperature, electron_fraction);
+  }
+};
 
 // `Rusanov::dg_package_data_impl` at a grid point
 template <bool HasMeshVelocity>
@@ -219,7 +240,8 @@ struct HllPackageData {
         shift, spatial_velocity_one_form, rest_mass_density, electron_fraction,
         temperature, spatial_velocity, normal_covector,
         mesh_velocity_or_nullptr(normal_dot_mesh_velocity...),
-        equation_of_state, use_hydro_speeds, light_speed_density_cutoff);
+        HllEquationOfState<DeviceView>{&equation_of_state}, use_hydro_speeds,
+        light_speed_density_cutoff);
   }
 };
 
@@ -472,7 +494,8 @@ struct FusedHllPackageData {
         rest_mass_density, electron_fraction, temperature, spatial_velocity,
         face.normal_covector,
         HasMeshVelocity ? &face.normal_dot_mesh_velocity : nullptr,
-        equation_of_state, use_hydro_speeds, light_speed_density_cutoff);
+        HllEquationOfState<DeviceView>{&equation_of_state}, use_hydro_speeds,
+        light_speed_density_cutoff);
   }
 };
 
@@ -491,7 +514,23 @@ struct FaceState {
   tnsr::i<double, 3, Frame::Inertial> tilde_s{};
   tnsr::I<double, 3, Frame::Inertial> tilde_b{};
   Scalar<double> tilde_phi{};
+  // Only computed if requested
+  Scalar<double> sound_speed_squared{};
   FaceFluxesAndNormal fluxes_and_normal{};
+};
+
+// The equation of state of `Hll::dg_package_data_impl` with the sound speed
+// squared that `face_state_from_reconstruction` computed
+struct SoundSpeedSquaredOnFace {
+  Scalar<double> sound_speed_squared;
+
+  KOKKOS_FUNCTION Scalar<double>
+  sound_speed_squared_from_density_and_temperature(
+      const Scalar<double>& /*rest_mass_density*/,
+      const Scalar<double>& /*temperature*/,
+      const Scalar<double>& /*electron_fraction*/) const {
+    return sound_speed_squared;
+  }
 };
 
 // The arguments of the fused functions that start from the reconstructed
@@ -519,13 +558,15 @@ using from_reconstruction_extra_tags = tmpl::append<
     fused_mesh_velocity_tags<HasMeshVelocity>>;
 
 // The variables on the face (`fd::FaceVariablesAtGridPoint`) and
-// `face_fluxes_and_normal` at a grid point, from the reconstructed variables.
-// The `extra` arguments are the `from_reconstruction_extra_tags`. The fluxes
-// aren't computed if the status is `failed`.
+// `face_fluxes_and_normal` at a grid point, from the reconstructed variables,
+// and the sound speed squared if `compute_sound_speed_squared`. The `extra`
+// arguments are the `from_reconstruction_extra_tags`. The fluxes aren't
+// computed if the status is `failed`.
 template <bool FixAtmosphere, bool HasMeshVelocity, typename DeviceView,
           typename... Extra>
 KOKKOS_FORCEINLINE_FUNCTION PointwiseStatus face_state_from_reconstruction(
     const gsl::not_null<FaceState*> state,
+    const bool compute_sound_speed_squared,
     const Scalar<double>& reconstructed_rest_mass_density,
     const Scalar<double>& reconstructed_temperature,
     const Scalar<double>& electron_fraction,
@@ -548,22 +589,32 @@ KOKKOS_FORCEINLINE_FUNCTION PointwiseStatus face_state_from_reconstruction(
   // 1. The variables on the face
   // Only kept if the fix to the atmosphere fails, which is an error
   const Scalar<double> no_previous_value{0.0};
+  // The sound speed squared with the parts of the equation of state that
+  // only depend on the density, which the variables on the face evaluated
+  const auto sound_speed_squared = [&](const auto& eos_at_density) {
+    if (compute_sound_speed_squared) {
+      state->sound_speed_squared =
+          eos_at_density.sound_speed_squared_from_density_and_temperature(
+              state->rest_mass_density, state->temperature, electron_fraction);
+    }
+  };
   const auto face_variables = [&](const auto&... fix_to_atmosphere) {
-    return fd::FaceVariablesAtGridPoint<DeviceView, FixAtmosphere>::apply(
-        make_not_null(&state->rest_mass_density),
-        make_not_null(&state->specific_internal_energy),
-        make_not_null(&state->spatial_velocity),
-        make_not_null(&state->lorentz_factor), make_not_null(&state->pressure),
-        make_not_null(&state->temperature),
-        make_not_null(&state->spatial_velocity_one_form),
-        make_not_null(&state->tilde_d), make_not_null(&state->tilde_ye),
-        make_not_null(&state->tilde_tau), make_not_null(&state->tilde_s),
-        make_not_null(&state->tilde_b), make_not_null(&state->tilde_phi),
-        reconstructed_rest_mass_density, no_previous_value, no_previous_value,
-        reconstructed_temperature, electron_fraction,
-        lorentz_factor_times_spatial_velocity, magnetic_field,
-        divergence_cleaning_field, spatial_metric, sqrt_det_spatial_metric,
-        equation_of_state, fix_to_atmosphere...);
+    return fd::FaceVariablesAtGridPoint<DeviceView, FixAtmosphere>::
+        apply_with_eos_at_density(
+            sound_speed_squared, make_not_null(&state->rest_mass_density),
+            make_not_null(&state->specific_internal_energy),
+            make_not_null(&state->spatial_velocity),
+            make_not_null(&state->lorentz_factor),
+            make_not_null(&state->pressure), make_not_null(&state->temperature),
+            make_not_null(&state->spatial_velocity_one_form),
+            make_not_null(&state->tilde_d), make_not_null(&state->tilde_ye),
+            make_not_null(&state->tilde_tau), make_not_null(&state->tilde_s),
+            make_not_null(&state->tilde_b), make_not_null(&state->tilde_phi),
+            reconstructed_rest_mass_density, no_previous_value,
+            no_previous_value, reconstructed_temperature, electron_fraction,
+            lorentz_factor_times_spatial_velocity, magnetic_field,
+            divergence_cleaning_field, spatial_metric, sqrt_det_spatial_metric,
+            equation_of_state, fix_to_atmosphere...);
   };
   PointwiseStatus status{};
   if constexpr (FixAtmosphere) {
@@ -633,7 +684,7 @@ struct RusanovPackageDataFromReconstruction {
     FaceState state{};
     const PointwiseStatus status =
         face_state_from_reconstruction<FixAtmosphere, HasMeshVelocity>(
-            make_not_null(&state), reconstructed_rest_mass_density,
+            make_not_null(&state), false, reconstructed_rest_mass_density,
             reconstructed_temperature, electron_fraction,
             lorentz_factor_times_spatial_velocity, magnetic_field,
             divergence_cleaning_field, lapse, shift, args...);
@@ -708,12 +759,13 @@ struct HllPackageDataFromReconstruction {
     FaceState state{};
     const PointwiseStatus status =
         face_state_from_reconstruction<FixAtmosphere, HasMeshVelocity>(
-            make_not_null(&state), reconstructed_rest_mass_density,
-            reconstructed_temperature, electron_fraction,
-            lorentz_factor_times_spatial_velocity, magnetic_field,
-            divergence_cleaning_field, lapse, shift, spatial_metric,
-            sqrt_det_spatial_metric, inv_spatial_metric, conormal, sign,
-            normalization_inv_spatial_metric, equation_of_state, extra...);
+            make_not_null(&state), use_hydro_speeds,
+            reconstructed_rest_mass_density, reconstructed_temperature,
+            electron_fraction, lorentz_factor_times_spatial_velocity,
+            magnetic_field, divergence_cleaning_field, lapse, shift,
+            spatial_metric, sqrt_det_spatial_metric, inv_spatial_metric,
+            conormal, sign, normalization_inv_spatial_metric, equation_of_state,
+            extra...);
     if (status.failed) {
       return status;
     }
@@ -733,7 +785,8 @@ struct HllPackageDataFromReconstruction {
         electron_fraction, state.temperature, state.spatial_velocity,
         face.normal_covector,
         HasMeshVelocity ? &face.normal_dot_mesh_velocity : nullptr,
-        equation_of_state, use_hydro_speeds, light_speed_density_cutoff);
+        SoundSpeedSquaredOnFace{state.sound_speed_squared}, use_hydro_speeds,
+        light_speed_density_cutoff);
     return status;
   }
 };

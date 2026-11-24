@@ -14,6 +14,7 @@
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
 #include "PointwiseFunctions/GeneralRelativity/Tags.hpp"
+#include "PointwiseFunctions/Hydro/EquationsOfState/AtFixedDensity.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/EquationOfState.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/VisitDeviceView.hpp"
 #include "PointwiseFunctions/Hydro/Tags.hpp"
@@ -94,6 +95,58 @@ struct FaceVariablesAtGridPoint {
       const tnsr::ii<double, 3, Frame::Inertial>& spatial_metric,
       const Scalar<double>& sqrt_det_spatial_metric, const DeviceView& eos,
       const FixToAtmosphere&... fix_to_atmosphere) {
+    return apply_with_eos_at_density(
+        [](const auto& /*eos_at_density*/) {}, rest_mass_density,
+        specific_internal_energy, spatial_velocity, lorentz_factor, pressure,
+        temperature, spatial_velocity_one_form, tilde_d, tilde_ye, tilde_tau,
+        tilde_s, tilde_b, tilde_phi, reconstructed_rest_mass_density,
+        previous_specific_internal_energy, previous_pressure,
+        reconstructed_temperature, electron_fraction,
+        lorentz_factor_times_spatial_velocity, magnetic_field,
+        divergence_cleaning_field, spatial_metric, sqrt_det_spatial_metric, eos,
+        fix_to_atmosphere...);
+  }
+
+  /*!
+   * \brief `apply`, which then calls `with_eos_at_density` with the equation
+   * of state at the rest mass density on the face (see
+   * `EquationsOfState::at_fixed_density`).
+   *
+   * \details This computes more thermodynamic quantities on the face without
+   * evaluating the parts of the equation of state that only depend on the
+   * density again. `with_eos_at_density` isn't called if the status is
+   * `failed`.
+   */
+  template <typename F, typename... FixToAtmosphere>
+  KOKKOS_FUNCTION static PointwiseStatus apply_with_eos_at_density(
+      const F& with_eos_at_density,
+      const gsl::not_null<Scalar<double>*> rest_mass_density,
+      const gsl::not_null<Scalar<double>*> specific_internal_energy,
+      const gsl::not_null<tnsr::I<double, 3, Frame::Inertial>*>
+          spatial_velocity,
+      const gsl::not_null<Scalar<double>*> lorentz_factor,
+      const gsl::not_null<Scalar<double>*> pressure,
+      const gsl::not_null<Scalar<double>*> temperature,
+      const gsl::not_null<tnsr::i<double, 3, Frame::Inertial>*>
+          spatial_velocity_one_form,
+      const gsl::not_null<Scalar<double>*> tilde_d,
+      const gsl::not_null<Scalar<double>*> tilde_ye,
+      const gsl::not_null<Scalar<double>*> tilde_tau,
+      const gsl::not_null<tnsr::i<double, 3, Frame::Inertial>*> tilde_s,
+      const gsl::not_null<tnsr::I<double, 3, Frame::Inertial>*> tilde_b,
+      const gsl::not_null<Scalar<double>*> tilde_phi,
+      const Scalar<double>& reconstructed_rest_mass_density,
+      const Scalar<double>& previous_specific_internal_energy,
+      const Scalar<double>& previous_pressure,
+      const Scalar<double>& reconstructed_temperature,
+      const Scalar<double>& electron_fraction,
+      const tnsr::I<double, 3, Frame::Inertial>&
+          lorentz_factor_times_spatial_velocity,
+      const tnsr::I<double, 3, Frame::Inertial>& magnetic_field,
+      const Scalar<double>& divergence_cleaning_field,
+      const tnsr::ii<double, 3, Frame::Inertial>& spatial_metric,
+      const Scalar<double>& sqrt_det_spatial_metric, const DeviceView& eos,
+      const FixToAtmosphere&... fix_to_atmosphere) {
     // 1. The Lorentz factor and the spatial velocity
     get(*lorentz_factor) = 0.0;
     for (size_t i = 0; i < 3; ++i) {
@@ -145,12 +198,16 @@ struct FaceVariablesAtGridPoint {
     raise_or_lower_index(spatial_velocity_one_form, *spatial_velocity,
                          spatial_metric);
 
-    // 4. The specific internal energy and pressure
+    // 4. The specific internal energy and pressure, with the parts of the
+    // equation of state that only depend on the density evaluated once
+    const auto& eos_at_density =
+        EquationsOfState::at_fixed_density(eos, get(*rest_mass_density));
     *specific_internal_energy =
-        eos.specific_internal_energy_from_density_and_temperature(
+        eos_at_density.specific_internal_energy_from_density_and_temperature(
             *rest_mass_density, *temperature, electron_fraction);
-    *pressure = eos.pressure_from_density_and_temperature(
+    *pressure = eos_at_density.pressure_from_density_and_temperature(
         *rest_mass_density, *temperature, electron_fraction);
+    with_eos_at_density(eos_at_density);
 
     // 5. The conserved variables
     ConservativeFromPrimitive::apply(

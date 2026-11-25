@@ -43,7 +43,7 @@ struct EvolutionMetavars
       "Harmonic formulation\n"};
 };
 
-#ifdef SPECTRE_KOKKOS
+#if defined(SPECTRE_KOKKOS) and defined(USE_FD_PATCHES) and USE_FD_PATCHES
 /// The metavariables of `EvolutionMetavars` with the FD elements evolved on the
 /// device in FD patches (`evolution::patches::PatchArray`, see
 /// `grmhd::GhValenciaDivClean::fd_patch::Patch` for what is supported). The DG
@@ -93,4 +93,4 @@ struct EvolutionMetavarsWithFdPatches
       "cleaning, coupled to a dynamic spacetime evolved with the Generalized "
       "Harmonic formulation, with the FD elements on the device\n"};
 };
-#endif  // SPECTRE_KOKKOS
+#endif  // SPECTRE_KOKKOS and USE_FD_PATCHES

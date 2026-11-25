@@ -57,16 +57,10 @@
 #include "Evolution/Initialization/DgDomain.hpp"
 #include "Evolution/Initialization/Evolution.hpp"
 #include "Evolution/Initialization/SetVariables.hpp"
-#include "Evolution/Patches/ActionsKokkos.hpp"
-#include "Evolution/Patches/EventActionsKokkos.hpp"
-#include "Evolution/Patches/PatchArray.hpp"
-#include "Evolution/Patches/SelfStartKokkos.hpp"
-#include "Evolution/Patches/SlabSize.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/AllSolutions.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryConditions/Factory.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/BoundaryCorrections/Factory.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/ComovingMagneticFieldMagnitude.hpp"
-#include "Evolution/Systems/GrMhd/ValenciaDivClean/FdPatch/InitializePatchKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Factory.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/RegisterDerivedWithCharm.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Tag.hpp"
@@ -190,6 +184,15 @@
 #include "Utilities/Functional.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
+
+#if defined(SPECTRE_KOKKOS) and defined(USE_FD_PATCHES) and USE_FD_PATCHES
+#include "Evolution/Patches/ActionsKokkos.hpp"
+#include "Evolution/Patches/EventActionsKokkos.hpp"
+#include "Evolution/Patches/PatchArray.hpp"
+#include "Evolution/Patches/SelfStartKokkos.hpp"
+#include "Evolution/Patches/SlabSize.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/FdPatch/InitializePatchKokkos.hpp"
+#endif  // SPECTRE_KOKKOS and USE_FD_PATCHES
 
 /// \cond
 namespace Frame {
@@ -650,7 +653,7 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
         tmpl::map<tmpl::pair<dg_element_array_component, dg_registration_list>>;
   };
 
-#ifdef SPECTRE_KOKKOS
+#if defined(SPECTRE_KOKKOS) and defined(USE_FD_PATCHES) and USE_FD_PATCHES
   using fd_patch_tag = grmhd::ValenciaDivClean::fd_patch::Tags::Patch<
       ordered_list_of_primitive_recovery_schemes>;
   using fd_patch_step_actions = tmpl::list<
@@ -723,9 +726,11 @@ struct EvolutionMetavars<tmpl::list<InterpolationTargetTags...>,
       tmpl::conditional_t<UseFdPatches, tmpl::list<patch_component>,
                           tmpl::list<>>;
 #else
-  static_assert(not UseFdPatches, "FD patches need Kokkos.");
+  static_assert(not UseFdPatches,
+                "FD patches need Kokkos and the compile definition "
+                "USE_FD_PATCHES=true.");
   using patch_components = tmpl::list<>;
-#endif  // SPECTRE_KOKKOS
+#endif  // SPECTRE_KOKKOS and USE_FD_PATCHES
 
   using component_list = tmpl::append<
       tmpl::list<observers::Observer<EvolutionMetavars>,

@@ -246,7 +246,7 @@
 #include "Utilities/ProtocolHelpers.hpp"
 #include "Utilities/TMPL.hpp"
 
-#ifdef SPECTRE_KOKKOS
+#if defined(SPECTRE_KOKKOS) and defined(USE_FD_PATCHES) and USE_FD_PATCHES
 #include "Evolution/DgSubcell/FdPatch/ActionsKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/Patches/ActionsKokkos.hpp"
@@ -257,7 +257,7 @@
 #include "Evolution/Patches/SelfStartKokkos.hpp"
 #include "Evolution/Patches/SlabSize.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/FdPatch/InitializePatchKokkos.hpp"
-#endif  // SPECTRE_KOKKOS
+#endif  // SPECTRE_KOKKOS and USE_FD_PATCHES
 
 /// \cond
 namespace Frame {
@@ -989,7 +989,7 @@ struct GhValenciaDivCleanTemplateBase<
               tmpl::list<Actions::RunEventsOnFailure<Tags::Time>,
                          Parallel::Actions::TerminatePhase>>>>>;
 
-#ifdef SPECTRE_KOKKOS
+#if defined(SPECTRE_KOKKOS) and defined(USE_FD_PATCHES) and USE_FD_PATCHES
   // The FD elements on the device in FD patches, for metavariables that set
   // `use_patches` (see `evolution::patches::PatchArray` and
   // `grmhd::GhValenciaDivClean::fd_patch::Patch`)
@@ -1093,7 +1093,7 @@ struct GhValenciaDivCleanTemplateBase<
                           fd_patch_tag>,
                       Parallel::Actions::TerminatePhase>>,
               tmpl::list<>>>>>;
-#endif  // SPECTRE_KOKKOS
+#endif  // SPECTRE_KOKKOS and USE_FD_PATCHES
 
   struct registration
       : tt::ConformsTo<Parallel::protocols::RegistrationMetavariables> {

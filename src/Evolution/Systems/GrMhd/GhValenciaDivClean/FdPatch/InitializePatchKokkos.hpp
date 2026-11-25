@@ -33,6 +33,7 @@
 #include "Evolution/Systems/GeneralizedHarmonic/GaugeSourceFunctions/Harmonic.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/GaugeSourceFunctions/SetPiAndPhiFromConstraints.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/GaugeSourceFunctions/Tags/GaugeCondition.hpp"
+#include "Evolution/Systems/GrMhd/GhValenciaDivClean/Actions/SetInitialData.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/AllSolutions.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/FdPatch/PatchKokkos.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/FiniteDifference/Tag.hpp"
@@ -127,8 +128,8 @@ fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes> make_patch(
 }
 
 // The GH and primitive variables of the element in `slot` of the `patch`, as
-// an FD element on the host sets them from analytic initial data
-// (`Actions::SetInitialData`) and the constraints
+// an FD element on the host sets them from initial data evaluated at its grid
+// points (`Actions::SetInitialData`) and the constraints
 // (`SetPiAndPhiFromConstraints`)
 template <typename Metavariables,
           typename OrderedListOfPrimitiveRecoverySchemes, typename DbTagsList>
@@ -165,15 +166,19 @@ Variables<initial_data_tags> initial_data_of_element(
       &db::get<evolution::initial_data::Tags::InitialData>(box),
       [&](const auto* const initial_data) {
         using DataType = std::decay_t<decltype(*initial_data)>;
-        if constexpr (is_analytic_data_v<DataType> or
-                      is_analytic_solution_v<DataType>) {
+        // As `Actions::SetInitialData`: everything but the numeric initial
+        // data that the importer reads from volume data files is evaluated
+        // at the grid points, e.g. analytic data and solutions and the
+        // initial data interpolated from SpEC or FUKA
+        if constexpr (std::is_same_v<
+                          DataType,
+                          grmhd::GhValenciaDivClean::NumericInitialData>) {
+          ERROR(
+              "FD patches don't support NumericInitialData, whose volume data "
+              "the importer reads for the elements of the DgElementArray.");
+        } else {
           adm_and_hydro.assign_subset(evolution::Initialization::initial_data(
               *initial_data, inertial_coords, time, adm_and_hydro_tags{}));
-        } else {
-          ERROR(
-              "FD patches only support analytic initial data and analytic "
-              "solutions, but got "
-              << pretty_type::get_runtime_type_name(*initial_data));
         }
       });
 
@@ -210,12 +215,15 @@ namespace Actions {
  * `evolution::patches::PatchArray` member and the initial state of its elements
  * (see `fd_patch::Patch`).
  *
- * The initial data must be analytic data or an analytic solution, evaluated
- * at `::Tags::Time` on the host as `EvolveGhValenciaDivClean` sets it on FD
- * elements (see `fd_patch::Patch::initial_state`). The time stepper history of
- * the elements is `::Tags::DeviceHistoryEvolvedVariables`. The time stepping
- * tags must be initialized before, e.g. by `Initialization::TimeStepping`.
- * The step size isn't controlled by error estimates, so
+ * The initial data is evaluated at the cell centers at `::Tags::Time` on the
+ * host as `EvolveGhValenciaDivClean` sets it on FD elements (see
+ * `fd_patch::Patch::initial_state`): analytic data and solutions, and the
+ * initial data that SpEC or FUKA interpolate to the grid points. The
+ * `NumericInitialData` that the importer reads from volume data files isn't
+ * supported. The time stepper history of the elements is
+ * `::Tags::DeviceHistoryEvolvedVariables`. The time stepping tags must be
+ * initialized before, e.g. by `Initialization::TimeStepping`. The step size
+ * isn't controlled by error estimates, so
  * `::Tags::StepperErrorEstimatesEnabled` is `false`.
  */
 template <typename OrderedListOfPrimitiveRecoverySchemes>

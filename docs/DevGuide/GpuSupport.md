@@ -597,7 +597,8 @@ different design.
 ## Current limitations
 
 Patches support global time stepping (Runge-Kutta and multistep time steppers
-with self start), analytic initial data, monotonised central and
+with self start), initial data evaluated at the grid points (analytic data and
+solutions, and SpEC or FUKA initial data), monotonised central and
 positivity-preserving adaptive-order reconstruction,
 the Rusanov and HLL boundary corrections (of the GRMHD variables, for
 GhValenciaDivClean), affine grid to inertial maps (and maps with a device
@@ -610,5 +611,5 @@ that are sums of Gaussians. Dense events are supported for `Completion`,
 the functions of time and switch the grid rotation like the elements, but they
 don't contribute to the measurements yet, which is an error. Patches don't
 support external boundary conditions, local time stepping, step size control
-by error estimates, interpolation, numerical initial data or events at
-cleanup yet. Anything unsupported is an error.
+by error estimates, interpolation, initial data from volume data files
+(`NumericInitialData`) or events at cleanup yet. Anything unsupported is an error.

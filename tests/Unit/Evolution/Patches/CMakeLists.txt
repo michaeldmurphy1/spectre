@@ -4,6 +4,7 @@
 set(LIBRARY "Test_Patches")
 
 set(LIBRARY_SOURCES
+  Test_CombinedReduction.cpp
   Test_PatchTable.cpp
   )
 
@@ -21,6 +22,7 @@ target_link_libraries(
   DataStructures
   Domain
   DomainStructure
+  Parallel
   Patches
   Spectral
   Utilities

@@ -295,6 +295,81 @@ tuples::tagged_tuple_from_typelist<FieldTagsList> scatter_element_data(
   return element_data;
 }
 
+// Interpolate the selected fields from the `file_paths` to the points of each
+// target (e.g. an element), all at once, and call `receive(e, data)` with the
+// data of each target `e` in turn, as `ReadAllVolumeDataAndDistribute` does
+// when the elements aren't identical. Errors if a target point is outside the
+// source domain.
+template <size_t Dim, typename FieldTagsList, typename F>
+void interpolate_to_targets(
+    const std::vector<std::string>& file_paths, const std::string& subgroup,
+    const spectre::Exporter::ObservationVariant& observation,
+    const bool extrapolate_into_excisions,
+    const std::optional<size_t>& num_threads,
+    const std::vector<const tnsr::I<DataVector, Dim, Frame::Inertial>*>&
+        target_coords,
+    const tuples::tagged_tuple_from_typelist<
+        db::wrap_tags_in<Tags::Selected, FieldTagsList>>& selected_fields,
+    const F& receive) {
+  // Gather all target points into a single contiguous tensor, recording the
+  // range [start, start + num_points) of each target.
+  std::vector<size_t> target_starts{};
+  std::vector<size_t> target_num_points{};
+  target_starts.reserve(target_coords.size());
+  target_num_points.reserve(target_coords.size());
+  size_t total_num_points = 0;
+  for (const auto* const target_points : target_coords) {
+    target_starts.push_back(total_num_points);
+    target_num_points.push_back(target_points->begin()->size());
+    total_num_points += target_num_points.back();
+  }
+  tnsr::I<DataVector, Dim, Frame::Inertial> all_target_points{total_num_points};
+  for (size_t e = 0; e < target_coords.size(); ++e) {
+    for (size_t d = 0; d < Dim; ++d) {
+      for (size_t i = 0; i < target_num_points[e]; ++i) {
+        all_target_points.get(d)[target_starts[e] + i] =
+            target_coords[e]->get(d)[i];
+      }
+    }
+  }
+
+  // Flat list of dataset component names for the selected fields, in
+  // `FieldTagsList` order. The layout matches `scatter_element_data`.
+  std::vector<std::string> tensor_components{};
+  tmpl::for_each<FieldTagsList>(
+      [&tensor_components, &selected_fields](auto field_tag_v) {
+        using field_tag = tmpl::type_from<decltype(field_tag_v)>;
+        const auto& selection = get<Tags::Selected<field_tag>>(selected_fields);
+        if (not selection.has_value()) {
+          return;
+        }
+        using TensorType = typename field_tag::type;
+        for (size_t i = 0; i < TensorType::size(); ++i) {
+          tensor_components.push_back(selection.value() +
+                                      TensorType::component_suffix(i));
+        }
+      });
+
+  // Interpolate all target points at once. Error if any target point lies
+  // outside the source domain. This implementation opens each file in turn
+  // (so it doesn't hold all files in memory at once), and it is efficient
+  // about mapping points through the blocks of the source domain.
+  std::vector<DataVector> interpolated_data{};
+  spectre::Exporter::interpolate_to_points(
+      make_not_null(&interpolated_data), file_paths, "/" + subgroup,
+      observation, tensor_components, all_target_points,
+      extrapolate_into_excisions,
+      /*error_on_missing_points=*/true, num_threads);
+  // The target points are no longer needed; free them before scattering the
+  // (potentially large) interpolated data to the targets.
+  all_target_points = tnsr::I<DataVector, Dim, Frame::Inertial>{};
+
+  for (size_t e = 0; e < target_coords.size(); ++e) {
+    receive(e, scatter_element_data<FieldTagsList>(
+                   interpolated_data, target_starts[e], target_num_points[e],
+                   selected_fields));
+  }
+}
 }  // namespace detail
 
 namespace Actions {
@@ -482,89 +557,41 @@ struct ReadAllVolumeDataAndDistribute {
     // spectre::Exporter::interpolate_to_points to interpolate to all target
     // points on this node at once, then scatter the results to the elements.
     if (not elements_are_identical) {
-      // Gather all target points on this node into a single contiguous tensor,
-      // recording the range [start, start + num_points) of each target element.
       std::vector<ElementId<Dim>> target_ids{};
-      std::vector<size_t> target_starts{};
-      std::vector<size_t> target_num_points{};
       std::vector<const tnsr::I<DataVector, Dim, Frame::Inertial>*>
           target_coords{};
       target_ids.reserve(target_element_ids.size());
-      target_starts.reserve(target_element_ids.size());
-      target_num_points.reserve(target_element_ids.size());
       target_coords.reserve(target_element_ids.size());
-      size_t total_num_points = 0;
       for (const auto& target_element_id : target_element_ids) {
-        const auto& target_points =
-            get<Tags::RegisteredElements<Dim>>(box)
-                .at(Parallel::make_array_component_id<ReceiveComponent>(
-                    target_element_id))
-                .first;
         target_ids.push_back(target_element_id);
-        target_coords.push_back(&target_points);
-        target_starts.push_back(total_num_points);
-        target_num_points.push_back(target_points.begin()->size());
-        total_num_points += target_num_points.back();
+        target_coords.push_back(
+            &get<Tags::RegisteredElements<Dim>>(box)
+                 .at(Parallel::make_array_component_id<ReceiveComponent>(
+                     target_element_id))
+                 .first);
       }
-      tnsr::I<DataVector, Dim, Frame::Inertial> all_target_points{
-          total_num_points};
-      for (size_t e = 0; e < target_ids.size(); ++e) {
-        for (size_t d = 0; d < Dim; ++d) {
-          for (size_t i = 0; i < target_num_points[e]; ++i) {
-            all_target_points.get(d)[target_starts[e] + i] =
-                target_coords[e]->get(d)[i];
-          }
-        }
-      }
-
-      // Flat list of dataset component names for the selected fields, in
-      // `FieldTagsList` order. The layout matches
-      // `detail::scatter_element_data`.
-      std::vector<std::string> tensor_components{};
-      tmpl::for_each<FieldTagsList>([&tensor_components,
-                                     &selected_fields](auto field_tag_v) {
-        using field_tag = tmpl::type_from<decltype(field_tag_v)>;
-        const auto& selection = get<Tags::Selected<field_tag>>(selected_fields);
-        if (not selection.has_value()) {
-          return;
-        }
-        using TensorType = typename field_tag::type;
-        for (size_t i = 0; i < TensorType::size(); ++i) {
-          tensor_components.push_back(selection.value() +
-                                      TensorType::component_suffix(i));
-        }
-      });
-
-      // Interpolate all target points at once. Error if any target point lies
-      // outside the source domain. This implementation opens each file in turn
-      // (so it doesn't hold all files in memory at once), and it is efficient
-      // about mapping points through the blocks of the source domain.
-      std::vector<DataVector> interpolated_data{};
-      spectre::Exporter::interpolate_to_points(
-          make_not_null(&interpolated_data), file_paths,
-          "/" + get<OptionTags::Subgroup>(options), observation,
-          tensor_components, all_target_points,
-          get<OptionTags::ExtrapolateIntoExcisions>(options),
-          /*error_on_missing_points=*/true,
-          get<OptionTags::NumThreads>(options));
-      // The target points are no longer needed; free them before distributing
-      // the (potentially large) interpolated data to the target elements.
-      all_target_points = tnsr::I<DataVector, Dim, Frame::Inertial>{};
-
       // Distribute the interpolated data to the target elements.
-      for (size_t e = 0; e < target_ids.size(); ++e) {
-        auto target_element_data = detail::scatter_element_data<FieldTagsList>(
-            interpolated_data, target_starts[e], target_num_points[e],
-            selected_fields);
-        if constexpr (Parallel::is_dg_element_collection_v<ReceiveComponent>) {
-          ERROR("Can't yet do numerical initial data with nodegroups");
-        } else {
-          Parallel::receive_data<Tags::VolumeData<FieldTagsList>>(
-              Parallel::get_parallel_component<ReceiveComponent>(
-                  cache)[target_ids[e]],
-              volume_data_id, std::move(target_element_data));
-        }
-      }
+      detail::interpolate_to_targets<Dim, FieldTagsList>(
+          file_paths, get<OptionTags::Subgroup>(options), observation,
+          get<OptionTags::ExtrapolateIntoExcisions>(options),
+          get<OptionTags::NumThreads>(options), target_coords, selected_fields,
+          [&cache, &target_ids, &volume_data_id](const size_t e,
+                                                 auto target_element_data) {
+            if constexpr (Parallel::is_dg_element_collection_v<
+                              ReceiveComponent>) {
+              (void)cache;
+              (void)target_ids;
+              (void)volume_data_id;
+              (void)e;
+              (void)target_element_data;
+              ERROR("Can't yet do numerical initial data with nodegroups");
+            } else {
+              Parallel::receive_data<Tags::VolumeData<FieldTagsList>>(
+                  Parallel::get_parallel_component<ReceiveComponent>(
+                      cache)[target_ids[e]],
+                  volume_data_id, std::move(target_element_data));
+            }
+          });
       return;
     }  // not elements_are_identical
 

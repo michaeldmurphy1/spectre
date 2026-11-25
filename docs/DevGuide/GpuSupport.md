@@ -597,7 +597,8 @@ different design.
 
 Patches support global time stepping (Runge-Kutta and multistep time steppers
 with self start), initial data evaluated at the grid points (analytic data and
-solutions, and SpEC or FUKA initial data), monotonised central and
+solutions, and SpEC or FUKA initial data) or interpolated from volume data
+files (`NumericInitialData`, as the importer does), monotonised central and
 positivity-preserving adaptive-order reconstruction,
 the Rusanov and HLL boundary corrections (of the GRMHD variables, for
 GhValenciaDivClean), affine grid to inertial maps (and maps with a device
@@ -612,5 +613,4 @@ systems (`control_system::measurements::VolumeIntegralsEvent`), which patches
 evaluate on the device. With control systems, patches wait for the functions
 of time and switch the grid rotation like the elements. Patches don't
 support external boundary conditions, local time stepping, step size control
-by error estimates, interpolation, initial data from volume data files
-(`NumericInitialData`) or events at cleanup yet. Anything unsupported is an error.
+by error estimates, interpolation or events at cleanup yet. Anything unsupported is an error.

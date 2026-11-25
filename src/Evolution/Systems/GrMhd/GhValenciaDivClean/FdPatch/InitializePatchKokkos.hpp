@@ -5,7 +5,9 @@
 
 #include <array>
 #include <cstddef>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -20,6 +22,7 @@
 #include "Domain/Creators/Tags/InitialRefinementLevels.hpp"
 #include "Domain/Domain.hpp"
 #include "Domain/FunctionsOfTime/Tags.hpp"
+#include "Domain/Structure/ElementId.hpp"
 #include "Evolution/BoundaryCorrectionTags.hpp"
 #include "Evolution/DgSubcell/FdPatch/CheckOptions.hpp"
 #include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
@@ -43,6 +46,8 @@
 #include "Evolution/VariableFixing/FixToAtmosphere.hpp"
 #include "Evolution/VariableFixing/LimitLorentzFactor.hpp"
 #include "Evolution/VariableFixing/Tags.hpp"
+#include "IO/Importers/Actions/ReadVolumeData.hpp"
+#include "IO/Importers/Tags.hpp"
 #include "NumericalAlgorithms/Spectral/LogicalCoordinates.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Parallel/GlobalCache.hpp"
@@ -58,8 +63,10 @@
 #include "Time/Tags/Time.hpp"
 #include "Time/Tags/TimeStepper.hpp"
 #include "Time/TimeSteppers/TimeStepper.hpp"
+#include "Utilities/Algorithm.hpp"
 #include "Utilities/CallWithDynamicType.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
+#include "Utilities/FileSystem.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Kokkos/ExecutionSpaceKokkos.hpp"
 #include "Utilities/PrettyType.hpp"
@@ -127,6 +134,32 @@ fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes> make_patch(
       db::get<fd::Tags::FilterOptions>(box).spacetime_dissipation};
 }
 
+// Set Pi and Phi of the element in `slot` of the `patch` from the
+// constraints if `set_pi_and_phi`, as `SetPiAndPhiFromConstraints` on the
+// subcell grid
+template <typename Metavariables,
+          typename OrderedListOfPrimitiveRecoverySchemes, typename DbTagsList>
+void set_pi_and_phi_from_constraints(
+    const gsl::not_null<Variables<initial_data_tags>*> vars,
+    const db::DataBox<DbTagsList>& box,
+    const Parallel::GlobalCache<Metavariables>& cache,
+    const fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes>& patch,
+    const size_t slot, const bool set_pi_and_phi) {
+  const auto& patch_elements = patch.patch_elements();
+  const Mesh<3>& subcell_mesh = patch_elements.subcell_mesh();
+  gh::gauges::SetPiAndPhiFromConstraints<
+      ghmhd::GhValenciaDivClean::InitialData::analytic_solutions_and_data_list,
+      3>::impl(make_not_null(&get<gh::Tags::Pi<DataVector, 3>>(*vars)),
+               make_not_null(&get<gh::Tags::Phi<DataVector, 3>>(*vars)),
+               db::get<::Tags::Time>(box), subcell_mesh,
+               patch_elements.element_maps()[slot],
+               patch_elements.grid_to_inertial_map(slot),
+               Parallel::get<domain::Tags::FunctionsOfTime>(cache),
+               logical_coordinates(subcell_mesh),
+               get<gr::Tags::SpacetimeMetric<DataVector, 3>>(*vars),
+               db::get<gh::gauges::Tags::GaugeCondition>(box), set_pi_and_phi);
+}
+
 // The GH and primitive variables of the element in `slot` of the `patch`, as
 // an FD element on the host sets them from initial data evaluated at its grid
 // points (`Actions::SetInitialData`) and the constraints
@@ -141,8 +174,6 @@ Variables<initial_data_tags> initial_data_of_element(
   const auto& patch_elements = patch.patch_elements();
   const Mesh<3>& subcell_mesh = patch_elements.subcell_mesh();
   const double time = db::get<::Tags::Time>(box);
-  const auto& functions_of_time =
-      Parallel::get<domain::Tags::FunctionsOfTime>(cache);
   // The cell geometry as the subcell compute tags of an element give it
   const auto cell_geometry = patch_elements.host_inertial_cell_geometry(slot);
   const auto& inertial_coords =
@@ -174,8 +205,8 @@ Variables<initial_data_tags> initial_data_of_element(
                           DataType,
                           grmhd::GhValenciaDivClean::NumericInitialData>) {
           ERROR(
-              "FD patches don't support NumericInitialData, whose volume data "
-              "the importer reads for the elements of the DgElementArray.");
+              "Numeric initial data is set by "
+              "numeric_initial_data_of_elements.");
         } else {
           adm_and_hydro.assign_subset(evolution::Initialization::initial_data(
               *initial_data, inertial_coords, time, adm_and_hydro_tags{}));
@@ -194,17 +225,124 @@ Variables<initial_data_tags> initial_data_of_element(
       get<gr::Tags::Shift<DataVector, 3>>(adm_and_hydro),
       get<gr::Tags::ExtrinsicCurvature<DataVector, 3>>(adm_and_hydro),
       subcell_mesh, inverse_jacobian, inertial_coords);
-  // As `SetPiAndPhiFromConstraints` on the subcell grid
-  gh::gauges::SetPiAndPhiFromConstraints<
-      ghmhd::GhValenciaDivClean::InitialData::analytic_solutions_and_data_list,
-      3>::impl(make_not_null(&get<gh::Tags::Pi<DataVector, 3>>(result)),
-               make_not_null(&get<gh::Tags::Phi<DataVector, 3>>(result)), time,
-               subcell_mesh, patch_elements.element_maps()[slot],
-               patch_elements.grid_to_inertial_map(slot), functions_of_time,
-               logical_coordinates(subcell_mesh),
-               get<gr::Tags::SpacetimeMetric<DataVector, 3>>(result),
-               db::get<gh::gauges::Tags::GaugeCondition>(box),
-               Parallel::get<gh::Tags::SetPiAndPhiFromConstraints>(cache));
+  set_pi_and_phi_from_constraints(
+      make_not_null(&result), box, cache, patch, slot,
+      Parallel::get<gh::Tags::SetPiAndPhiFromConstraints>(cache));
+  return result;
+}
+
+// The GH and primitive variables of all elements of the `patch` from numeric
+// initial data, as the elements of the `DgElementArray` import them
+// (`Actions::SetInitialData` and `Actions::ReceiveNumericInitialData`) and
+// set Pi and Phi from the constraints. The volume data is interpolated to the
+// cell centers of all elements at once, as the importer does
+// (`importers::Actions::ReadAllVolumeDataAndDistribute`); the patch always
+// interpolates, also if the importer copies the data of identical elements.
+template <typename Metavariables,
+          typename OrderedListOfPrimitiveRecoverySchemes, typename DbTagsList>
+std::vector<Variables<initial_data_tags>> numeric_initial_data_of_elements(
+    const db::DataBox<DbTagsList>& box,
+    Parallel::GlobalCache<Metavariables>& cache,
+    const fd_patch::Patch<OrderedListOfPrimitiveRecoverySchemes>& patch,
+    const NumericInitialData& initial_data) {
+  using all_vars = NumericInitialData::all_vars;
+  const auto& patch_elements = patch.patch_elements();
+  const size_t number_of_elements = patch_elements.number_of_elements();
+  const Mesh<3>& subcell_mesh = patch_elements.subcell_mesh();
+
+  // The cell geometry as the subcell compute tags of an element give it
+  std::vector<decltype(patch_elements.host_inertial_cell_geometry(0))>
+      cell_geometries{};
+  std::vector<const tnsr::I<DataVector, 3, Frame::Inertial>*> target_coords{};
+  cell_geometries.reserve(number_of_elements);
+  target_coords.reserve(number_of_elements);
+  for (size_t slot = 0; slot < number_of_elements; ++slot) {
+    cell_geometries.push_back(patch_elements.host_inertial_cell_geometry(slot));
+  }
+  for (const auto& cell_geometry : cell_geometries) {
+    target_coords.push_back(
+        &get<evolution::dg::subcell::Tags::Coordinates<3, Frame::Inertial>>(
+            cell_geometry));
+  }
+
+  // The data the importer would send to the elements
+  tuples::tagged_tuple_from_typelist<
+      db::wrap_tags_in<importers::Tags::Selected, all_vars>>
+      selected_fields{};
+  initial_data.select_for_import(make_not_null(&selected_fields));
+  const auto& options = initial_data.importer_options();
+  const std::string& file_glob = get<importers::OptionTags::FileGlob>(options);
+  const std::vector<std::string> file_paths = file_system::glob(file_glob);
+  if (file_paths.empty()) {
+    ERROR_NO_TRACE("The file glob '" << file_glob << "' matches no files.");
+  }
+  std::vector<tuples::tagged_tuple_from_typelist<all_vars>> numeric_data(
+      number_of_elements);
+  {
+    // HDF5 isn't thread-safe, and the patches of a process may be set up
+    // concurrently
+    static std::mutex hdf5_mutex{};
+    const std::lock_guard lock{hdf5_mutex};
+    importers::detail::interpolate_to_targets<3, all_vars>(
+        file_paths, get<importers::OptionTags::Subgroup>(options),
+        importers::detail::observation_variant(
+            get<importers::OptionTags::ObservationValue>(options),
+            get<importers::OptionTags::ObservationValueEpsilon>(options)),
+        get<importers::OptionTags::ExtrapolateIntoExcisions>(options),
+        get<importers::OptionTags::NumThreads>(options), target_coords,
+        selected_fields, [&numeric_data](const size_t slot, auto data) {
+          numeric_data[slot] = std::move(data);
+        });
+  }
+
+  // With the GH variables from the file, Pi and Phi aren't set from the
+  // constraints: the zeroth element of the `DgElementArray` turns this off
+  // for all elements, so the patch does if it holds the zeroth element
+  const bool gh_variables_imported =
+      std::holds_alternative<gh::NumericInitialData::GhVars>(
+          initial_data.gh_numeric_id().selected_variables());
+  if (gh_variables_imported and
+      alg::any_of(patch_elements.element_ids(), [](const ElementId<3>& id) {
+        return is_zeroth_element(id);
+      })) {
+    Parallel::mutate<gh::Tags::SetPiAndPhiFromConstraints,
+                     gh::gauges::SetPiAndPhiFromConstraintsCacheMutator>(cache,
+                                                                         false);
+  }
+
+  const auto& equation_of_state =
+      db::get<hydro::Tags::GrmhdEquationOfState>(box);
+  std::vector<Variables<initial_data_tags>> result{};
+  result.reserve(number_of_elements);
+  for (size_t slot = 0; slot < number_of_elements; ++slot) {
+    const auto& cell_geometry = cell_geometries[slot];
+    auto& vars = result.emplace_back(subcell_mesh.number_of_grid_points());
+    initial_data.set_initial_data(
+        make_not_null(&get<gr::Tags::SpacetimeMetric<DataVector, 3>>(vars)),
+        make_not_null(&get<gh::Tags::Pi<DataVector, 3>>(vars)),
+        make_not_null(&get<gh::Tags::Phi<DataVector, 3>>(vars)),
+        make_not_null(&get<hydro::Tags::RestMassDensity<DataVector>>(vars)),
+        make_not_null(&get<hydro::Tags::ElectronFraction<DataVector>>(vars)),
+        make_not_null(
+            &get<hydro::Tags::SpecificInternalEnergy<DataVector>>(vars)),
+        make_not_null(&get<hydro::Tags::SpatialVelocity<DataVector, 3>>(vars)),
+        make_not_null(&get<hydro::Tags::MagneticField<DataVector, 3>>(vars)),
+        make_not_null(
+            &get<hydro::Tags::DivergenceCleaningField<DataVector>>(vars)),
+        make_not_null(&get<hydro::Tags::LorentzFactor<DataVector>>(vars)),
+        make_not_null(&get<hydro::Tags::Pressure<DataVector>>(vars)),
+        make_not_null(&get<hydro::Tags::Temperature<DataVector>>(vars)),
+        make_not_null(&numeric_data[slot]), subcell_mesh,
+        get<evolution::dg::subcell::fd::Tags::InverseJacobianLogicalToInertial<
+            3>>(cell_geometry),
+        get<evolution::dg::subcell::Tags::Coordinates<3, Frame::Inertial>>(
+            cell_geometry),
+        equation_of_state);
+    set_pi_and_phi_from_constraints(
+        make_not_null(&vars), box, cache, patch, slot,
+        not gh_variables_imported and
+            Parallel::get<gh::Tags::SetPiAndPhiFromConstraints>(cache));
+  }
   return result;
 }
 }  // namespace detail
@@ -219,8 +357,10 @@ namespace Actions {
  * host as `EvolveGhValenciaDivClean` sets it on FD elements (see
  * `fd_patch::Patch::initial_state`): analytic data and solutions, and the
  * initial data that SpEC or FUKA interpolate to the grid points. The
- * `NumericInitialData` that the importer reads from volume data files isn't
- * supported. The time stepper history of the elements is
+ * `NumericInitialData` from volume data files is interpolated to the cell
+ * centers as the importer does it for the elements of the `DgElementArray`
+ * (see `detail::numeric_initial_data_of_elements`). The time stepper history of
+ * the elements is
  * `::Tags::DeviceHistoryEvolvedVariables`. The time stepping tags must be
  * initialized before, e.g. by `Initialization::TimeStepping`. The step size
  * isn't controlled by error estimates, so
@@ -261,7 +401,7 @@ struct InitializePatch {
   static Parallel::iterable_action_return_t apply(
       db::DataBox<DbTagsList>& box,
       const tuples::TaggedTuple<InboxTags...>& /*inboxes*/,
-      const Parallel::GlobalCache<Metavariables>& cache, const int array_index,
+      Parallel::GlobalCache<Metavariables>& cache, const int array_index,
       ActionList /*meta*/, const ParallelComponent* const /*meta*/) {
     const auto& exec = Parallel::device_execution_space();
     auto new_patch = detail::make_patch<OrderedListOfPrimitiveRecoverySchemes>(
@@ -271,10 +411,18 @@ struct InitializePatch {
         exec, db::get<::Tags::Time>(box),
         Parallel::get<domain::Tags::FunctionsOfTime>(cache));
     std::vector<Variables<initial_data_tags>> initial_data{};
-    for (size_t slot = 0;
-         slot < new_patch.patch_elements().number_of_elements(); ++slot) {
-      initial_data.push_back(detail::initial_data_of_element<Metavariables>(
-          box, cache, new_patch, slot));
+    if (const auto* const numeric_initial_data =
+            dynamic_cast<const NumericInitialData*>(
+                &db::get<evolution::initial_data::Tags::InitialData>(box));
+        numeric_initial_data != nullptr) {
+      initial_data = detail::numeric_initial_data_of_elements(
+          box, cache, new_patch, *numeric_initial_data);
+    } else {
+      for (size_t slot = 0;
+           slot < new_patch.patch_elements().number_of_elements(); ++slot) {
+        initial_data.push_back(detail::initial_data_of_element<Metavariables>(
+            box, cache, new_patch, slot));
+      }
     }
     auto state = new_patch.initial_state(exec, initial_data);
     auto history = new_patch.initial_history(

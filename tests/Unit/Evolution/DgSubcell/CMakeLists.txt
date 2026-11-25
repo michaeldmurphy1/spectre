@@ -10,6 +10,8 @@ set(LIBRARY_SOURCES
   Actions/Test_TakeTimeStep.cpp
   Actions/Test_TciAndRollback.cpp
   Actions/Test_TciAndSwitchToDg.cpp
+  FdPatch/Test_CheckOptions.cpp
+  FdPatch/Test_ElementBox.cpp
   FdPatch/Test_PatchTable.cpp
   Test_ActiveGrid.cpp
   Test_BackgroundGrVars.cpp
@@ -78,6 +80,8 @@ target_link_libraries(
   DgSubcell
   DgSubcellHelpers
   ErrorHandling
+  Events
+  EventsAndTriggers
   Evolution
   FdPatch
   FiniteDifference

@@ -40,13 +40,23 @@ if(SPECTRE_KOKKOS)
     set(Kokkos_ENABLE_AGGRESSIVE_VECTORIZATION ON CACHE BOOL
       "Kokkos aggressive vectorization")
 
-    if (CMAKE_BUILD_TYPE STREQUAL "Debug" OR SPECTRE_DEBUG)
+    # Kokkos' debug checks (e.g. bounds checks of every access to a view) are
+    # on in Debug builds, but not in other builds with SPECTRE_DEBUG, which
+    # production runs use for the ASSERTs of SpECTRE. The checks make device
+    # kernels several times slower: on a GH200, the FD patches of a BNS
+    # evolution with SPECTRE_DEBUG took 5x as long per substep with them, and
+    # only 1-3% longer than without SPECTRE_DEBUG without them (Nov 2026).
+    # Set the Kokkos_ENABLE_DEBUG options to enable them in other builds.
+    if (CMAKE_BUILD_TYPE STREQUAL "Debug")
       message(STATUS "Enabling Kokkos debug mode")
       set(Kokkos_ENABLE_DEBUG ON CACHE BOOL "Most general debug settings")
       set(Kokkos_ENABLE_DEBUG_BOUNDS_CHECK ON CACHE BOOL
         "Bounds checking on Kokkos views")
       set(Kokkos_ENABLE_DEBUG_DUALVIEW_MODIFY_CHECK ON CACHE BOOL
         "Sanity checks on Kokkos DualView")
+    elseif (SPECTRE_DEBUG)
+      message(STATUS "Not enabling Kokkos debug mode for SPECTRE_DEBUG in a "
+        "${CMAKE_BUILD_TYPE} build, see cmake/SetupKokkos.cmake")
     endif()
 
     if(Kokkos_ENABLE_CUDA)

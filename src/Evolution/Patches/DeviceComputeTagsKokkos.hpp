@@ -280,6 +280,26 @@ using observe_norms_events = tmpl::filter<
     tmpl::at<typename Metavariables::factory_creation::factory_classes, Event>,
     IsObserveNorms<tmpl::_1>>;
 
+/// Whether `EventType` integrates tensors over the volume of the elements
+/// (e.g. `control_system::measurements::VolumeIntegralsEvent`), which it
+/// defines by the compute tags `volume_integrand_tags`
+template <typename EventType>
+concept IntegratesOverVolume =
+    requires { typename EventType::volume_integrand_tags; };
+
+/// \cond
+template <typename EventType>
+struct IsVolumeIntegralsEvent
+    : std::bool_constant<IntegratesOverVolume<EventType>> {};
+/// \endcond
+
+/// The events of the executable that integrate tensors over the volume of the
+/// elements (see `IntegratesOverVolume`)
+template <typename Metavariables>
+using volume_integrals_events = tmpl::filter<
+    tmpl::at<typename Metavariables::factory_creation::factory_classes, Event>,
+    IsVolumeIntegralsEvent<tmpl::_1>>;
+
 namespace detail {
 template <typename Event>
 struct observable_tags;
@@ -294,29 +314,42 @@ struct observable_tags<
       tmpl::filter<NonTensorComputeTags, db::is_compute_tag<tmpl::_1>>>;
 };
 template <typename Event>
+  requires IntegratesOverVolume<Event>
+struct observable_tags<Event> {
+  using type = typename Event::volume_integrand_tags;
+  using compute_tags = type;
+};
+template <typename Event>
 using observable_tags_t = typename observable_tags<Event>::type;
 template <typename Event>
 using event_compute_tags_t = typename observable_tags<Event>::compute_tags;
 }  // namespace detail
 
-/// The tags that the `ObserveNorms` events of the executable can observe
+/// The events of the executable whose tensors patches can evaluate on the
+/// device: the `ObserveNorms` events and the `volume_integrals_events`
+template <typename Metavariables>
+using observing_events = tmpl::append<observe_norms_events<Metavariables>,
+                                      volume_integrals_events<Metavariables>>;
+
+/// The tags that the `observing_events` of the executable observe
 template <typename Metavariables>
 using observable_tags = tmpl::remove_duplicates<tmpl::flatten<
-    tmpl::transform<observe_norms_events<Metavariables>,
+    tmpl::transform<observing_events<Metavariables>,
                     tmpl::bind<detail::observable_tags_t, tmpl::_1>>>>;
 
 /// The compute tags from which observable tensors are evaluated: those of
 /// the DataBoxes of the elements (`Sources::compute_tags`) and of the
-/// `ObserveNorms` events
+/// `observing_events`
 template <typename Metavariables, typename Sources>
 using universe = tmpl::remove_duplicates<
     tmpl::append<typename Sources::compute_tags,
                  tmpl::flatten<tmpl::transform<
-                     observe_norms_events<Metavariables>,
+                     observing_events<Metavariables>,
                      tmpl::bind<detail::event_compute_tags_t, tmpl::_1>>>>>;
 
-/// Whether the tensor named `name` (its `db::tag_name`) that an
-/// `ObserveNorms` of the executable observes can be evaluated on the device
+/// Whether the tensor named `name` (its `db::tag_name`) that an event of the
+/// executable observes (see `observing_events`) can be evaluated on the
+/// device
 template <typename Metavariables, typename Sources>
 bool is_device_observable(const std::string& name) {
   bool result = false;

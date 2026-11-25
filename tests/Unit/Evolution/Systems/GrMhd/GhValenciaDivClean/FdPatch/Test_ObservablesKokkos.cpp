@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "ControlSystem/Measurements/BNSCenterOfMass.hpp"
 #include "DataStructures/BatchedVariablesKokkos.hpp"
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/EagerMath/Norms.hpp"
@@ -102,14 +103,23 @@ using observed_compute_tags = tmpl::list<
 using Universe =
     tmpl::append<fd_patch::element_box_compute_tags, observed_compute_tags>;
 
-// An executable with one ObserveNorms that can observe the tensors
+// A control system whose measurement is the centers of the neutron stars
+struct ControlSystem {};
+using MeasurementEvent =
+    control_system::measurements::BothNSCenters::FindTwoCenters::event<
+        tmpl::list<ControlSystem>>;
+
+// An executable with one ObserveNorms that can observe the tensors, and the
+// measurement of the centers of the neutron stars
 struct Metavariables {
   struct factory_creation {
     using factory_classes = tmpl::map<tmpl::pair<
-        Event, tmpl::list<Events::ObserveNorms<tmpl::push_front<
-                   observed_compute_tags, gr::Tags::Lapse<DataVector>,
-                   gr::Tags::DetSpatialMetric<DataVector>,
-                   hydro::Tags::RestMassDensity<DataVector>, Phi>>>>>;
+        Event,
+        tmpl::list<Events::ObserveNorms<tmpl::push_front<
+                       observed_compute_tags, gr::Tags::Lapse<DataVector>,
+                       gr::Tags::DetSpatialMetric<DataVector>,
+                       hydro::Tags::RestMassDensity<DataVector>, Phi>>,
+                   MeasurementEvent>>>;
   };
 };
 
@@ -388,6 +398,54 @@ void test_norm_statistics(const Setup& setup) {
           custom_approx(definite_integral(det_jacobian, mesh)));
   }
 }
+
+// The integrands of the measurement of the centers of the neutron stars
+// evaluate on the device, and their integrals over each element are those on
+// the host
+void test_volume_integrals(const Setup& setup) {
+  Device device{setup};
+  const Sources sources = device.sources();
+  const Kokkos::DefaultExecutionSpace exec{};
+  std::vector<std::string> tensor_names{};
+  tmpl::for_each<typename MeasurementEvent::volume_integrand_tags>(
+      [&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+        tensor_names.push_back(db::tag_name<Tag>());
+        CHECK(device_compute::is_device_observable<Metavariables, Sources>(
+            tensor_names.back()));
+      });
+  CHECK(tensor_names ==
+        std::vector<std::string>{"TildeDOfStarA", "TildeDOfStarB",
+                                 "TildeDTimesGridCoordsOfStarA",
+                                 "TildeDTimesGridCoordsOfStarB"});
+  const auto result = device_compute::device_norm_statistics<Metavariables>(
+      exec, sources, tensor_names);
+  const Approx custom_approx = Approx::custom().epsilon(1.e-12).scale(1.0);
+  for (size_t e = 0; e < number_of_elements; ++e) {
+    CAPTURE(e);
+    const auto expected = MeasurementEvent::integrals(
+        mesh, get<DetInvJacobian>(setup.geometry[e]),
+        get<grmhd::ValenciaDivClean::Tags::TildeD>(setup.evolved[e]),
+        setup.grid_coordinates[e]);
+    const auto check = [&](const auto& integrals, const size_t tensor) {
+      for (size_t c = 0; c < integrals.size(); ++c) {
+        CHECK(result.statistics(e, result.tensors[tensor].first_component + c)
+                  .integral == custom_approx(gsl::at(integrals, c)));
+      }
+    };
+    check(std::get<0>(expected), 0);
+    check(std::get<1>(expected), 1);
+    check(std::get<2>(expected), 2);
+    check(std::get<3>(expected), 3);
+    // Both stars together are the whole element
+    const DataVector det_jacobian =
+        1.0 / get(get<DetInvJacobian>(setup.geometry[e]));
+    CHECK(std::get<0>(expected)[0] + std::get<1>(expected)[0] ==
+          custom_approx(definite_integral(
+              det_jacobian * get(get<grmhd::ValenciaDivClean::Tags::TildeD>(
+                                 setup.evolved[e])),
+              mesh)));
+  }
+}
 }  // namespace
 
 // [[TimeOut, 30]]
@@ -403,4 +461,5 @@ SPECTRE_TEST_CASE(
   test_evaluation(setup, device_compute::Mode::Generic);
   test_evaluation(setup, device_compute::Mode::GenericOutOfLine);
   test_norm_statistics(setup);
+  test_volume_integrals(setup);
 }

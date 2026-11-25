@@ -428,6 +428,19 @@ bool runs_dense_on_elements(const Event& event) {
   return result;
 }
 
+// Whether the `event` integrates tensors over the volume of the elements,
+// e.g. a measurement of a control system (see
+// `device_compute::IntegratesOverVolume`)
+template <typename Metavariables>
+bool integrates_over_volume(const Event& event) {
+  bool result = false;
+  tmpl::for_each<device_compute::volume_integrals_events<Metavariables>>(
+      [&]<typename EventType>(tmpl::type_<EventType> /*meta*/) {
+        result = result or dynamic_cast<const EventType*>(&event) != nullptr;
+      });
+  return result;
+}
+
 // Errors because patches don't run the `event`, so the DG elements would wait
 // for them forever (e.g. in a reduction or an interpolation)
 [[noreturn]] inline void error_about_unsupported_event(const Event& event) {
@@ -441,7 +454,8 @@ bool runs_dense_on_elements(const Event& event) {
     const Event& event) {
   ERROR(
       "FD patches only run Completion, ObserveFields and ObserveNorms events "
-      "in EventsAndDenseTriggers, but got "
+      "and the volume integrals of measurements in EventsAndDenseTriggers, "
+      "but got "
       << pretty_type::get_runtime_type_name(event));
 }
 
@@ -773,6 +787,136 @@ void run_events_on_elements(const std::vector<const Event*>& events,
       });
 }
 
+// `sum += term` for the integrals of a `device_compute::IntegratesOverVolume`
+// event
+template <typename... Arrays>
+void add_integrals(const gsl::not_null<std::tuple<Arrays...>*> sum,
+                   const std::tuple<Arrays...>& term) {
+  [&]<size_t... Is>(std::index_sequence<Is...> /*meta*/) {
+    const auto add = [](auto& sum_array, const auto& term_array) {
+      for (size_t i = 0; i < sum_array.size(); ++i) {
+        gsl::at(sum_array, i) += gsl::at(term_array, i);
+      }
+    };
+    (add(std::get<Is>(*sum), std::get<Is>(term)), ...);
+  }(std::index_sequence_for<Arrays...>{});
+}
+
+// The integrals of the `EventType` (see
+// `device_compute::IntegratesOverVolume`) over all elements of the patch,
+// evaluated on the device from the compute tags of the integrands and reduced
+// there (the `integral` of `device_compute::device_norm_statistics`). With
+// `dense_output`, from the last dense output of the patch.
+template <typename PatchTag, typename EventType, typename DbTagsList,
+          typename Metavariables>
+typename EventType::integrals_type volume_integrals_on_device(
+    const gsl::not_null<db::DataBox<DbTagsList>*> box,
+    Parallel::GlobalCache<Metavariables>& cache, const bool dense_output) {
+  const Kokkos::Profiling::ScopedRegion region{
+      "patches::volume_integrals_on_device"};
+  const auto& exec = Parallel::device_execution_space();
+  // Report failures of the last substep before anything sees its state
+  db::get<PatchTag>(*box).check_last_step(exec);
+  const double time = db::get<::Tags::Time>(*box);
+  using Sources = typename PatchTag::type::device_observable_sources;
+  const Sources sources = with_state<PatchTag>(*box, [&](const auto&... state) {
+    return db::mutate<PatchTag>(
+        [&](const auto mutable_patch) {
+          return mutable_patch->observable_sources(
+              exec, state..., dense_output, time,
+              Parallel::get<::domain::Tags::FunctionsOfTime>(cache));
+        },
+        box);
+  });
+  using integrand_tags = typename EventType::volume_integrand_tags;
+  std::vector<std::string> tensor_names{};
+  tmpl::for_each<integrand_tags>([&]<typename Tag>(tmpl::type_<Tag> /*meta*/) {
+    tensor_names.push_back(db::tag_name<Tag>());
+  });
+  const device_compute::DeviceNormStatistics observables =
+      device_compute::device_norm_statistics<Metavariables>(exec, sources,
+                                                            tensor_names);
+  typename EventType::integrals_type result{};
+  [&]<size_t... Is>(std::index_sequence<Is...> /*meta*/) {
+    const auto sum_over_elements = [&](auto& integrals, const size_t tensor) {
+      const size_t first_column = observables.tensors[tensor].first_component;
+      for (size_t c = 0; c < integrals.size(); ++c) {
+        gsl::at(integrals, c) = 0.0;
+        for (size_t e = 0; e < observables.statistics.extent(0); ++e) {
+          gsl::at(integrals, c) +=
+              observables.statistics(e, first_column + c).integral;
+        }
+      }
+    };
+    (sum_over_elements(std::get<Is>(result), Is), ...);
+  }(std::make_index_sequence<tmpl::size<integrand_tags>::value>{});
+  return result;
+}
+
+// Runs the `events` that integrate tensors over the volume of the elements
+// (see `device_compute::IntegratesOverVolume`), e.g. the measurements of
+// control systems, each with the time its trigger fired before: the patch
+// integrates over all its elements and contributes the sum once, as the
+// event of an element contributes the integrals over the element. The
+// integrals are evaluated on the device if `Tags::ObserveOnDevice` and the
+// patch can evaluate the integrands there, and else on the DataBox of each
+// element. With `dense_output`, from the last dense output of the patch.
+template <typename PatchTag, typename ParallelComponent, typename DbTagsList,
+          typename Metavariables>
+void run_volume_integrals_events(
+    const std::vector<std::pair<const Event*, std::optional<double>>>& events,
+    const gsl::not_null<db::DataBox<DbTagsList>*> box,
+    Parallel::GlobalCache<Metavariables>& cache, const int array_index,
+    const bool dense_output) {
+  using Patch = typename PatchTag::type;
+  const Kokkos::Profiling::ScopedRegion region{
+      "patches::run_volume_integrals_events"};
+  const double time = db::get<::Tags::Time>(*box);
+  const auto sender =
+      Parallel::get_parallel_component<ParallelComponent>(cache)[array_index];
+  for (const auto& [event, previous_trigger_time] : events) {
+    call_with_dynamic_type<
+        void, device_compute::volume_integrals_events<Metavariables>>(
+        event, [&]<typename EventType>(const EventType* const /*meta*/) {
+          typename EventType::integrals_type integrals{};
+          bool on_device = false;
+          if constexpr (ComputesDeviceObservables<Patch>) {
+            using Sources = typename Patch::device_observable_sources;
+            using Universe = device_compute::universe<Metavariables, Sources>;
+            constexpr bool evaluable = []<typename... Tags>(
+                                           tmpl::list<Tags...> /*meta*/) {
+              return (... and
+                      device_compute::is_provided<device_compute::base_of<Tags>,
+                                                  Sources, Universe>);
+            }(typename EventType::volume_integrand_tags{});
+            if constexpr (evaluable) {
+              if (Parallel::get<Tags::ObserveOnDevice>(cache)) {
+                on_device = true;
+                integrals = volume_integrals_on_device<PatchTag, EventType>(
+                    box, cache, dense_output);
+              }
+            }
+          }
+          if (not on_device) {
+            for_each_element_box<PatchTag>(
+                box, cache,
+                dense_output ? ElementVariables::DenseOutput
+                             : ElementVariables::State,
+                [&](const auto& /*element_id*/, auto& element_box) {
+                  auto observation_box =
+                      make_observation_box<element_observation_compute_tags<
+                          Metavariables, std::decay_t<decltype(element_box)>>>(
+                          make_not_null(&element_box));
+                  add_integrals(make_not_null(&integrals),
+                                EventType::integrals(observation_box));
+                });
+          }
+          EventType::contribute(cache, sender, time, previous_trigger_time,
+                                integrals);
+        });
+  }
+}
+
 // Prints which `ObserveNorms` events patches observe on the device and, for
 // the others, which tensors they can't compute there (see
 // `observes_on_device`), so that a slow observation isn't a surprise
@@ -1090,13 +1234,24 @@ struct RunEventsAndTriggers {
  * - `ObserveFields` and `ObserveNorms` run on the DataBox of each element of
  *   the patch at the time of the trigger (see `Patch::make_element_box`), with
  *   the dense output. The observation value is the time.
+ * - Events that integrate tensors over the volume of the elements, e.g. the
+ *   measurements of control systems
+ *   (`control_system::measurements::VolumeIntegralsEvent`), are integrated
+ *   over all elements of the patch (on the device if `Tags::ObserveOnDevice`
+ *   and the patch can evaluate the integrands there), and the patch
+ *   contributes the sum once with the time the trigger fired before (see
+ *   `detail::run_volume_integrals_events`).
  *
  * Other events are an error, since the DG elements would wait for the patches
  * forever (e.g. in a reduction). Dense triggers are skipped during the self
- * start, as on the host. `::Tags::PreviousTriggerTime` isn't set.
+ * start, as on the host.
  */
 template <typename PatchTag>
 struct RunEventsAndDenseTriggers {
+  // The first patch combines reductions over all elements, e.g. of the
+  // measurements (see `CombinedReduction`)
+  using simple_tags = tmpl::list<Tags::PendingReductions>;
+
   template <typename DbTagsList, typename... InboxTags, typename Metavariables,
             typename ActionList, typename ParallelComponent>
   static Parallel::iterable_action_return_t apply(
@@ -1119,7 +1274,8 @@ struct RunEventsAndDenseTriggers {
     // early
     events_and_dense_triggers.for_each_event([](const Event& event) {
       if (dynamic_cast<const Events::Completion*>(&event) == nullptr and
-          not detail::runs_dense_on_elements<Metavariables>(event)) {
+          not detail::runs_dense_on_elements<Metavariables>(event) and
+          not detail::integrates_over_volume<Metavariables>(event)) {
         detail::error_about_unsupported_dense_event(event);
       }
     });
@@ -1188,10 +1344,16 @@ struct RunEventsAndDenseTriggers {
       }
 
       std::vector<const Event*> events_on_elements{};
+      std::vector<std::pair<const Event*, std::optional<double>>>
+          volume_integrals_events{};
       events_and_dense_triggers.for_each_triggered_event(
-          [&](const Event& event) {
+          [&](const Event& event,
+              const std::optional<double>& previous_trigger_time) {
             if (dynamic_cast<const Events::Completion*>(&event) != nullptr) {
               completed = true;
+            } else if (detail::integrates_over_volume<Metavariables>(event)) {
+              volume_integrals_events.emplace_back(&event,
+                                                   previous_trigger_time);
             } else {
               events_on_elements.push_back(&event);
             }
@@ -1199,6 +1361,9 @@ struct RunEventsAndDenseTriggers {
       detail::run_events_on_elements<PatchTag, ParallelComponent>(
           events_on_elements, make_not_null(&box), cache,
           Event::ObservationValue{db::tag_name<::Tags::Time>(), next_trigger},
+          dense_output);
+      detail::run_volume_integrals_events<PatchTag, ParallelComponent>(
+          volume_integrals_events, make_not_null(&box), cache, array_index,
           dense_output);
       if (not events_and_dense_triggers.reschedule(make_not_null(&box), cache,
                                                    array_index, component)) {

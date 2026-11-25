@@ -443,7 +443,11 @@ void test_for_each_triggered_event() {
                                            array_index, component) !=
         TriggeringState::NotReady);
   std::vector<char> visited{};
-  const auto visit = [&visited](const Event& event) {
+  const auto visit = [&visited](
+                         const Event& event,
+                         const std::optional<double>& previous_trigger_time) {
+    // These triggers don't record the times they fire at
+    CHECK(not previous_trigger_time.has_value());
     if (dynamic_cast<const EventA*>(&event) != nullptr) {
       visited.push_back('A');
     } else if (dynamic_cast<const EventB*>(&event) != nullptr) {

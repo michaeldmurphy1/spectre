@@ -2,8 +2,8 @@
 # See LICENSE.txt for details.
 
 # The binary neutron star of BinaryNeutronStar.yaml with the FD elements evolved
-# on the device in FD patches. The patches don't contribute to the measurements
-# of the control systems yet, so this input is only parsed.
+# on the device in FD patches. The patches don't support the NumericInitialData
+# of this input (they do support SpecInitialData3dEos), so it is only parsed.
 Executable: EvolveGhValenciaDivCleanBnsFdPatches
 Testing:
   Check: parse

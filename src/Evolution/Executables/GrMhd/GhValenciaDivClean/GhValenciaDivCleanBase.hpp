@@ -249,6 +249,7 @@
 #include "Evolution/DgSubcell/FdPatch/ActionsKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/Patches/ActionsKokkos.hpp"
+#include "Evolution/Patches/CombinedReduction.hpp"
 #include "Evolution/Patches/PatchArray.hpp"
 #include "Evolution/Patches/SlabSize.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/FdPatch/InitializePatchKokkos.hpp"

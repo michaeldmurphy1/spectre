@@ -609,9 +609,11 @@ GhValenciaDivClean), and blocks whose cells line up across block boundaries
 (patches copy ghost data between blocks instead of interpolating).
 GhValenciaDivClean patches support the harmonic gauge and damping functions
 that are sums of Gaussians. Dense events are supported for `Completion`,
-`ObserveFields` and `ObserveNorms`. With control systems, patches wait for
-the functions of time and switch the grid rotation like the elements, but they
-don't contribute to the measurements yet, which is an error. Patches don't
+`ObserveFields`, `ObserveNorms` and events that integrate over the volume of
+the elements, such as the BNS center-of-mass measurement of the control
+systems (`control_system::measurements::VolumeIntegralsEvent`), which patches
+evaluate on the device. With control systems, patches wait for the functions
+of time and switch the grid rotation like the elements. Patches don't
 support external boundary conditions, local time stepping, step size control
 by error estimates, interpolation, initial data from volume data files
 (`NumericInitialData`) or events at cleanup yet. Anything unsupported is an error.

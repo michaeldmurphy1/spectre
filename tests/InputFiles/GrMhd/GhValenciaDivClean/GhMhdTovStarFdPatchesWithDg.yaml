@@ -1,0 +1,396 @@
+# Distributed under the MIT License.
+# See LICENSE.txt for details.
+
+# GhMhdTovStarFdPatches.yaml with DG elements next to the patches: the
+# outermost blocks in x of the periodic domain are DG-only, so the elements next
+# to them (10 < |x| < 15, outside the star) stay on the DG grid too, and the FD
+# elements at |x| < 10, in patches, exchange boundary data with them. The slab
+# size is chosen over the DG elements and the patches together.
+
+Executable: EvolveGhValenciaDivCleanFdPatches
+Testing:
+  Check: parse;execute_check_output
+  Timeout: 120
+  Priority: Normal
+  RequiresKokkos: True
+ExpectedOutput:
+  - GhMhdTovStarFdPatchesWithDgVolume0.h5
+  - GhMhdTovStarFdPatchesWithDgReductions.h5
+
+# The reductions of EvolveGhValenciaDivClean (all elements in the
+# DgElementArray) for this input without the Patches options
+OutputFileChecks:
+  - Label: Norms as on the host
+    Subfile: Norms.dat
+    FileGlob: GhMhdTovStarFdPatchesWithDgReductions.h5
+    ExpectedData:
+      - [0.0, 3666.0, 28799.999999999945, 0.0012760166595544963,
+        0.7851495767434659, 0.0, 0.0, 0.0, 1.2909370488282728, 0.0, 0.0,
+        1.2909370488282728, 0.0, 1.2909370488282728, 0.0,
+        0.0008117276444208369, 0.0008665641245880129, 0.0008665641245880133,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.011619759178475643,
+        0.01189754446685917, 0.01189754446685917, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.022523978739853692, 0.022803385163730396,
+        0.022803385163730396, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.022523978739853692, 0.022803385163730396, 0.022803385163730396, 0.0,
+        0.0, 0.0, 0.022523978739853692, 0.022803385163730396,
+        0.022803385163730396, 0.0003862007044187187, 3.2644256655971454e-05,
+        0.0, 0.0, 0.0, 1.2836046520505949e-05]
+      - [0.01, 3666.0, 28799.99999999995, 0.0012801135243901956,
+        0.7853534318654345, 6.332484302042074e-06, 6.578606861475712e-06,
+        6.5786068614757126e-06, 1.2906720015733697, 9.3353358069747e-09,
+        9.335335806974701e-09, 1.29067200200263, 9.053577303645293e-09,
+        1.29067200200263, 2.5988974247450213e-05, 0.0008097811402165695,
+        0.0008534370655291474, 0.0008534370655291478, 3.630418795222119e-05,
+        2.3413585708072508e-06, 2.3413585708072508e-06, 3.620693385942859e-05,
+        2.2737263668952775e-06, 3.62069338594286e-05, 0.011598875028413391,
+        0.01185267870016474, 0.011852678700164742, 1.9403451389798514e-06,
+        1.0661973016727804e-06, 1.066197301672777e-06, 1.2615230514264722e-06,
+        2.1588460405754087e-06, 1.169898013319493e-06, 1.2615230514264756e-06,
+        1.1698980133194927e-06, 2.1588460405754104e-06, 0.022485445503410837,
+        0.022709309035893785, 0.022709309035893778, 3.0943324154869874e-09,
+        2.8539045094581986e-09, 1.7074376855925638e-09, 3.0943324154869866e-09,
+        1.7074376855925636e-09, 2.8539045094581986e-09, 0.022485448461517527,
+        0.022709306324241174, 0.022709308959036445, 1.7123904422303298e-09,
+        2.7448035788129715e-09, 2.7448035788129723e-09, 0.022485448461517524,
+        0.02270930895903644, 0.022709306324241174, 0.0003861768477228396,
+        3.270024400528449e-05, 3.985878597011531e-09, 4.6927950231053765e-09,
+        4.6927950231053765e-09, 1.287770167089603e-05]
+      - [0.0691605540157197, 3666.0, 28799.999999999953, 0.0012830703431244283,
+        0.7853433875021928, 4.374213498260243e-05, 4.502876586983378e-05,
+        4.5028765869833796e-05, 1.2906579621421455, 4.4441718627251746e-07,
+        4.4441718627251757e-07, 1.2906579781505954, 4.3090607807759896e-07,
+        1.2906579781505954, 0.00017194044417554586, 0.0008078907997372389,
+        0.0008415933575777104, 0.000841593357577711, 0.00024326807044893633,
+        1.6135002096028538e-05, 1.6135002096028538e-05, 0.00024241479960215702,
+        1.5650284252296286e-05, 0.00024241479960215707, 0.011591132926414312,
+        0.011809532888440477, 0.011809532888440477, 1.3379589297301439e-05,
+        7.342996107716442e-06, 7.34299610771642e-06, 8.569083953916432e-06,
+        1.4759030640053383e-05, 7.93899768279424e-06, 8.569083953916456e-06,
+        7.938997682794248e-06, 1.4759030640053397e-05, 0.02246085236441404,
+        0.02262051035733936, 0.022620510357339352, 1.4720203923374886e-07,
+        1.354977619800317e-07, 8.104503789543987e-08, 1.4720203923374883e-07,
+        8.10450378954399e-08, 1.3549776198003172e-07, 0.02246099251152306,
+        0.022620383140685985, 0.022620506193413336, 8.141567380216803e-08,
+        1.3025143721928231e-07, 1.302514372192823e-07, 0.02246099251152306,
+        0.022620506193413346, 0.022620383140685974, 0.0003860860259560211,
+        3.272948417525908e-05, 2.776079839873262e-08, 3.3782148952935404e-08,
+        3.37821489529354e-08, 1.2909818995717452e-05]
+    AbsoluteTolerance: 1e-14
+    RelativeTolerance: 1e-12
+  - Label: DenseNorms as on the host
+    Subfile: DenseNorms.dat
+    FileGlob: GhMhdTovStarFdPatchesWithDgReductions.h5
+    ExpectedData:
+      - [0.015, 3666.0, 28799.999999999953, 0.0012841780243057841,
+        0.7853460104791805, 9.48882853417387e-06, 9.793293623210866e-06,
+        9.793293623210873e-06, 1.2906549375471221, 2.0962425019389546e-08,
+        2.0962425019389553e-08, 1.290654938487585, 2.0316028235639418e-08,
+        1.290654938487585]
+    AbsoluteTolerance: 1e-14
+    RelativeTolerance: 1e-12
+  - Label: TimeSteps as on the host
+    Subfile: TimeSteps.dat
+    FileGlob: GhMhdTovStarFdPatchesWithDgReductions.h5
+    SkipColumns: [6, 7]  # Walltime
+    ExpectedData:
+      - [0.0, 219960.0, 0.01, 0.01, 0.01, 0.01]
+      - [0.01, 219960.0, 0.01, 0.01, 0.01, 0.01]
+      - [0.0691605540157197, 219960.0, 0.059160554015719694,
+        0.059160554015719694, 0.059160554015719694, 0.0591605540157197]
+    AbsoluteTolerance: 1e-14
+    RelativeTolerance: 1e-12
+
+---
+
+Parallelization:
+  ElementDistribution: NumGridPoints
+  UseSubcellGridPointsForDistribution: False
+
+ResourceInfo:
+  AvoidGlobalProc0: false
+  Singletons: Auto
+
+Evolution:
+  InitialTime: 0.0
+  InitialTimeStep: &initial_time_step 0.01
+  InitialSlabSize: *initial_time_step
+  MinimumTimeStep: 1e-7
+  LocalTimeStepping: Off
+  TimeStepper:
+    AdamsMoultonPcMonotonic:
+      Order: 3
+  LtsStepChoosers:
+  VariableOrderAlgorithm:
+    GoalOrder: 3
+
+PhaseChangeAndTriggers:
+
+InitialData: &InitialData
+  GeneralizedHarmonic(TovStar):
+    CentralDensity: 1.28e-3
+    EquationOfState:
+        PolytropicFluid:
+            PolytropicConstant: 100.0
+            PolytropicExponent: 2.0
+    Coordinates: Isotropic
+
+EquationOfState:
+  FromInitialData
+
+# The TOV star is centered in a periodic domain, so the variables are
+# continuous across the periodic faces (with kinks in their derivatives)
+DomainCreator:
+  AlignedLattice:
+    BlockBounds:
+      [[-25.0, -15.0, -5.0, 5.0, 15.0, 25.0], [-12.0, 12.0], [-12.0, 12.0]]
+    Distributions: [[], [], []]
+    SingularityPositions: [[], [], []]
+    InitialLevels: [1, 0, 0]
+    InitialGridPoints: [5, 5, 5]
+    RefinedLevels:
+    RefinedGridPoints:
+    BlocksToExclude:
+    BoundaryConditions: [Periodic, Periodic, Periodic]
+
+VariableFixing:
+  FixConservatives:
+    Enable: false # Only needed when not using Kastaun for recovery
+    CutoffD: &CutoffD 1.1e-15
+    MinimumValueOfD: &MinimumD 1.0e-15
+    CutoffYe: 0.0
+    MinimumValueOfYe: 0.0
+    SafetyFactorForB: &BSafetyFactor 1.0e-12
+    SafetyFactorForS: 1.0e-12
+    SafetyFactorForSCutoffD: 1.0e-8
+    SafetyFactorForSSlope: 0.0001
+    MagneticField: AssumeZero
+  FixToAtmosphere:
+    DensityOfAtmosphere: 1.0e-15
+    DensityCutoff: &AtmosphereDensityCutoff 1.1e-15
+    VelocityLimiting:
+      AtmosphereMaxVelocity: 0
+      NearAtmosphereMaxVelocity: 1.0e-4
+      AtmosphereDensityCutoff: 3.0e-15
+      TransitionDensityBound: 3.0e-14
+    KappaLimiting:
+      DensityLowerBound: 2.0e-14
+      EplisonKappaMinus: 1.0e-3
+      DensityUpperBound: 2.0e-13
+      EpsilonKappaMax: 0.01
+      LimitAboveDensityUpperBound: False
+      MinTemperature: FromEos
+  LimitLorentzFactor:
+    Enable: true
+    MaxDensityCutoff: 1.0e-12
+    LorentzFactorCap: 10.0
+
+PrimitiveFromConservative:
+  CutoffDForInversion: *CutoffD
+  DensityWhenSkippingInversion: *MinimumD
+  KastaunMaxLorentzFactor: 10.0
+
+EvolutionSystem:
+  ValenciaDivClean:
+    DampingParameter: 0.0
+  GeneralizedHarmonic:
+    GaugeCondition:
+      Harmonic:
+    DampingFunctionGamma0:
+      GaussianPlusConstant:
+        Constant: 0.01
+        Amplitude: 0.12
+        Width: 7.884855
+        Center: [0.0, 0.0, 0.0]
+    DampingFunctionGamma1:
+      GaussianPlusConstant:
+        Constant: -0.999
+        Amplitude: 0.999
+        Width: 30.0
+        Center: [0.0, 0.0, 0.0]
+    DampingFunctionGamma2:
+      GaussianPlusConstant:
+        Constant: 0.01
+        Amplitude: 1.2
+        Width: 7.884855
+        Center: [0.0, 0.0, 0.0]
+
+SpatialDiscretization:
+  BoundaryCorrection:
+    ProductUpwindPenaltyAndHll:
+      UpwindPenalty:
+      Hll:
+        MagneticFieldMagnitudeForHydro: 1.0e-30
+        LightSpeedDensityCutoff: 1.0e-8
+  DiscontinuousGalerkin:
+    Formulation: StrongInertial
+    Quadrature: GaussLobatto
+    Filtering:
+      - Hypercube:
+          HalfPower: 64
+          Enable: true
+          BlocksToFilter: All
+          VolumeFilterOnSubstep: true
+          BoundaryCorrectionFilterOnSubstep: false
+          VolumeFilterEveryNSteps: None
+          BoundaryCorrectionFilterEveryNSteps: None
+    OnlyDgBlocksAndGroups: ["Block(0,0,0)", "Block(4,0,0)"]
+    Subcell:
+      TroubledCellIndicator:
+        PerssonTci:
+          Exponent: 4.0
+          NumHighestModes: 1
+        RdmpTci:
+          Delta0: 1.0e-7
+          Epsilon: 1.0e-3
+        FdToDgTci:
+          NumberOfStepsBetweenTciCalls: 1
+          MinTciCallsAfterRollback: 1
+          MinimumClearTcis: 1
+        AlwaysUseSubcells: true
+        EnableExtensionDirections: false
+        UseHalo: false
+      SubcellToDgReconstructionMethod: DimByDim
+      FiniteDifferenceDerivativeOrder: 2
+      FdInterpolationOrder: 1
+    TciOptions:
+      MinimumValueOfD: 1.0e-20
+      MinimumValueOfYe: 1.0e-20
+      MinimumValueOfTildeTau: 1.0e-50
+      AtmosphereDensity: *AtmosphereDensityCutoff
+      SafetyFactorForB: *BSafetyFactor
+      MagneticFieldCutoff: DoNotCheckMagneticField
+  SubcellSolver:
+    Reconstructor:
+      MonotonisedCentralPrim:
+        AtmosphereTreatment: Never
+        ReconstructRhoTimesTemperature: true
+    FilterOptions:
+      SpacetimeDissipation: 0.1
+
+EventsAndTriggersAtCheckpoints:
+
+EventsAndTriggersAtSlabs:
+  - Trigger:
+      Slabs:
+        Specified:
+          Values: [0]
+    Events:
+      - ChangeSlabSize:
+          DelayChange: 0
+          StepChoosers:
+            - Cfl:
+                SafetyFactor: 0.2
+  - Trigger:
+      Slabs:
+        EvenlySpaced:
+          Interval: 1
+          Offset: 0
+    Events:
+      - ObserveTimeStep:
+          SubfileName: TimeSteps
+          PrintTimeToTerminal: False
+          ObservePerCore: False
+      - ObserveNorms:
+          SubfileName: Norms
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
+          TensorsToObserve:
+            - Name: SpacetimeMetric
+              NormType: L2Norm
+              Components: Individual
+            - Name: Pi
+              NormType: L2Norm
+              Components: Individual
+            - Name: Phi
+              NormType: L2Norm
+              Components: Individual
+            - Name: TildeD
+              NormType: L2Norm
+              Components: Individual
+            - Name: TildeTau
+              NormType: L2Norm
+              Components: Individual
+            - Name: TildeS
+              NormType: L2Norm
+              Components: Individual
+            - Name: RestMassDensity
+              NormType: Max
+              Components: Individual
+            - Name: Pressure
+              NormType: L2Norm
+              Components: Individual
+  - Trigger:
+      Slabs:
+        Specified:
+          Values: [2]
+    Events:
+      - ObserveFields:
+          SubfileName: VolumeData
+          VariablesToObserve:
+            - SpacetimeMetric
+            - Pi
+            - Phi
+            - TildeD
+            - TildeYe
+            - TildeTau
+            - TildeS
+            - TildeB
+            - TildePhi
+            - RestMassDensity
+            - Pressure
+            - SpatialVelocity
+            - LorentzFactor
+          InterpolateToMesh: None
+          ProjectToMesh: None
+          CoordinatesFloatingPointType: Double
+          FloatingPointTypes: [Double]
+          BlocksToObserve: All
+      - Completion
+
+EventsAndTriggersAtSteps:
+
+# Observed by dense output between steps, on the device for the FD elements
+EventsAndDenseTriggers:
+  - Trigger:
+      Times:
+        Specified:
+          Values: [0.015]
+    Events:
+      - ObserveNorms:
+          SubfileName: DenseNorms
+          BlocksToObserve: All
+          ReductionScope: WholeDomain
+          TensorsToObserve:
+            - Name: SpacetimeMetric
+              NormType: L2Norm
+              Components: Individual
+            - Name: RestMassDensity
+              NormType: Max
+              Components: Individual
+
+Patches:
+  MaxElementsPerPatch: Auto
+  DedicatedProcs: false
+  ObserveOnDevice: true
+
+EventsRunAtCleanup:
+  ObservationValue: -1000.0
+  Events:
+
+Observers:
+  VolumeFileName: "GhMhdTovStarFdPatchesWithDgVolume"
+  ReductionFileName: "GhMhdTovStarFdPatchesWithDgReductions"
+
+InterpolationTargets:
+  BondiSachsInterpolation:
+    LMax: 16
+    Radius: [1]
+    Center: [0, 0, 0]
+    AngularOrdering: Cce
+
+Cce:
+  BondiSachsOutputFilePrefix: "BondiSachs"
+
+Interpolator:
+  Verbosity: Silent

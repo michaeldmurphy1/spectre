@@ -21,6 +21,7 @@ spectre_target_headers(
   Measurements.hpp
   NonFactoryCreatable.hpp
   SingleHorizon.hpp
+  VolumeIntegrals.hpp
   )
 
 target_link_libraries(

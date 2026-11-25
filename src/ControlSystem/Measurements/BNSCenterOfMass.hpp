@@ -3,19 +3,22 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 #include "ControlSystem/Component.hpp"
+#include "ControlSystem/Measurements/VolumeIntegrals.hpp"
 #include "ControlSystem/Protocols/Measurement.hpp"
 #include "ControlSystem/Protocols/Submeasurement.hpp"
 #include "ControlSystem/RunCallbacks.hpp"
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/LinkedMessageId.hpp"
+#include "DataStructures/Tensor/Tensor.hpp"
 #include "DataStructures/Tensor/TypeAliases.hpp"
-#include "Domain/BlockLogicalCoordinates.hpp"
 #include "Domain/Creators/Tags/Domain.hpp"
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Domain/FunctionsOfTime/Tags.hpp"
@@ -23,22 +26,23 @@
 #include "IO/Logging/Verbosity.hpp"
 #include "IO/Observer/ObserverComponent.hpp"
 #include "IO/Observer/ReductionActions.hpp"
-#include "NumericalAlgorithms/LinearOperators/DefiniteIntegral.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Parallel/Invoke.hpp"
 #include "Parallel/Reduction.hpp"
 #include "ParallelAlgorithms/Actions/FunctionsOfTimeAreReady.hpp"
 #include "ParallelAlgorithms/Events/Tags.hpp"
-#include "ParallelAlgorithms/EventsAndTriggers/Event.hpp"
-#include "Utilities/Algorithm.hpp"
 #include "Utilities/GetOutput.hpp"
+#include "Utilities/Gsl.hpp"
+#include "Utilities/Kokkos/KokkosMacros.hpp"
+#include "Utilities/Math.hpp"
 #include "Utilities/ProtocolHelpers.hpp"
-#include "Utilities/Serialization/CharmPupable.hpp"
 #include "Utilities/StdArrayHelpers.hpp"
 #include "Utilities/TMPL.hpp"
 
 /// \cond
 class DataVector;
+template <size_t VolumeDim>
+class Domain;
 template <size_t VolumeDim>
 class ElementId;
 template <size_t Dim>
@@ -71,131 +75,104 @@ template <typename ControlSystems>
 struct PostReductionSendBNSStarCentersToControlSystem;
 /// \endcond
 
+namespace Tags {
 /*!
- * \brief  Factored Center of Mass calculation (for easier testing)
- *
- * \details This function computes the integral of tildeD (assumed to be the
- * conservative baryon density in the inertial frame), as well as its first
- * moment in the grid frame. The integrals are limited to \f$x>0\f$ (label A) or
- * \f$x<0\f$ (label B).
- *
- * \param mass_a Integral of tildeD (x > 0)
- * \param mass_b Integral of tildeD (x < 0)
- * \param first_moment_A First moment of integral of tildeD (x > 0)
- * \param first_moment_B First moment of integral of tildeD (x < 0)
- * \param mesh The mesh
- * \param inv_det_jacobian The inverse determinant of the jacobian of the map
- * between logical and inertial coordinates \param tilde_d TildeD on the mesh
- * \param x_grid The coordinates in the grid frame
+ * \brief The conserved rest mass density \f$\tilde{D}\f$ in the half of the
+ * grid frame of the star `Label`: \f$x \geq 0\f$ for `domain::ObjectLabel::A`
+ * and \f$x < 0\f$ for `domain::ObjectLabel::B`, zero elsewhere.
  */
-void center_of_mass_integral_on_element(
-    const gsl::not_null<double*> mass_a, const gsl::not_null<double*> mass_b,
-    const gsl::not_null<std::array<double, 3>*> first_moment_A,
-    const gsl::not_null<std::array<double, 3>*> first_moment_B,
-    const Mesh<3>& mesh, const Scalar<DataVector>& inv_det_jacobian,
-    const Scalar<DataVector>& tilde_d,
-    const tnsr::I<DataVector, 3, Frame::Grid>& x_grid);
-}  // namespace measurements
-
-/*!
- * \brief An `::Event` that computes the center of mass for $x > 0$ and $x < 0$
- * where $x$ is the in the `Frame::Grid`.
- *
- * \details See
- * `control_system::measurements::grid_center_of_mass_integral_on_element` for
- * the calculation of the CoM. This event then does a reduction and calls
- * `control_system::PostReductionSendBNSStarCentersToControlSystem` as a post
- * reduction callback.
- *
- * \tparam ControlSystems `tmpl::list` of all control systems that use this
- * event.
- */
-template <typename ControlSystems>
-class BNSEvent : public ::Event {
- public:
-  /// \cond
-  // LCOV_EXCL_START
-  explicit BNSEvent(CkMigrateMessage* /*unused*/) {}
-  using PUP::able::register_constructor;
-  WRAPPED_PUPable_decl_template(BNSEvent);  // NOLINT
-  // LCOV_EXCL_STOP
-  /// \endcond
-
-  // This event is created during control system initialization, not
-  // from the input file.
-  static constexpr bool factory_creatable = false;
-  BNSEvent() = default;
-
-  using compute_tags_for_observation_box = tmpl::list<>;
-
-  using return_tags = tmpl::list<>;
-  using argument_tags =
-      tmpl::list<::Tags::Time, ::Tags::PreviousTriggerTime,
-                 ::Events::Tags::ObserverMesh<3>,
-                 ::Events::Tags::ObserverDetInvJacobian<Frame::ElementLogical,
-                                                        Frame::Inertial>,
-                 grmhd::ValenciaDivClean::Tags::TildeD,
-                 ::Events::Tags::ObserverCoordinates<3, Frame::Grid>>;
-
-  template <typename Metavariables, typename ArrayIndex,
-            typename ParallelComponent>
-  void operator()(const double time, const std::optional<double>& previous_time,
-                  const Mesh<3>& mesh,
-                  const Scalar<DataVector>& inv_det_jacobian,
-                  const Scalar<DataVector>& tilde_d,
-                  const tnsr::I<DataVector, 3, Frame::Grid>& x_grid,
-                  Parallel::GlobalCache<Metavariables>& cache,
-                  const ArrayIndex& array_index,
-                  const ParallelComponent* const /*meta*/,
-                  const ObservationValue& /*observation_value*/) const {
-    const LinkedMessageId<double> measurement_id{time, previous_time};
-
-    // Initialize integrals and perform local calculations
-    double mass_a = 0.;
-    double mass_b = 0.;
-    std::array<double, 3> first_moment_a = {0., 0., 0.};
-    std::array<double, 3> first_moment_b = {0., 0., 0.};
-    measurements::center_of_mass_integral_on_element(
-        &mass_a, &mass_b, &first_moment_a, &first_moment_b, mesh,
-        inv_det_jacobian, tilde_d, x_grid);
-
-    // Reduction
-    auto my_proxy =
-        Parallel::get_parallel_component<ParallelComponent>(cache)[array_index];
-    // We need a place to run RunCallback on... this does not need to be
-    // the control system using the CoM data.
-    auto& reduction_target_proxy = Parallel::get_parallel_component<
-        ControlComponent<Metavariables, tmpl::front<ControlSystems>>>(cache);
-    Parallel::ReductionData<
-        Parallel::ReductionDatum<LinkedMessageId<double>, funcl::AssertEqual<>>,
-        Parallel::ReductionDatum<double, funcl::Plus<>>,
-        Parallel::ReductionDatum<double, funcl::Plus<>>,
-        Parallel::ReductionDatum<std::array<double, 3>, funcl::Plus<>>,
-        Parallel::ReductionDatum<std::array<double, 3>, funcl::Plus<>>>
-        reduction_data{measurement_id, mass_a, mass_b, first_moment_a,
-                       first_moment_b};
-    Parallel::contribute_to_reduction<
-        measurements::PostReductionSendBNSStarCentersToControlSystem<
-            ControlSystems>>(std::move(reduction_data), my_proxy,
-                             reduction_target_proxy);
-  }
-
-  using is_ready_argument_tags = tmpl::list<>;
-
-  template <typename Metavariables, typename ArrayIndex, typename Component>
-  bool is_ready(Parallel::GlobalCache<Metavariables>& /*cache*/,
-                const ArrayIndex& /*array_index*/,
-                const Component* const /*component*/) const {
-    return true;
-  }
-
-  bool needs_evolved_variables() const override { return true; }
+template <::domain::ObjectLabel Label>
+struct TildeDOfStar : db::SimpleTag {
+  using type = Scalar<DataVector>;
+  static std::string name() { return "TildeDOfStar" + ::domain::name(Label); }
 };
 
-/// \cond
-template <typename ControlSystems>
-PUP::able::PUP_ID BNSEvent<ControlSystems>::my_PUP_ID = 0;  // NOLINT
-/// \endcond
+/*!
+ * \brief The conserved rest mass density \f$\tilde{D}\f$ times the grid
+ * coordinates in the half of the grid frame of the star `Label` (see
+ * `TildeDOfStar`).
+ */
+template <::domain::ObjectLabel Label>
+struct TildeDTimesGridCoordsOfStar : db::SimpleTag {
+  using type = tnsr::I<DataVector, 3, Frame::Grid>;
+  static std::string name() {
+    return "TildeDTimesGridCoordsOfStar" + ::domain::name(Label);
+  }
+};
+}  // namespace Tags
+
+namespace BNSCenterOfMass_detail {
+// 1 in the half of the grid frame of the star `Label` (x >= 0 for A, x < 0
+// for B) and 0 elsewhere, as a function of the grid coordinate `x`
+template <::domain::ObjectLabel Label, typename DataType>
+KOKKOS_FUNCTION DataType in_half_of_star(const DataType& x) {
+  static_assert(Label == ::domain::ObjectLabel::A or
+                Label == ::domain::ObjectLabel::B);
+  if constexpr (std::is_same_v<DataType, double>) {
+    const double positive_x = x >= 0.0 ? 1.0 : 0.0;
+    return Label == ::domain::ObjectLabel::A ? positive_x : 1.0 - positive_x;
+  } else {
+    if constexpr (Label == ::domain::ObjectLabel::A) {
+      return step_function(x);
+    } else {
+      return 1.0 - step_function(x);
+    }
+  }
+}
+}  // namespace BNSCenterOfMass_detail
+
+namespace Tags {
+/// Compute tag for `TildeDOfStar`
+template <::domain::ObjectLabel Label>
+struct TildeDOfStarCompute : TildeDOfStar<Label>, db::ComputeTag {
+  using base = TildeDOfStar<Label>;
+  using return_type = Scalar<DataVector>;
+  using argument_tags =
+      tmpl::list<grmhd::ValenciaDivClean::Tags::TildeD,
+                 ::Events::Tags::ObserverCoordinates<3, Frame::Grid>>;
+  template <typename DataType>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<Scalar<DataType>*> result,
+      const Scalar<DataType>& tilde_d,
+      const tnsr::I<DataType, 3, Frame::Grid>& grid_coords) {
+    get(*result) =
+        BNSCenterOfMass_detail::in_half_of_star<Label>(get<0>(grid_coords)) *
+        get(tilde_d);
+  }
+};
+
+/// Compute tag for `TildeDTimesGridCoordsOfStar`
+template <::domain::ObjectLabel Label>
+struct TildeDTimesGridCoordsOfStarCompute : TildeDTimesGridCoordsOfStar<Label>,
+                                            db::ComputeTag {
+  using base = TildeDTimesGridCoordsOfStar<Label>;
+  using return_type = tnsr::I<DataVector, 3, Frame::Grid>;
+  using argument_tags =
+      tmpl::list<grmhd::ValenciaDivClean::Tags::TildeD,
+                 ::Events::Tags::ObserverCoordinates<3, Frame::Grid>>;
+  template <typename DataType>
+  KOKKOS_FUNCTION static void function(
+      const gsl::not_null<tnsr::I<DataType, 3, Frame::Grid>*> result,
+      const Scalar<DataType>& tilde_d,
+      const tnsr::I<DataType, 3, Frame::Grid>& grid_coords) {
+    for (size_t i = 0; i < 3; ++i) {
+      result->get(i) =
+          BNSCenterOfMass_detail::in_half_of_star<Label>(get<0>(grid_coords)) *
+          get(tilde_d) * grid_coords.get(i);
+    }
+  }
+};
+}  // namespace Tags
+
+/*!
+ * \brief The inertial coordinates of the grid coordinates `grid_centers` at
+ * `time`, with the map of the block each of them is in.
+ */
+std::array<std::array<double, 3>, 3> inertial_centers(
+    const Domain<3>& domain,
+    const domain::FunctionsOfTimeMap& functions_of_time, double time,
+    const std::array<std::array<double, 3>, 3>& grid_centers);
+}  // namespace measurements
 
 namespace measurements {
 namespace Tags {
@@ -220,11 +197,13 @@ struct SystemCenterOfMass : db::SimpleTag {
 
 /*!
  * \brief Measurement providing the location of the center of mass of the matter
- * in the \f$x>0\f$ and \f$x<0\f$ regions (assumed to correspond to the center
- * of mass of the two neutron stars in a BNS merger).
+ * in the \f$x \geq 0\f$ and \f$x < 0\f$ regions of the grid frame (assumed to
+ * correspond to the center of mass of the two neutron stars in a BNS merger).
  *
- * \details We use Events::Tags::ObserverXXX for tags that might need to be
- * retrieved from either the Subcell or DG grid.
+ * \details The masses and first moments of the two regions are the volume
+ * integrals of `Tags::TildeDOfStar` and `Tags::TildeDTimesGridCoordsOfStar`
+ * (see `VolumeIntegralsEvent`), at the grid points of the observer mesh (e.g.
+ * the FD grid of FD elements).
  */
 struct BothNSCenters : tt::ConformsTo<protocols::Measurement> {
   struct FindTwoCenters : tt::ConformsTo<protocols::Submeasurement> {
@@ -235,8 +214,18 @@ struct BothNSCenters : tt::ConformsTo<protocols::Measurement> {
     template <typename ControlSystems>
     using horizon_metavars = void;
 
+    /// The tensors whose volume integrals give the centers of mass
+    using volume_integrand_tags = tmpl::list<
+        Tags::TildeDOfStarCompute<::domain::ObjectLabel::A>,
+        Tags::TildeDOfStarCompute<::domain::ObjectLabel::B>,
+        Tags::TildeDTimesGridCoordsOfStarCompute<::domain::ObjectLabel::A>,
+        Tags::TildeDTimesGridCoordsOfStarCompute<::domain::ObjectLabel::B>>;
     template <typename ControlSystems>
-    using event = BNSEvent<ControlSystems>;
+    using post_reduction_action =
+        PostReductionSendBNSStarCentersToControlSystem<ControlSystems>;
+
+    template <typename ControlSystems>
+    using event = VolumeIntegralsEvent<FindTwoCenters, ControlSystems>;
   };
   /// List of submeasurements used by this measurement -- only FindTwoCenters
   /// here.
@@ -248,9 +237,10 @@ struct BothNSCenters : tt::ConformsTo<protocols::Measurement> {
  *
  * \details `mass_a`, `mass_b`, `first_moment_a`, and `first_moment_b` will
  * contain the reduced data for the integral of the density (and its first
- * moment) in the x>=0 (A label) and x<0 (B label) regions. This action
- * calculates the center of mass in each region, and sends the result to the
- * control system.
+ * moment) in the x>=0 (A label) and x<0 (B label) regions, the volume
+ * integrals of the `BothNSCenters::FindTwoCenters::volume_integrand_tags`
+ * (see `VolumeIntegralsEvent`). This action calculates the center of mass in
+ * each region, and sends the result to the control system.
  *
  * If any control system writes data to disk, i.e. if the
  * `control_system::Tags::WriteDataToDisk` tag is not empty, then this will
@@ -273,72 +263,24 @@ struct PostReductionSendBNSStarCentersToControlSystem {
                     Parallel::GlobalCache<Metavariables>& cache,
                     const ArrayIndex& /*array_index*/,
                     const LinkedMessageId<double>& measurement_id,
-                    const double& mass_a, const double& mass_b,
+                    const std::array<double, 1>& mass_a,
+                    const std::array<double, 1>& mass_b,
                     const std::array<double, 3>& first_moment_a,
                     const std::array<double, 3>& first_moment_b) {
     // Function called after reduction of the CoM data.
     // Calculate CoM from integrals
-    std::array<double, 3> grid_center_a = first_moment_a / mass_a;
-    std::array<double, 3> grid_center_b = first_moment_b / mass_b;
-    std::array<double, 3> grid_center_total =
-        (first_moment_a + first_moment_b) / (mass_a + mass_b);
+    const std::array<double, 3> grid_center_a = first_moment_a / mass_a[0];
+    const std::array<double, 3> grid_center_b = first_moment_b / mass_b[0];
+    const std::array<double, 3> grid_center_total =
+        (first_moment_a + first_moment_b) / (mass_a[0] + mass_b[0]);
 
     // To convert grid coords to inertial coords, we must find the block that
     // these coords are in and use that grid to inertial map
-    const Domain<3>& domain = Parallel::get<domain::Tags::Domain<3>>(cache);
-    const domain::FunctionsOfTimeMap& functions_of_time =
-        Parallel::get<domain::Tags::FunctionsOfTime>(cache);
-    tnsr::I<DataVector, 3, Frame::Grid> grid_tnsr_center{};
-    for (size_t i = 0; i < 3; i++) {
-      grid_tnsr_center.get(i) =
-          DataVector{gsl::at(grid_center_a, i), gsl::at(grid_center_b, i),
-                     gsl::at(grid_center_total, i)};
-    }
-
-    const auto block_logical_coords = block_logical_coordinates(
-        domain, grid_tnsr_center, measurement_id.id, functions_of_time);
-
-    ASSERT(alg::all_of(block_logical_coords,
-                       [](const auto& logical_coord_holder) {
-                         return logical_coord_holder.has_value();
-                       }),
-           "Grid centers of BNS ("
-               << grid_center_a << ", " << grid_center_b << ", "
-               << grid_center_total
-               << ") could not be mapped to the logical frame.");
-
-    const auto& blocks = domain.blocks();
-
-    ASSERT(block_logical_coords.size() == 3,
-           "There should be exactly 3 block logical coordinates for the two "
-           "centers of the BNS plus the system COM, but instead there are "
-               << block_logical_coords.size());
-
-    std::array<double, 3> inertial_center_a{};
-    std::array<double, 3> inertial_center_b{};
-    std::array<double, 3> inertial_center_total{};
-
-    for (size_t n = 0; n < block_logical_coords.size(); n++) {
-      const auto& logical_coord_holder = block_logical_coords[n];
-      const auto& block_id = logical_coord_holder.value().id;
-
-      const auto& block = blocks[block_id.get_index()];
-      const auto& grid_to_inertial_map =
-          block.moving_mesh_grid_to_inertial_map();
-
-      const auto inertial_center = grid_to_inertial_map(
-          tnsr::I<double, 3, Frame::Grid>{
-              n == 0 ? grid_center_a
-                     : (n == 1 ? grid_center_b : grid_center_total)},
-          measurement_id.id, functions_of_time);
-
-      auto& center_to_set =
-          n == 0 ? inertial_center_a
-                 : (n == 1 ? inertial_center_b : inertial_center_total);
-      for (size_t i = 0; i < 3; i++) {
-        gsl::at(center_to_set, i) = inertial_center.get(i);
-      }
-    }
+    const auto [inertial_center_a, inertial_center_b, inertial_center_total] =
+        inertial_centers(Parallel::get<domain::Tags::Domain<3>>(cache),
+                         Parallel::get<domain::Tags::FunctionsOfTime>(cache),
+                         measurement_id.id,
+                         {{grid_center_a, grid_center_b, grid_center_total}});
 
     const auto center_databox = db::create<db::AddSimpleTags<
         Tags::NeutronStarCenter<::domain::ObjectLabel::A, Frame::Grid>,

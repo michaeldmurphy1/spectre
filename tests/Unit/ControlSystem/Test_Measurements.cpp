@@ -28,6 +28,7 @@
 #include "Domain/Creators/TimeDependentOptions/RotationMap.hpp"
 #include "Domain/FunctionsOfTime/RegisterDerivedWithCharm.hpp"
 #include "Domain/Structure/ObjectLabel.hpp"
+#include "Evolution/Systems/GrMhd/ValenciaDivClean/Tags.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "Helpers/ControlSystem/Examples.hpp"
 #include "Helpers/IO/Observers/MockWriteReductionDataRow.hpp"
@@ -221,8 +222,8 @@ void check_centers(const std::array<double, 3>& center_a,
   const std::array<double, 3> expected_grid_center_b{-1.0, 1.0, 0.0};
 
   if (grid_centers) {
-    CHECK(center_a == expected_grid_center_a);
-    CHECK(center_b == expected_grid_center_b);
+    CHECK_ITERABLE_APPROX(center_a, expected_grid_center_a);
+    CHECK_ITERABLE_APPROX(center_b, expected_grid_center_b);
   } else {
     const std::array<double, 3> expected_inertial_center_a{
         cos(0.1) * expected_grid_center_a[0] +
@@ -381,18 +382,42 @@ SPECTRE_TEST_CASE("Unit.ControlSystem.FindTwoCenters",
   // mass_a and mass_b: Integral of tilde_d/inv_det_jacobian for x>=0 and x<0
   // first_moment_a, first_moment_b : Same as masses, but multiplying the
   // integrand by x_grid
-  double mass_a = 0.;
-  double mass_b = 0.;
-  std::array<double, 3> first_moment_a = {0., 0., 0.};
-  std::array<double, 3> first_moment_b = {0., 0., 0.};
-  control_system::measurements::center_of_mass_integral_on_element(
-      &mass_a, &mass_b, &first_moment_a, &first_moment_b, mesh,
-      inv_det_jacobian, tilde_d, x_grid);
+  using ControlSystems = tmpl::list<MockControlSystem>;
+  using MeasurementEvent =
+      control_system::measurements::BothNSCenters::FindTwoCenters::event<
+          ControlSystems>;
+  const auto [mass_a, mass_b, first_moment_a, first_moment_b] =
+      MeasurementEvent::integrals(mesh, inv_det_jacobian, tilde_d, x_grid);
   // Comparison with expected answer
-  CHECK(mass_a == 8.0);
-  CHECK(mass_b == 2.5);
-  CHECK(first_moment_a == std::array<double, 3>{8.0, 4.5, 3.0});
-  CHECK(first_moment_b == std::array<double, 3>{-2.5, 2.5, 0.0});
+  CHECK(mass_a[0] == approx(8.0));
+  CHECK(mass_b[0] == approx(2.5));
+  CHECK_ITERABLE_APPROX(first_moment_a, (std::array<double, 3>{8.0, 4.5, 3.0}));
+  CHECK_ITERABLE_APPROX(first_moment_b,
+                        (std::array<double, 3>{-2.5, 2.5, 0.0}));
+
+  // The integrands are device-callable with doubles, which split the grid at
+  // x = 0 as the DataVectors do
+  for (const double x : {-1.0, 0.0, 1.0}) {
+    CAPTURE(x);
+    const tnsr::I<double, 3, Frame::Grid> point{{x, 2.0, 3.0}};
+    Scalar<double> tilde_d_a{};
+    Scalar<double> tilde_d_b{};
+    control_system::measurements::Tags::TildeDOfStarCompute<
+        domain::ObjectLabel::A>::function(make_not_null(&tilde_d_a),
+                                          Scalar<double>{0.5}, point);
+    control_system::measurements::Tags::TildeDOfStarCompute<
+        domain::ObjectLabel::B>::function(make_not_null(&tilde_d_b),
+                                          Scalar<double>{0.5}, point);
+    CHECK(get(tilde_d_a) == (x >= 0.0 ? 0.5 : 0.0));
+    CHECK(get(tilde_d_b) == (x >= 0.0 ? 0.0 : 0.5));
+    tnsr::I<double, 3, Frame::Grid> moment_a{};
+    control_system::measurements::Tags::TildeDTimesGridCoordsOfStarCompute<
+        domain::ObjectLabel::A>::function(make_not_null(&moment_a),
+                                          Scalar<double>{0.5}, point);
+    for (size_t i = 0; i < 3; ++i) {
+      CHECK(moment_a.get(i) == get(tilde_d_a) * point.get(i));
+    }
+  }
 
   // Use BNS domain with rotation for realistic block structure, but simple time
   // dependent maps for testing
@@ -440,10 +465,9 @@ SPECTRE_TEST_CASE("Unit.ControlSystem.FindTwoCenters",
   ActionTesting::set_phase(make_not_null(&runner), Parallel::Phase::Testing);
   auto& cache = ActionTesting::cache<control_system_component>(runner, 0);
 
-  const LinkedMessageId<double> measurement_id{1.0, 0.0};
+  const LinkedMessageId<double> measurement_id{.id = 1.0, .previous = 0.0};
   const ElementId<3> unused_element_id{};
 
-  using ControlSystems = tmpl::list<MockControlSystem>;
   auto box = db::create<db::AddSimpleTags<Tags::Time>>(1.0);
 
   // Test post-reduction action

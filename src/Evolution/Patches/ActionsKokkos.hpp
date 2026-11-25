@@ -26,6 +26,7 @@
 #include "Domain/FunctionsOfTime/Tags.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Evolution/DiscontinuousGalerkin/InboxTags.hpp"
+#include "Evolution/Patches/CombinedReduction.hpp"
 #include "Evolution/Patches/DeviceComputeTagsKokkos.hpp"
 #include "Evolution/Patches/InboxTags.hpp"
 #include "Evolution/Patches/PatchTable.hpp"
@@ -999,11 +1000,9 @@ struct RegisterWithObservers {
  */
 template <Triggers::WhenToCheck WhenToCheck, typename PatchTag>
 struct RunEventsAndTriggers {
-  // The first patch combines the slab size requests (see `SlabSizeReduction`)
-  using simple_tags =
-      tmpl::conditional_t<WhenToCheck == Triggers::WhenToCheck::AtSlabs,
-                          tmpl::list<Tags::PendingSlabSizeRequests>,
-                          tmpl::list<>>;
+  // The first patch combines reductions over all elements, e.g. of the slab
+  // size requests (see `CombinedReduction`)
+  using simple_tags = tmpl::list<Tags::PendingReductions>;
 
   template <typename DbTagsList, typename... InboxTags, typename Metavariables,
             typename ActionList, typename ParallelComponent>

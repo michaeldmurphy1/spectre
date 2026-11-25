@@ -572,11 +572,13 @@ different design.
   operations for the same reason.
 - Charm++ reductions are over the elements of one array component, but some
   reductions must include the `DgElementArray` and the patches, e.g. the new
-  slab
-  size of `Events::ChangeSlabSize`. The executable combines them by setting
-  `Metavariables::slab_size_reduction` to
-  `evolution::patches::SlabSizeReduction`: both components
-  reduce to the first patch, which combines the results and sends them to both.
+  slab size of `Events::ChangeSlabSize` and the measurements of the control
+  systems. Both components reduce to the first patch, which combines the
+  results and sends them on (`evolution::patches::CombinedReduction`). The
+  executable sets `Metavariables::slab_size_reduction` to
+  `evolution::patches::SlabSizeReduction` and
+  `Metavariables::combined_reduction` to
+  `evolution::patches::CombinedReduction`.
   Observations don't need this, since the observers already collect the
   contributions of the elements (or of the first element of a patch for the
   events it observes on the device) by their `ElementId`.

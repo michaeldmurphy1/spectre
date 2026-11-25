@@ -441,21 +441,49 @@ bool integrates_over_volume(const Event& event) {
   return result;
 }
 
-// Errors because patches don't run the `event`, so the DG elements would wait
-// for them forever (e.g. in a reduction or an interpolation)
-[[noreturn]] inline void error_about_unsupported_event(const Event& event) {
-  ERROR(
-      "FD patches only run Completion, ChangeSlabSize, ObserveFields, "
-      "ObserveNorms, ObserveTimeStep and ErrorIfDataTooBig events, but got "
-      << pretty_type::get_runtime_type_name(event));
+// The names of the `EventTypes` in the input file, without template arguments
+// and each once
+template <typename EventTypes>
+std::string event_names() {
+  std::vector<std::string> names{};
+  tmpl::for_each<EventTypes>(
+      [&names]<typename EventType>(tmpl::type_<EventType> /*meta*/) {
+        std::string name = pretty_type::name<EventType>();
+        name = name.substr(0, name.find('<'));
+        if (not alg::found(names, name)) {
+          names.push_back(std::move(name));
+        }
+      });
+  std::string result{};
+  for (const std::string& name : names) {
+    result += (result.empty() ? "" : ", ") + name;
+  }
+  return result;
 }
 
-[[noreturn]] inline void error_about_unsupported_dense_event(
-    const Event& event) {
+// Errors because patches don't run the `event`, so the DG elements would wait
+// for them forever (e.g. in a reduction or an interpolation)
+template <typename Metavariables>
+[[noreturn]] void error_about_unsupported_event(const Event& event) {
+  ERROR("FD patches only run the events Completion, ChangeSlabSize, "
+        << event_names<events_on_elements<Metavariables>>() << ", but got "
+        << pretty_type::get_runtime_type_name(event));
+}
+
+template <typename Metavariables>
+[[noreturn]] void error_about_unsupported_dense_event(const Event& event) {
+  const std::string dense_events =
+      event_names<tmpl::filter<events_on_elements<Metavariables>,
+                               RunsDenseOnElements<tmpl::_1>>>();
+  const std::string measurements =
+      event_names<device_compute::volume_integrals_events<Metavariables>>();
   ERROR(
-      "FD patches only run Completion, ObserveFields and ObserveNorms events "
-      "and the volume integrals of measurements in EventsAndDenseTriggers, "
-      "but got "
+      "FD patches only run the events Completion, "
+      << dense_events
+      << (measurements.empty()
+              ? std::string{}
+              : " and the volume integrals of the measurements " + measurements)
+      << " in EventsAndDenseTriggers, but got "
       << pretty_type::get_runtime_type_name(event));
 }
 
@@ -1167,7 +1195,7 @@ struct RunEventsAndTriggers {
                 dynamic_cast<const ::Events::ChangeSlabSize*>(event.get()) ==
                     nullptr and
                 not detail::runs_on_elements<Metavariables>(*event)) {
-              detail::error_about_unsupported_event(*event);
+              detail::error_about_unsupported_event<Metavariables>(*event);
             }
           }
           if (not trigger.is_triggered(box)) {
@@ -1264,7 +1292,7 @@ struct RunEventsAndDenseTriggers {
       if (dynamic_cast<const Events::Completion*>(&event) == nullptr and
           not detail::runs_dense_on_elements<Metavariables>(event) and
           not detail::integrates_over_volume<Metavariables>(event)) {
-        detail::error_about_unsupported_dense_event(event);
+        detail::error_about_unsupported_dense_event<Metavariables>(event);
       }
     });
 

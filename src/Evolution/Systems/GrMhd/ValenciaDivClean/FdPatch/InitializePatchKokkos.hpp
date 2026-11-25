@@ -25,6 +25,7 @@
 #include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/DgSubcell/Tags/SubcellOptions.hpp"
 #include "Evolution/Initialization/InitialData.hpp"
+#include "Evolution/Patches/PatchState.hpp"
 #include "Evolution/Patches/PatchTable.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FdPatch/PatchKokkos.hpp"
 #include "Evolution/Systems/GrMhd/ValenciaDivClean/FiniteDifference/Tag.hpp"
@@ -122,10 +123,8 @@ struct InitializePatch {
   using patch_tag = Tags::Patch<OrderedListOfPrimitiveRecoverySchemes>;
   using history_tag =
       ::Tags::DeviceHistoryEvolvedVariables<typename System::variables_tag>;
-  using state_tags = typename patch_tag::type::state_tags;
-  using simple_tags = tmpl::append<
-      tmpl::list<patch_tag>, state_tags,
-      tmpl::list<history_tag, ::Tags::StepperErrorEstimatesEnabled>>;
+  using simple_tags =
+      evolution::patches::initial_patch_tags<patch_tag, history_tag>;
   // The dense triggers of the patch (see
   // `evolution::patches::Actions::RunEventsAndDenseTriggers`)
   using simple_tags_from_options =
@@ -186,25 +185,9 @@ struct InitializePatch {
         get<typename patch_tag::type::face_spacetime_variables_tag>(state));
     auto history = new_patch.initial_history(
         db::get<::Tags::TimeStepper<TimeStepper>>(box));
-    db::mutate<patch_tag, history_tag, ::Tags::StepperErrorEstimatesEnabled>(
-        [&new_patch, &history](const auto patch_ptr, const auto history_ptr,
-                               const auto error_estimates_enabled) {
-          *patch_ptr = std::move(new_patch);
-          *history_ptr = std::move(history);
-          // Patches don't support step size control by error estimates
-          *error_estimates_enabled = false;
-        },
-        make_not_null(&box));
-    // One tag at a time: nvcc's front end mismatches a parameter pack in the
-    // middle of the parameters of a single `db::mutate` lambda
-    tmpl::for_each<state_tags>(
-        [&box, &state]<typename StateTag>(tmpl::type_<StateTag> /*meta*/) {
-          db::mutate<StateTag>(
-              [&state](const auto state_ptr) {
-                *state_ptr = std::move(get<StateTag>(state));
-              },
-              make_not_null(&box));
-        });
+    evolution::patches::store_initial_patch<patch_tag, history_tag>(
+        make_not_null(&box), std::move(new_patch), std::move(state),
+        std::move(history));
     return {Parallel::AlgorithmExecution::Continue, std::nullopt};
   }
 };

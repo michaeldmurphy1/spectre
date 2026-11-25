@@ -9,7 +9,6 @@
 
 #include "Domain/Structure/DirectionalId.hpp"
 #include "Domain/Structure/ElementId.hpp"
-#include "Evolution/Patches/PatchTable.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Parallel/Invoke.hpp"
 

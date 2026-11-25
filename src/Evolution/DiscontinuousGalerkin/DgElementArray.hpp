@@ -22,6 +22,7 @@
 #include "Domain/Tags/ElementDistribution.hpp"
 #include "Evolution/DiscontinuousGalerkin/Initialization/QuadratureTag.hpp"
 #include "Evolution/DiscontinuousGalerkin/SubcellElementDistribution.hpp"
+#include "Evolution/Patches/SendToPatch.hpp"
 #include "NumericalAlgorithms/Spectral/Basis.hpp"
 #include "NumericalAlgorithms/Spectral/Quadrature.hpp"
 #include "Parallel/Algorithms/AlgorithmArray.hpp"
@@ -56,13 +57,8 @@ struct DgElementArray {
   using chare_type = Parallel::Algorithms::Array;
   /// Whether some elements are in patches instead of this array (see
   /// `evolution::patches::PatchArray`)
-  static constexpr bool uses_patches = []() {
-    if constexpr (requires { Metavariables::use_patches; }) {
-      return Metavariables::use_patches;
-    } else {
-      return false;
-    }
-  }();
+  static constexpr bool uses_patches =
+      evolution::patches::uses_patches<Metavariables>();
   static constexpr bool checkpoint_data = true;
   using metavariables = Metavariables;
   using phase_dependent_action_list = PhaseDepActionList;

@@ -55,6 +55,11 @@ void test(const gsl::not_null<std::mt19937*> generator) {
           get<::Tags::BatchView<Tags::TildeB<Frame::Inertial>>>(
               device_conserved));
   REQUIRE(rdmp_tci_data.size() == number_of_elements);
+  // The same from the batch of the conserved variables
+  const auto rdmp_tci_data_of_batch =
+      grmhd::ValenciaDivClean::subcell::rdmp_tci_data_on_device(
+          exec, device_conserved);
+  REQUIRE(rdmp_tci_data_of_batch.size() == number_of_elements);
 
   for (size_t e = 0; e < number_of_elements; ++e) {
     CAPTURE(e);
@@ -75,6 +80,7 @@ void test(const gsl::not_null<std::mt19937*> generator) {
                           expected.max_variables_values);
     CHECK_ITERABLE_APPROX(rdmp_tci_data[e].min_variables_values,
                           expected.min_variables_values);
+    CHECK(rdmp_tci_data_of_batch[e] == rdmp_tci_data[e]);
   }
 }
 }  // namespace

@@ -265,11 +265,7 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::prepare_send(
   if (patch_elements().has_external_faces()) {
     patch_elements().enqueue_boundary_data(exec, {flat(ghost_variables_)});
     subcell::enqueue_rdmp_tci_data_on_device(
-        exec, get<::Tags::BatchView<Tags::TildeD>>(evolved_variables),
-        get<::Tags::BatchView<Tags::TildeYe>>(evolved_variables),
-        get<::Tags::BatchView<Tags::TildeTau>>(evolved_variables),
-        get<::Tags::BatchView<Tags::TildeB<>>>(evolved_variables),
-        make_not_null(&rdmp_tci_data_buffers_));
+        exec, evolved_variables, make_not_null(&rdmp_tci_data_buffers_));
   }
   // The only wait for the device in a substep: the failures of the last
   // substep are reported before its state is sent
@@ -295,11 +291,8 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::initial_rdmp_data(
     const CellSpacetimeVariables& /*cell_spacetime_variables*/,
     const FaceSpacetimeVariables& /*face_spacetime_variables*/) const {
   // As `subcell::SetInitialRdmpData` on the subcell grid
-  return patch_elements().initial_rdmp_data(subcell::rdmp_tci_data_on_device(
-      exec, get<::Tags::BatchView<Tags::TildeD>>(evolved_variables),
-      get<::Tags::BatchView<Tags::TildeYe>>(evolved_variables),
-      get<::Tags::BatchView<Tags::TildeTau>>(evolved_variables),
-      get<::Tags::BatchView<Tags::TildeB<>>>(evolved_variables)));
+  return patch_elements().initial_rdmp_data(
+      subcell::rdmp_tci_data_on_device(exec, evolved_variables));
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>

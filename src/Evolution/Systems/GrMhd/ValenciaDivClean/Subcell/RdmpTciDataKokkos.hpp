@@ -58,6 +58,35 @@ std::vector<evolution::dg::subcell::RdmpTciData> rdmp_tci_data_on_device(
     const ::Tags::BatchView<
         ValenciaDivClean::Tags::TildeB<Frame::Inertial>>::type& tilde_b,
     RdmpTciDataBuffers* buffers = nullptr);
+
+/// The same for a batch that holds the conserved variables
+/// \f$\tilde{D}\f$, \f$\tilde{Y}_e\f$, \f$\tilde{\tau}\f$ and
+/// \f$\tilde{B}^i\f$ among others, e.g. the evolved variables of a system
+template <typename TagsList>
+void enqueue_rdmp_tci_data_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const BatchedVariables<TagsList>& variables,
+    const gsl::not_null<RdmpTciDataBuffers*> buffers) {
+  enqueue_rdmp_tci_data_on_device(
+      exec, get<::Tags::BatchView<ValenciaDivClean::Tags::TildeD>>(variables),
+      get<::Tags::BatchView<ValenciaDivClean::Tags::TildeYe>>(variables),
+      get<::Tags::BatchView<ValenciaDivClean::Tags::TildeTau>>(variables),
+      get<::Tags::BatchView<ValenciaDivClean::Tags::TildeB<>>>(variables),
+      buffers);
+}
+
+template <typename TagsList>
+std::vector<evolution::dg::subcell::RdmpTciData> rdmp_tci_data_on_device(
+    const Kokkos::DefaultExecutionSpace& exec,
+    const BatchedVariables<TagsList>& variables,
+    RdmpTciDataBuffers* const buffers = nullptr) {
+  return rdmp_tci_data_on_device(
+      exec, get<::Tags::BatchView<ValenciaDivClean::Tags::TildeD>>(variables),
+      get<::Tags::BatchView<ValenciaDivClean::Tags::TildeYe>>(variables),
+      get<::Tags::BatchView<ValenciaDivClean::Tags::TildeTau>>(variables),
+      get<::Tags::BatchView<ValenciaDivClean::Tags::TildeB<>>>(variables),
+      buffers);
+}
 /// @}
 }  // namespace grmhd::ValenciaDivClean::subcell
 #endif  // SPECTRE_KOKKOS

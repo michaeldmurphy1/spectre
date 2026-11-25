@@ -296,16 +296,7 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::prepare_send(
     patch_elements().enqueue_boundary_data(
         exec, {flat(ghost_variables_), flat(evolved_variables)});
     ValenciaDivClean::subcell::enqueue_rdmp_tci_data_on_device(
-        exec,
-        get<::Tags::BatchView<ValenciaDivClean::Tags::TildeD>>(
-            evolved_variables),
-        get<::Tags::BatchView<ValenciaDivClean::Tags::TildeYe>>(
-            evolved_variables),
-        get<::Tags::BatchView<ValenciaDivClean::Tags::TildeTau>>(
-            evolved_variables),
-        get<::Tags::BatchView<ValenciaDivClean::Tags::TildeB<>>>(
-            evolved_variables),
-        make_not_null(&rdmp_tci_data_buffers_));
+        exec, evolved_variables, make_not_null(&rdmp_tci_data_buffers_));
   }
   // The only wait for the device in a substep: the failures of the last
   // substep are reported before its state is sent
@@ -332,16 +323,8 @@ Patch<OrderedListOfPrimitiveRecoverySchemes>::initial_rdmp_data(
     const PrimitiveVariables& /*primitives*/) const {
   // As `ValenciaDivClean::subcell::SetInitialRdmpData` on the subcell grid
   return patch_elements().initial_rdmp_data(
-      ValenciaDivClean::subcell::rdmp_tci_data_on_device(
-          exec,
-          get<::Tags::BatchView<ValenciaDivClean::Tags::TildeD>>(
-              evolved_variables),
-          get<::Tags::BatchView<ValenciaDivClean::Tags::TildeYe>>(
-              evolved_variables),
-          get<::Tags::BatchView<ValenciaDivClean::Tags::TildeTau>>(
-              evolved_variables),
-          get<::Tags::BatchView<ValenciaDivClean::Tags::TildeB<>>>(
-              evolved_variables)));
+      ValenciaDivClean::subcell::rdmp_tci_data_on_device(exec,
+                                                         evolved_variables));
 }
 
 template <typename OrderedListOfPrimitiveRecoverySchemes>

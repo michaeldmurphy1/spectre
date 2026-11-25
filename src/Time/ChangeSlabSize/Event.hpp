@@ -165,17 +165,43 @@ class ChangeSlabSize : public Event, public RequestsStepperErrorTolerances {
                   const ArrayIndex& array_index,
                   const ParallelComponent* const /*meta*/,
                   const ObservationValue& /*observation_value*/) const {
+    TimeStepRequestProcessor step_requests(time_step_id.time_runs_forward());
+    request_step_sizes(make_not_null(&step_requests), time_step_id, lts_mode,
+                       *box);
+    send_requests<ParallelComponent>(
+        box, cache, array_index, slab_to_change(time_step_id), step_requests);
+  }
+
+  /// The slab whose size the event changes when it runs at `time_step_id`
+  int64_t slab_to_change(const TimeStepId& time_step_id) const {
     const auto next_changable_slab = time_step_id.is_at_slab_boundary()
                                          ? time_step_id.slab_number()
                                          : time_step_id.slab_number() + 1;
-    const auto slab_to_change =
-        next_changable_slab + static_cast<int64_t>(delay_change_);
+    return next_changable_slab + static_cast<int64_t>(delay_change_);
+  }
+
+  /// Whether the slab size needs a reduction over the elements, because a
+  /// step chooser uses the data of each element
+  bool synchronization_required() const {
+    // We must synchronize if any step chooser requires it, not just the
+    // limiting one, because choosers requiring synchronization can be
+    // limiting on some processors and not others.
+    return std::any_of(step_choosers_.begin(), step_choosers_.end(),
+                       [](const auto& step_chooser) {
+                         return step_chooser->uses_local_data();
+                       });
+  }
+
+  /// Add the slab sizes that the step choosers request for the element of the
+  /// `box` at `time_step_id` to the `step_requests`
+  template <typename DbTags>
+  void request_step_sizes(
+      const gsl::not_null<TimeStepRequestProcessor*> step_requests,
+      const TimeStepId& time_step_id, const LtsMode lts_mode,
+      const db::DataBox<DbTags>& box) const {
     const auto slab_start = time_step_id.step_time();
     const auto current_slab_size = (time_step_id.time_runs_forward() ? 1 : -1) *
                                    slab_start.slab().duration();
-
-    TimeStepRequestProcessor step_requests(time_step_id.time_runs_forward());
-    bool synchronization_required = false;
     for (const auto& step_chooser : step_choosers_) {
       if (lts_mode != LtsMode::Off and step_chooser->must_set_step_size()) {
         // The runtime name might not be exactly the same as the one
@@ -186,16 +212,25 @@ class ChangeSlabSize : public Event, public RequestsStepperErrorTolerances {
                        << " StepChooser cannot be used for the slab size in "
                           "an LTS evolution.");
       }
-      step_requests.process(
-          step_chooser->desired_step(current_slab_size.value(), *box));
-      // We must synchronize if any step chooser requires it, not just
-      // the limiting one, because choosers requiring synchronization
-      // can be limiting on some processors and not others.
-      if (not synchronization_required) {
-        synchronization_required = step_chooser->uses_local_data();
-      }
+      step_requests->process(
+          step_chooser->desired_step(current_slab_size.value(), box));
     }
+  }
 
+  /*!
+   * \brief Send the `step_requests` of the element (or e.g. a patch of
+   * elements) `array_index` of the `ParallelComponent` for the slab
+   * `slab_to_change`: reduce them over the elements if
+   * `synchronization_required()`, else store them in the `box` for
+   * `Actions::ChangeSlabSize`, which expects one more message for the slab.
+   */
+  template <typename ParallelComponent, typename DbTags, typename Metavariables,
+            typename ArrayIndex>
+  void send_requests(const gsl::not_null<db::DataBox<DbTags>*> box,
+                     Parallel::GlobalCache<Metavariables>& cache,
+                     const ArrayIndex& array_index,
+                     const int64_t slab_to_change,
+                     const TimeStepRequestProcessor& step_requests) const {
     db::mutate<::Tags::ChangeSlabSize::NumberOfExpectedMessages>(
         [&](const gsl::not_null<std::map<int64_t, size_t>*> expected) {
           ++(*expected)[slab_to_change];
@@ -208,10 +243,10 @@ class ChangeSlabSize : public Event, public RequestsStepperErrorTolerances {
           "parallel component. Specifically, the ability to do reductions "
           "using Charm++-style reductions has not been implemented.");
     } else {
-      const auto& component_proxy =
+      auto& component_proxy =
           Parallel::get_parallel_component<ParallelComponent>(cache);
       const auto& self_proxy = component_proxy[array_index];
-      if (synchronization_required) {
+      if (synchronization_required()) {
         if constexpr (ChangeSlabSize_detail::has_slab_size_reduction<
                           Metavariables>()) {
           Metavariables::slab_size_reduction::template contribute<
@@ -267,8 +302,6 @@ class ChangeSlabSize : public Event, public RequestsStepperErrorTolerances {
   step_choosers() const {
     return step_choosers_;
   }
-  /// The number of slabs to wait before changing the slab size
-  uint64_t delay_change() const { return delay_change_; }
 
  private:
   std::vector<std::unique_ptr<StepChooser<StepChooserUse::Slab>>>

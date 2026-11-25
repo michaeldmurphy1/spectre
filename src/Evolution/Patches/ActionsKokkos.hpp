@@ -64,8 +64,8 @@
 #include "Time/Actions/SelfStartActions.hpp"
 #include "Time/AdvanceTime.hpp"
 #include "Time/ChangeSlabSize/Event.hpp"
-#include "Time/ChangeSlabSize/Tags.hpp"
 #include "Time/EvolutionOrdering.hpp"
+#include "Time/LtsMode.hpp"
 #include "Time/Tags/HistoryEvolvedVariables.hpp"
 #include "Time/Tags/Time.hpp"
 #include "Time/Tags/TimeStep.hpp"
@@ -996,17 +996,6 @@ void change_slab_size(const ::Events::ChangeSlabSize& event,
       "Executables with patches must set Metavariables::slab_size_reduction to "
       "patches::SlabSizeReduction so that the DgElementArray and the patches "
       "agree on the slab size.");
-  const TimeStepId& time_step_id = db::get<::Tags::TimeStepId>(*box);
-  const auto next_changable_slab = time_step_id.is_at_slab_boundary()
-                                       ? time_step_id.slab_number()
-                                       : time_step_id.slab_number() + 1;
-  const auto slab_to_change =
-      next_changable_slab + static_cast<int64_t>(event.delay_change());
-  const auto current_slab_size = (time_step_id.time_runs_forward() ? 1 : -1) *
-                                 time_step_id.step_time().slab().duration();
-
-  TimeStepRequestProcessor step_requests(time_step_id.time_runs_forward());
-  bool synchronization_required = false;
   for (const auto& step_chooser : event.step_choosers()) {
     // These use the history and the error estimates of the elements, or
     // local time stepping, which the DataBoxes of the elements don't hold
@@ -1020,36 +1009,20 @@ void change_slab_size(const ::Events::ChangeSlabSize& event,
             << pretty_type::get_runtime_type_name(*step_chooser)
             << " step chooser in ChangeSlabSize.");
     }
-    synchronization_required =
-        synchronization_required or step_chooser->uses_local_data();
   }
-  // The step choosers (e.g. `Cfl`) may use the variables
+  const TimeStepId& time_step_id = db::get<::Tags::TimeStepId>(*box);
+  TimeStepRequestProcessor step_requests(time_step_id.time_runs_forward());
+  // The step choosers (e.g. `Cfl`) may use the variables. Patches step
+  // globally.
   for_each_element_box<PatchTag>(
       box, cache, ElementVariables::State,
       [&](const auto& /*element_id*/, const auto& element_box) {
-        for (const auto& step_chooser : event.step_choosers()) {
-          step_requests.process(step_chooser->desired_step(
-              current_slab_size.value(), element_box));
-        }
+        event.request_step_sizes(make_not_null(&step_requests), time_step_id,
+                                 LtsMode::Off, element_box);
       });
-
-  db::mutate<::Tags::ChangeSlabSize::NumberOfExpectedMessages>(
-      [&](const gsl::not_null<std::map<int64_t, size_t>*> expected) {
-        ++(*expected)[slab_to_change];
-      },
-      box);
-  if (synchronization_required) {
-    Metavariables::slab_size_reduction::template contribute<ParallelComponent>(
-        cache,
-        Parallel::get_parallel_component<ParallelComponent>(cache)[array_index],
-        ::Events::ChangeSlabSize::ReductionData(slab_to_change, step_requests));
-  } else {
-    db::mutate<::Tags::ChangeSlabSize::NewSlabSize>(
-        [&](const gsl::not_null<
-            std::map<int64_t, std::vector<TimeStepRequestProcessor>>*>
-                sizes) { (*sizes)[slab_to_change].push_back(step_requests); },
-        box);
-  }
+  event.template send_requests<ParallelComponent>(
+      box, cache, array_index, event.slab_to_change(time_step_id),
+      step_requests);
 }
 }  // namespace detail
 

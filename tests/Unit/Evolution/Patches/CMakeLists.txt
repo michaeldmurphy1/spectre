@@ -6,13 +6,8 @@ set(LIBRARY "Test_Patches")
 set(LIBRARY_SOURCES
   Test_CombinedReduction.cpp
   Test_PatchTable.cpp
+  Test_RunOnZerothElement.cpp
   )
-
-if (SPECTRE_KOKKOS)
-  list(APPEND LIBRARY_SOURCES
-    Test_RunOnZerothElementKokkos.cpp
-    )
-endif()
 
 add_test_library(${LIBRARY} "${LIBRARY_SOURCES}")
 

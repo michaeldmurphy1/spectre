@@ -13,7 +13,7 @@
 #include "Evolution/DgSubcell/FdPatch/InboxTags.hpp"
 #include "Evolution/DgSubcell/InitialTciData.hpp"
 #include "Evolution/DgSubcell/Tags/InitialTciData.hpp"
-#include "Evolution/Patches/ActionsKokkos.hpp"
+#include "Evolution/Patches/PatchState.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Parallel/GlobalCache.hpp"
 #include "Parallel/Invoke.hpp"
@@ -47,8 +47,7 @@ struct SendInitialTciData {
     using inbox_tag = evolution::dg::subcell::Tags::InitialTciData<dim>;
     auto& dg_proxy = Parallel::get_parallel_component<DgElementArray>(cache);
     const auto& patch = db::get<PatchTag>(box);
-    for (auto& message :
-         evolution::patches::Actions::detail::with_state<PatchTag>(
+    for (auto& message : evolution::patches::with_state<PatchTag>(
              box, [&patch](const auto&... state) {
                return patch.initial_rdmp_data(
                    Parallel::device_execution_space(), state...);

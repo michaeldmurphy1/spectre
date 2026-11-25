@@ -13,6 +13,7 @@
 #include "DataStructures/DataBox/Tag.hpp"
 #include "DataStructures/DataBox/TagName.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Evolution/Patches/EventsOnElements.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
 #include "Options/String.hpp"
 #include "ParallelAlgorithms/Events/NormStatistics.hpp"
@@ -244,43 +245,6 @@ struct provider {
   using type =
       typename decltype(detail::resolve<Tag, Sources, Universe>())::type;
 };
-
-/// Whether `T` is an `Events::ObserveNorms`
-template <typename T>
-struct IsObserveNorms : std::false_type {};
-/// \cond
-template <typename Fields, typename NonTensorComputeTags,
-          typename ArraySectionIdTag, typename OptionName>
-struct IsObserveNorms<::Events::ObserveNorms<Fields, NonTensorComputeTags,
-                                             ArraySectionIdTag, OptionName>>
-    : std::true_type {};
-/// \endcond
-
-/// The `ObserveNorms` events of the executable
-template <typename Metavariables>
-using observe_norms_events = tmpl::filter<
-    tmpl::at<typename Metavariables::factory_creation::factory_classes, Event>,
-    IsObserveNorms<tmpl::_1>>;
-
-/// Whether `EventType` integrates tensors over the volume of the elements
-/// (e.g. `control_system::measurements::VolumeIntegralsEvent`), which it
-/// defines by the compute tags `volume_integrand_tags`
-template <typename EventType>
-concept IntegratesOverVolume =
-    requires { typename EventType::volume_integrand_tags; };
-
-/// \cond
-template <typename EventType>
-struct IsVolumeIntegralsEvent
-    : std::bool_constant<IntegratesOverVolume<EventType>> {};
-/// \endcond
-
-/// The events of the executable that integrate tensors over the volume of the
-/// elements (see `IntegratesOverVolume`)
-template <typename Metavariables>
-using volume_integrals_events = tmpl::filter<
-    tmpl::at<typename Metavariables::factory_creation::factory_classes, Event>,
-    IsVolumeIntegralsEvent<tmpl::_1>>;
 
 namespace detail {
 template <typename Event>

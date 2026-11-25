@@ -107,8 +107,8 @@ void refer_to(const gsl::not_null<TensorType*> result,
 
 // The geometry for observations on the subcell grid, which is the active grid
 // of the elements of patches. Events use these instead of their compute tags
-// for the same items (see `evolution::patches::run_events_on_elements`), so
-// that they don't compute the geometry again. They derive from the subcell
+// for the same items (see `evolution::patches::Actions::RunEventsAndTriggers`),
+// so that they don't compute the geometry again. They derive from the subcell
 // compute tags, since events may also retrieve the items with those.
 template <size_t Dim, typename Fr>
 struct ObserverCoordinatesCompute

@@ -12,7 +12,7 @@
 #include "DataStructures/DataBox/Tag.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/SegmentId.hpp"
-#include "Evolution/Patches/ActionsKokkos.hpp"
+#include "Evolution/Patches/RunOnZerothElement.hpp"
 #include "Framework/ActionTesting.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Parallel/Phase.hpp"
@@ -90,7 +90,7 @@ std::vector<ElementId<3>> run(const std::vector<ElementId<3>>& element_ids) {
 }
 }  // namespace
 
-SPECTRE_TEST_CASE("Unit.Evolution.Patches.RunOnZerothElementKokkos",
+SPECTRE_TEST_CASE("Unit.Evolution.Patches.RunOnZerothElement",
                   "[Unit][Evolution]") {
   const ElementId<3> zeroth{0, {{{1, 0}, {1, 0}, {1, 0}}}};
   const ElementId<3> other_in_block_zero{0, {{{1, 1}, {1, 0}, {1, 0}}}};

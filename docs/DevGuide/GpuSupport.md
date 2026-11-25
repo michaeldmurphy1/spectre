@@ -510,7 +510,7 @@ systems, are an error.
 
 With `Patches: ObserveOnDevice: true` in the input file, patches observe the
 events they support on the device instead
-(`evolution::patches::Actions::detail::observe_norms_on_device`): for an
+(`evolution::patches::observe_norms_on_device`): for an
 `Events::ObserveNorms` (without array sections) whose tensors can all be
 evaluated on the device, the patch evaluates them for all elements on the
 device at the time of the observation, from the state or the dense output. A

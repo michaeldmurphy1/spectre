@@ -251,7 +251,10 @@
 #include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/Patches/ActionsKokkos.hpp"
 #include "Evolution/Patches/CombinedReduction.hpp"
+#include "Evolution/Patches/EventActionsKokkos.hpp"
 #include "Evolution/Patches/PatchArray.hpp"
+#include "Evolution/Patches/RunOnZerothElement.hpp"
+#include "Evolution/Patches/SelfStartKokkos.hpp"
 #include "Evolution/Patches/SlabSize.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/FdPatch/InitializePatchKokkos.hpp"
 #endif  // SPECTRE_KOKKOS

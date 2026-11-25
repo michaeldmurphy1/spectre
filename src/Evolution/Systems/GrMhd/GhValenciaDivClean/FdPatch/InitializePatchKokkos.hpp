@@ -30,7 +30,7 @@
 #include "Evolution/DgSubcell/Tags/Jacobians.hpp"
 #include "Evolution/DgSubcell/Tags/SubcellOptions.hpp"
 #include "Evolution/Initialization/InitialData.hpp"
-#include "Evolution/Patches/ActionsKokkos.hpp"
+#include "Evolution/Patches/PatchState.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/Actions/SetInitialData.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/GaugeSourceFunctions/Gauges.hpp"
 #include "Evolution/Systems/GeneralizedHarmonic/GaugeSourceFunctions/Harmonic.hpp"
@@ -499,7 +499,7 @@ struct FixVariables {
       const Parallel::GlobalCache<Metavariables>& /*cache*/,
       const int /*array_index*/, ActionList /*meta*/,
       const ParallelComponent* const /*meta*/) {
-    evolution::patches::Actions::detail::mutate_with_state<patch_tag>(
+    evolution::patches::mutate_with_state<patch_tag>(
         make_not_null(&box), [](const auto patch, const auto... state) {
           patch->fix_variables(Parallel::device_execution_space(), state...);
         });

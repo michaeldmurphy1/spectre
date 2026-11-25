@@ -250,6 +250,7 @@
 #include "Evolution/DgSubcell/FdPatch/ActionsKokkos.hpp"
 #include "Evolution/DgSubcell/FdPatch/PatchTable.hpp"
 #include "Evolution/Patches/ActionsKokkos.hpp"
+#include "Evolution/Patches/CombinedReduction.hpp"
 #include "Evolution/Patches/PatchArray.hpp"
 #include "Evolution/Patches/SlabSize.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/FdPatch/InitializePatchKokkos.hpp"
@@ -1022,7 +1023,7 @@ struct GhValenciaDivCleanTemplateBase<
                           derived_metavars>>>,
                   // As the DG elements, so that the patches have the
                   // measurements of the control systems among their dense
-                  // triggers (which they don't run yet, see
+                  // triggers and contribute to them (see
                   // `evolution::patches::Actions::RunEventsAndDenseTriggers`)
                   tmpl::conditional_t<
                       use_control_systems,

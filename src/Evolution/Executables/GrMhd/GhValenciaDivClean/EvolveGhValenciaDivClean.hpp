@@ -50,10 +50,10 @@ struct EvolutionMetavars
 /// elements are evolved on the host as in `EvolutionMetavars`.
 ///
 /// With control systems, the patches wait for the functions of time as the
-/// elements do and switch the grid rotation if they hold the zeroth element,
-/// but they don't contribute to the measurements yet, which is an error at the
-/// first step after the self start (see
-/// `evolution::patches::Actions::RunEventsAndDenseTriggers`).
+/// elements do, switch the grid rotation if they hold the zeroth element, and
+/// contribute to the measurements, which are reduced over the DG elements and
+/// the patches (see `evolution::patches::Actions::RunEventsAndDenseTriggers`
+/// and `evolution::patches::CombinedReduction`).
 template <bool UseControlSystems, bool UseParametrizedDeleptonization,
           typename... InterpolationTargetTags>
 struct EvolutionMetavarsWithFdPatches
@@ -80,6 +80,10 @@ struct EvolutionMetavarsWithFdPatches
   using patch_table_tag = evolution::dg::subcell::fd_patch::Tags::PatchTable<3>;
   // The DG elements and the patches agree on the slab size
   using slab_size_reduction = evolution::patches::SlabSizeReduction<
+      patch_component, typename base::dg_element_array_component>;
+  // Reductions over all elements, e.g. of the measurements of the control
+  // systems
+  using combined_reduction = evolution::patches::CombinedReduction<
       patch_component, typename base::dg_element_array_component>;
   using component_list =
       tmpl::push_back<typename base::component_list, patch_component>;

@@ -17,6 +17,7 @@
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/Subcell/CouplingKokkos.hpp"
 #include "Evolution/Systems/GrMhd/GhValenciaDivClean/Subcell/TimeDerivativeKokkos.hpp"
 #include "NumericalAlgorithms/Spectral/Mesh.hpp"
+#include "ParallelAlgorithms/Events/Tags.hpp"
 #include "PointwiseFunctions/ConstraintDamping/GaussianSum.hpp"
 #include "PointwiseFunctions/GeneralRelativity/DetAndInverseSpatialMetric.hpp"
 #include "PointwiseFunctions/GeneralRelativity/GeneralizedHarmonic/ConstraintDampingTags.hpp"
@@ -49,6 +50,7 @@ using gauge_source_tags =
 using gamma_tags =
     tmpl::list<gh::Tags::ConstraintGamma0, gh::Tags::ConstraintGamma1,
                gh::Tags::ConstraintGamma2>;
+using GridCoordinates = ::Events::Tags::ObserverCoordinates<3, Frame::Grid>;
 
 // The first component of `Tag` in a `BatchedVariables` of `TagsList`
 template <typename Tag, typename TagsList>
@@ -99,7 +101,9 @@ void constraint_gammas(
  * - the spatial metric, its inverse and the square root of its determinant
  *   that the patch computes for the fixing (which the host computes with the
  *   compute tags of the element),
- * - the geometry at the cell centers at the time of the observation,
+ * - the geometry at the cell centers at the time of the observation and the
+ *   grid coordinates of the cell centers (as the observer coordinates of the
+ *   FD elements),
  *
  * and tensors it computes when they are needed:
  * - the determinant of the spatial metric,
@@ -120,7 +124,8 @@ struct DeviceObservableSources {
   using fixing_metric_tags = subcell::fixing_metric_tags;
   using geometry_tags = evolution::dg::subcell::fd_patch::cell_geometry_tags;
   using computed_tags =
-      tmpl::append<tmpl::list<ObservablesKokkos_detail::DetSpatialMetric>,
+      tmpl::append<tmpl::list<ObservablesKokkos_detail::DetSpatialMetric,
+                              ObservablesKokkos_detail::GridCoordinates>,
                    ObservablesKokkos_detail::gauge_source_tags,
                    ObservablesKokkos_detail::gamma_tags>;
   /// The tensors the patch provides
@@ -170,6 +175,10 @@ struct DeviceObservableSources {
       return detail::components<Tag>(*fixing_metric, range);
     } else if constexpr (tmpl::list_contains_v<geometry_tags, Tag>) {
       return detail::components<Tag>(*cell_geometry, range);
+    } else if constexpr (std::is_same_v<Tag, detail::GridCoordinates>) {
+      (void)evaluator;
+      return Kokkos::subview(grid_coordinates, Kokkos::ALL(), Kokkos::ALL(),
+                             std::pair{range.first, range.first + range.size});
     } else if constexpr (std::is_same_v<Tag, detail::DetSpatialMetric>) {
       const View result = evaluator.scratch("DetSpatialMetric", 1);
       detail::det_spatial_metric(

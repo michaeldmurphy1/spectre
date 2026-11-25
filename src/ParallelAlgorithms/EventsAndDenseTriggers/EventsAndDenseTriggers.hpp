@@ -133,12 +133,14 @@ class EventsAndDenseTriggers {
                   const ArrayIndex& array_index,
                   const ComponentPointer component);
 
-  /// Call `function(event)` for each event associated with fired
-  /// triggers and mark the triggers as handled, as `run_events` does,
-  /// for callers that run the events themselves, e.g. on the DataBoxes
-  /// of the elements of a patch.  `Tags::PreviousTriggerTime` is not
-  /// set.  This must be called after is_ready returns something other
-  /// then NotReady.  Any repeated calls will be no-ops until a
+  /// Call `function(event, previous_trigger_time)` for each event
+  /// associated with fired triggers and mark the triggers as handled,
+  /// as `run_events` does, for callers that run the events themselves,
+  /// e.g. on the DataBoxes of the elements of a patch.
+  /// `previous_trigger_time` is the value `run_events` sets
+  /// `Tags::PreviousTriggerTime` to while it runs the event, which this
+  /// doesn't set.  This must be called after is_ready returns something
+  /// other then NotReady.  Any repeated calls will be no-ops until a
   /// successful call to reschedule.
   template <typename F>
   void for_each_triggered_event(F&& function);
@@ -291,8 +293,10 @@ void EventsAndDenseTriggers::for_each_triggered_event(F&& function) {
   ASSERT(initialized(), "Not initialized");
   for (auto& trigger_entry : events_and_triggers_) {
     if (trigger_entry.is_triggered == std::optional{true}) {
+      const std::optional<double> previous_trigger_time =
+          trigger_entry.trigger->previous_trigger_time();
       for (const auto& event : trigger_entry.events) {
-        function(*event);
+        function(*event, previous_trigger_time);
       }
     }
     // Mark this trigger as handled, as in run_events

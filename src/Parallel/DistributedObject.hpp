@@ -24,6 +24,7 @@
 #include "DataStructures/DataBox/MetavariablesTag.hpp"
 #include "DataStructures/DataBox/PrefixHelpers.hpp"
 #include "DataStructures/TaggedTuple.hpp"
+#include "Parallel/ActionTiming.hpp"
 #include "Parallel/AlgorithmExecution.hpp"
 #include "Parallel/AlgorithmMetafunctions.hpp"
 #include "Parallel/Algorithms/AlgorithmArrayDeclarations.hpp"
@@ -61,6 +62,7 @@
 #include "Utilities/System/ParallelInfo.hpp"
 #include "Utilities/TMPL.hpp"
 #include "Utilities/TypeTraits.hpp"
+#include "Utilities/TypeTraits/IsStreamable.hpp"
 
 /// \cond
 template <size_t Dim>
@@ -439,6 +441,13 @@ class DistributedObject<ParallelComponent,
 
   size_t number_of_actions_in_phase(const Parallel::Phase phase) const;
 
+  // Whether to time the actions (see Parallel/ActionTiming.hpp)
+  bool time_actions() const;
+
+  // Records the time of a call of the Action that started at `start`
+  template <typename Action>
+  void record_action_time(double start);
+
   // After catching an exception, shutdown the simulation
   void initiate_shutdown(const std::exception& exception);
 
@@ -789,8 +798,13 @@ void DistributedObject<ParallelComponent,
             "we do not allow.");
       }
       performing_action_ = true;
+      const double action_start =
+          time_actions() ? Parallel::action_timing::now() : 0.0;
       forward_tuple_to_action<Action>(
           std::move(args), std::make_index_sequence<sizeof...(Args)>{});
+      if (time_actions()) {
+        record_action_time<Action>(action_start);
+      }
       performing_action_ = false;
     }
     perform_algorithm();
@@ -820,9 +834,14 @@ void DistributedObject<
             "we do not allow.");
       }
       performing_action_ = true;
+      const double action_start =
+          time_actions() ? Parallel::action_timing::now() : 0.0;
       Action::template apply<ParallelComponent>(
           box_, *Parallel::local_branch(global_cache_proxy_),
           static_cast<const array_index&>(array_index_));
+      if (time_actions()) {
+        record_action_time<Action>(action_start);
+      }
       performing_action_ = false;
     }
     perform_algorithm();
@@ -1154,6 +1173,34 @@ DistributedObject<ParallelComponent, tmpl::list<PhaseDepActionListsPack...>>::
 }
 
 template <typename ParallelComponent, typename... PhaseDepActionListsPack>
+bool DistributedObject<ParallelComponent,
+                       tmpl::list<PhaseDepActionListsPack...>>::time_actions()
+    const {
+  return Parallel::action_timing::enabled() and
+         phase_ == Parallel::Phase::Evolve;
+}
+
+template <typename ParallelComponent, typename... PhaseDepActionListsPack>
+template <typename Action>
+void DistributedObject<ParallelComponent,
+                       tmpl::list<PhaseDepActionListsPack...>>::
+    record_action_time(const double start) {
+  // Never freed, because the file is written at exit after the destruction
+  // of the static variables
+  static const std::string* const action_name =
+      new std::string(pretty_type::get_name<Action>());
+  if (not Parallel::action_timing::has_name(this)) {
+    std::string name = pretty_type::name<ParallelComponent>();
+    if constexpr (tt::is_streamable_v<std::ostream, array_index>) {
+      name += " " + std::string(MakeString{} << array_index_);
+    }
+    Parallel::action_timing::set_name(this, std::move(name));
+  }
+  Parallel::action_timing::record(this, *action_name, sys::my_proc(), start,
+                                  Parallel::action_timing::now());
+}
+
+template <typename ParallelComponent, typename... PhaseDepActionListsPack>
 template <typename ThisAction, typename PhaseIndex, typename DataBoxIndex>
 bool DistributedObject<
     ParallelComponent,
@@ -1171,10 +1218,15 @@ bool DistributedObject<
 
   AlgorithmExecution requested_execution{};
   std::optional<std::size_t> next_action_step{};
+  const double action_start =
+      time_actions() ? Parallel::action_timing::now() : 0.0;
   std::tie(requested_execution, next_action_step) = ThisAction::apply(
       box_, inboxes_, *Parallel::local_branch(global_cache_proxy_),
       std::as_const(array_index_), actions_list{},
       std::add_pointer_t<ParallelComponent>{});
+  if (time_actions()) {
+    record_action_time<ThisAction>(action_start);
+  }
 
   if (next_action_step.has_value()) {
     ASSERT(

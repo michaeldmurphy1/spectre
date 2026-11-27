@@ -11,6 +11,7 @@ add_spectre_library(${LIBRARY})
 spectre_target_sources(
   ${LIBRARY}
   PRIVATE
+  ActionTiming.cpp
   ArrayComponentId.cpp
   CharmRegistration.cpp
   ExitCode.cpp
@@ -25,6 +26,7 @@ spectre_target_headers(
   ${LIBRARY}
   INCLUDE_DIRECTORY ${CMAKE_SOURCE_DIR}/src
   HEADERS
+  ActionTiming.hpp
   AlgorithmExecution.hpp
   AlgorithmMetafunctions.hpp
   ArrayComponentId.hpp

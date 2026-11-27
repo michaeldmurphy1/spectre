@@ -3,8 +3,10 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -35,6 +37,7 @@
 #include "Parallel/Printf/Printf.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Literals.hpp"
+#include "Utilities/MakeArray.hpp"
 #include "Utilities/Numeric.hpp"
 #include "Utilities/System/ParallelInfo.hpp"
 #include "Utilities/TMPL.hpp"
@@ -155,9 +158,29 @@ void DgElementArray<Metavariables, PhaseDepActionList>::allocate_array(
 
   const auto& blocks = domain.blocks();
 
-  const auto weighting_extents_override =
+  auto weighting_extents_override =
       evolution::dg::weighting_extents_override_from_cache(
           local_cache, initial_refinement_levels, initial_extents);
+  // The elements in patches run in the patch component, not on the processors
+  // of the DgElementArray, so they get (nearly) no weight in the distribution.
+  // Otherwise the processors that the distribution gives them end up with
+  // few elements and the others with too many.
+  if constexpr (uses_patches) {
+    const auto& patch_table =
+        Parallel::get<typename Metavariables::patch_table_tag>(local_cache);
+    if (patch_table.number_of_elements() > 0) {
+      if (not weighting_extents_override.has_value()) {
+        weighting_extents_override.emplace();
+      }
+      for (size_t patch = 0; patch < patch_table.number_of_patches(); ++patch) {
+        for (const auto& element_id : patch_table.element_ids(patch)) {
+          // The fewest points that are a valid mesh for any basis
+          (*weighting_extents_override)[element_id] =
+              make_array<volume_dim>(2_st);
+        }
+      }
+    }
+  }
 
   Parallel::create_elements_using_distribution(
       [&dg_element_array, &global_cache, &initialization_items, &local_cache](
